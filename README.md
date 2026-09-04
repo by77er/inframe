@@ -131,7 +131,7 @@ integration stack is built and policy-checked through `inframe build` and
 above, written in Lean, renders byte-identical Graph IR:
 
 ```lean
-def infrastructureFor (env : Environment) : Infra Unit := do
+def infrastructureFor (env : Environment) (databases : List Identifier) : Infra Unit := do
   let provider ← Provider.configure (Provider.args {} |>.token (secretEnv "DIGITALOCEAN_TOKEN"))
 
   let versions ← Data.KubernetesVersions.readWith "available" (Data.KubernetesVersions.args {})
@@ -162,51 +162,56 @@ def infrastructureFor (env : Environment) : Infra Unit := do
       |>.withProvider provider
       |>.createBeforeDestroy true)
 
-  let database ← DatabaseCluster.create "postgres"
-    (DatabaseCluster.args
-      { engine := lit "pg"
-        name := lit "platform-postgres"
-        nodeCount := lit 1
-        region := lit env.region
-        size := lit "db-s-1vcpu-1gb" }
-      |>.privateNetworkUuid network.id
-      |>.version (lit "15"))
+  -- One cluster per requested database, each on the VPC (plain recursion over the list).
+  let clusters ← createDatabases env network databases
 
   output "cluster_endpoint" cluster.endpoint
-  output "database_host" database.host
+  outputDatabaseHost clusters
 ```
 
-The policy from the PureScript test becomes a theorem. Lean's kernel evaluates
-the policy over the concrete graph while the module compiles, so `lake build`
-(and therefore `inframe test`) fails when the stack violates it. Because the
-stack is a function of `Environment`, one theorem covers every environment:
+The policy from the PureScript test becomes a theorem. For the deployed
+instantiation, Lean's kernel evaluates the policy over the concrete graph while
+the module compiles, so `lake build` (and therefore `inframe test`) fails when
+the stack violates it:
 
 ```lean
+def databaseRule (database : ResourceSpec) : Option String :=
+  if database.argumentRefersTo "private_network_uuid" (.res "digitalocean_vpc" "platform") ["id"]
+  then none
+  else some "private_network_uuid must reference digitalocean_vpc.platform.id"
+
 def databaseUsesManagedVpc : Policy :=
-  Policy.resourcesOfType "database-uses-managed-vpc" "digitalocean_database_cluster" fun database =>
-    if database.argumentRefersTo "private_network_uuid" (.res "digitalocean_vpc" "platform") ["id"]
-    then none
-    else some "private_network_uuid must reference digitalocean_vpc.platform.id"
+  Policy.resourcesOfType "database-uses-managed-vpc" "digitalocean_database_cluster" databaseRule
 
 theorem platform_valid : (buildGraph infrastructure).Valid := by decide
 
 theorem platform_policies (env : Environment) :
-    databaseUsesManagedVpc.Holds (buildGraph (infrastructureFor env)) := by
+    policies.Holds (buildGraph (infrastructureFor env [Identifier.mk "postgres"])) := by
   cases env <;> decide
+```
 
-theorem database_depends_on_vpc :
-    (buildGraph infrastructure).dependsOn
-      (.res "digitalocean_database_cluster" "postgres") (.res "digitalocean_vpc" "platform") = true := by
-  decide
+That still only checks graphs that exist. The stack is a function of its
+database list, and the same policy holds for *every* list, which no test can
+check. The proof is an induction over the list; the core's `run` lemmas compute
+what each builder step adds to the graph without evaluating anything symbolic:
+
+```lean
+theorem databases_use_managed_vpc (env : Environment) (databases : List Identifier) :
+    databaseUsesManagedVpc.Holds (buildGraph (infrastructureFor env databases)) := by
+  rw [databaseUsesManagedVpc, Policy.resourcesOfType_holds_iff]
+  simp only [buildGraph, infrastructureFor, Infra.run_bind, Infra.run_pure, run_output, ...]
+  apply createDatabases_ok   -- induction on `databases`, see Infra/PlatformTest.lean
+  ...
 ```
 
 ### What Lean adds over PureScript
 
 - **Policies are checked by the compiler, for every input.** A policy is a
   decidable proposition over the graph, so `theorem … := by decide` makes
-  `lake build` (and `inframe test`) fail on a violating stack, and a stack that
-  is a function of an environment or region is proved for all of them at once
-  with `cases … <;> decide`. A test only ever samples one instantiation.
+  `lake build` (and `inframe test`) fail on a violating stack. A stack that is
+  a function of its inputs is proved for all of them: finite parameters by
+  `cases … <;> decide`, and unbounded ones such as a list of databases by
+  induction. A test only ever samples instantiations.
 - **The graph is valid before the CLI sees it.** Logical names, aliases,
   outputs, and secret variable names carry validity proofs discharged from
   their literals, and the reference validator (duplicate addresses, dangling

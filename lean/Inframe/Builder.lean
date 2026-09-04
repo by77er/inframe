@@ -22,7 +22,7 @@ def empty : InputObject := ⟨[]⟩
 
 def ofList (fields : List (String × ExprNode)) : InputObject := ⟨fields⟩
 
-private def replaceOrAppend (name : String) (value : ExprNode) :
+def replaceOrAppend (name : String) (value : ExprNode) :
     List (String × ExprNode) → List (String × ExprNode)
   | [] => [(name, value)]
   | (key, existing) :: rest =>
@@ -30,6 +30,12 @@ private def replaceOrAppend (name : String) (value : ExprNode) :
 
 def insert (name : String) (value : ExprNode) (object : InputObject) : InputObject :=
   ⟨replaceOrAppend name value object.fields⟩
+
+@[simp] theorem fields_insert (name : String) (value : ExprNode) (object : InputObject) :
+    (object.insert name value).fields = replaceOrAppend name value object.fields := rfl
+
+@[simp] theorem fields_ofList (fields : List (String × ExprNode)) :
+    (ofList fields).fields = fields := rfl
 
 def toExprNode (object : InputObject) : ExprNode :=
   .object object.fields
@@ -232,8 +238,23 @@ namespace Infra
 instance : Monad Infra where
   pure value := ⟨fun graph => (value, graph)⟩
   bind program next := ⟨fun graph =>
-    let (value, graph) := program.run graph
-    (next value).run graph⟩
+    let step := program.run graph
+    (next step.1).run step.2⟩
+
+/-! `run` lemmas: how each program shape and builder primitive transforms the graph. They let
+proofs about a stack that is a *function* of its inputs compute the resources it creates
+without evaluating anything symbolic, so a policy can be proved for every input by induction
+rather than checked for one instance by `decide`. -/
+
+@[simp] theorem run_bind (program : Infra α) (next : α → Infra β) (graph : Graph) :
+    (program >>= next).run graph = (next (program.run graph).1).run (program.run graph).2 := rfl
+
+@[simp] theorem run_pure (value : α) (graph : Graph) :
+    (pure value : Infra α).run graph = (value, graph) := rfl
+
+@[simp] theorem run_map (transform : α → β) (program : Infra α) (graph : Graph) :
+    (transform <$> program).run graph =
+      (transform (program.run graph).1, (program.run graph).2) := rfl
 
 private def modify (transform : Graph → Graph) : Infra Unit :=
   ⟨fun graph => ((), transform graph)⟩
@@ -328,5 +349,67 @@ def ResourceSpec.unsafeAttr (resource : ResourceSpec) (path : List String) : Exp
 /-- Run a program against the empty graph and keep only the graph. Pure. -/
 def buildGraph (program : Infra α) : Graph :=
   (program.run {}).2
+
+/-- The resource a call to `addResource` appends. -/
+def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier)
+    (values : InputObject) : ResourceSpec :=
+  { resourceType := resourceType.raw
+    name := name.raw
+    arguments := values.fields
+    dependsOn := options.explicitDependencies
+    provider := options.provider
+    lifecycle := options.lifecycle }
+
+@[simp] theorem run_addResource_fst (options : ResourceOptions p) (resourceType name : Identifier)
+    (values : InputObject) (graph : Graph) :
+    ((addResource (r := r) options resourceType name values).run graph).1
+      = resourceHandle (.resource resourceType.raw name.raw) := rfl
+
+@[simp] theorem run_addResource_resources (options : ResourceOptions p)
+    (resourceType name : Identifier) (values : InputObject) (graph : Graph) :
+    ((addResource (r := r) options resourceType name values).run graph).2.resources
+      = graph.resources ++ [resourceSpecOf options resourceType name values] := rfl
+
+@[simp] theorem run_addDataSource_fst (options : DataSourceOptions p)
+    (dataSourceType name : Identifier) (values : InputObject) (graph : Graph) :
+    ((addDataSource (r := r) options dataSourceType name values).run graph).1
+      = dataSourceHandle (.dataSource dataSourceType.raw name.raw) := rfl
+
+@[simp] theorem run_addDataSource_resources (options : DataSourceOptions p)
+    (dataSourceType name : Identifier) (values : InputObject) (graph : Graph) :
+    ((addDataSource (r := r) options dataSourceType name values).run graph).2.resources
+      = graph.resources := rfl
+
+@[simp] theorem run_addProvider_fst (provider : Identifier) (source version : String)
+    (alias : Option Identifier) (values : InputObject) (graph : Graph) :
+    ((addProvider (p := p) provider source version alias values).run graph).1
+      = providerHandle (match alias with
+          | none => provider.raw
+          | some name => provider.raw ++ "." ++ name.raw) := rfl
+
+@[simp] theorem run_addProvider_resources (provider : Identifier) (source version : String)
+    (alias : Option Identifier) (values : InputObject) (graph : Graph) :
+    ((addProvider (p := p) provider source version alias values).run graph).2.resources
+      = graph.resources := rfl
+
+@[simp] theorem run_requireProvider (localName : Identifier) (source version : String)
+    (graph : Graph) :
+    ((requireProvider localName source version).run graph).2.resources = graph.resources := rfl
+
+@[simp] theorem run_output [OutputValue v] (name : String) (value : v)
+    (valid : validIdentifier name = true) (graph : Graph) :
+    ((output name value valid).run graph).2.resources = graph.resources := rfl
+
+@[simp] theorem run_sensitiveOutput [OutputValue v] (name : String) (value : v)
+    (valid : validIdentifier name = true) (graph : Graph) :
+    ((sensitiveOutput name value valid).run graph).2.resources = graph.resources := rfl
+
+@[simp] theorem run_moved [Dependable h] (origin : Address) (destination : h) (graph : Graph) :
+    ((moved origin destination).run graph).2.resources = graph.resources := rfl
+
+@[simp] theorem run_capture (program : Infra α) (graph : Graph) :
+    (Infra.capture program).run graph
+      = (((program.run graph).1, (program.run graph).2.resources.drop graph.resources.length),
+          (program.run graph).2) := rfl
 
 end Inframe

@@ -2309,7 +2309,12 @@ In Lean the same policy is a proposition. `Policy.Holds policy graph` unfolds to
 the compiler evaluate the policy over the concrete graph and refuse to build a
 violating stack. A stack that is a function of a finite parameter type is proved
 for every value with `cases … <;> decide`, which a test suite can only sample.
-The Lean test executable still prints the report at run time for diagnostics.
+For unbounded parameters (a list of databases, say) the core exports `run`
+lemmas (`Infra.run_bind`, `run_addResource_resources`, …) and
+`Policy.resourcesOfType_holds_iff`, so a proof by induction can compute the
+resources each step appends without evaluating anything symbolic; the platform
+integration stack proves its VPC policy for every database list this way. The
+Lean test executable still prints the report at run time for diagnostics.
 
 Cross-language conformance is checked at the serialization boundary. CI pipes
 both PureScript- and Lean-produced documents through the Rust validator, checks

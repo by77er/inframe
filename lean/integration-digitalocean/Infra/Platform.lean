@@ -31,7 +31,40 @@ def Environment.workerMax : Environment → Number
   | .dev => 3
   | .prod => 6
 
-def infrastructureFor (env : Environment) : Infra Unit := do
+/-- One PostgreSQL cluster per requested name, every one on the platform VPC. Written with
+explicit recursion (rather than `List.mapM`) so that proofs can follow it by induction. -/
+def createDatabases (env : Environment) (network : Vpc.Vpc) :
+    List Identifier → Infra (List DatabaseCluster.DatabaseCluster)
+  | [] => pure []
+  | db :: rest => do
+    let storageAutoscale :=
+      DatabaseCluster.storageAutoscaleArgs { enabled := lit true }
+        |>.thresholdPercent (lit 80)
+        |>.incrementGib (lit 10)
+    let database ← DatabaseCluster.create db.raw
+      (DatabaseCluster.args
+        { engine := lit "pg"
+          name := lit ("platform-" ++ db.raw)
+          nodeCount := lit 1
+          region := lit env.region
+          size := lit "db-s-1vcpu-1gb" }
+        |>.privateNetworkUuid network.id
+        |>.storageAutoscale [storageAutoscale]
+        |>.version (lit "15"))
+      db.valid
+    let databases ← createDatabases env network rest
+    pure (database :: databases)
+
+/-- The host of the first database, when there is one. -/
+def outputDatabaseHost : List DatabaseCluster.DatabaseCluster → Infra Unit
+  | database :: _ => output "database_host" database.host
+  | [] => pure ()
+
+@[simp] theorem run_outputDatabaseHost (clusters : List DatabaseCluster.DatabaseCluster)
+    (graph : Graph) : ((outputDatabaseHost clusters).run graph).2.resources = graph.resources := by
+  cases clusters <;> rfl
+
+def infrastructureFor (env : Environment) (databases : List Identifier) : Infra Unit := do
   let provider ← Provider.configure (Provider.args {} |>.token (secretEnv "DIGITALOCEAN_TOKEN"))
 
   let versions ← Data.KubernetesVersions.readWith "available" (Data.KubernetesVersions.args {})
@@ -72,26 +105,12 @@ def infrastructureFor (env : Environment) : Infra Unit := do
       |>.region (lit env.region)
       |>.versioning [versioning])
 
-  let storageAutoscale :=
-    DatabaseCluster.storageAutoscaleArgs { enabled := lit true }
-      |>.thresholdPercent (lit 80)
-      |>.incrementGib (lit 10)
-
-  let database ← DatabaseCluster.create "postgres"
-    (DatabaseCluster.args
-      { engine := lit "pg"
-        name := lit "platform-postgres"
-        nodeCount := lit 1
-        region := lit env.region
-        size := lit "db-s-1vcpu-1gb" }
-      |>.privateNetworkUuid network.id
-      |>.storageAutoscale [storageAutoscale]
-      |>.version (lit "15"))
+  let clusters ← createDatabases env network databases
 
   output "cluster_endpoint" cluster.endpoint
   output "bucket_endpoint" bucket.endpoint
-  output "database_host" database.host
+  outputDatabaseHost clusters
 
 /-- The graph `inframe build --stack lean-example` renders. -/
 def infrastructure : Infra Unit :=
-  infrastructureFor .prod
+  infrastructureFor .prod [Identifier.mk "postgres"]

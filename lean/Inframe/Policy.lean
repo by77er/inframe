@@ -71,6 +71,26 @@ def outputs (name : String) (rule : String → OutputSpec → Option String) : P
 def graph (name : String) (rule : Graph → Option String) : Policy :=
   ⟨name, fun graph => ((rule graph).map fun message => [⟨name, "graph", message⟩]).getD []⟩
 
+/-- A resource rule holds for a graph exactly when it holds for every resource. This is the
+bridge from `decide`-style checks to proofs by induction over the resources a stack creates. -/
+theorem resources_holds_iff (name : String) (rule : ResourceSpec → Option String) (graph : Graph) :
+    (resources name rule).Holds graph ↔ ∀ resource ∈ graph.resources, rule resource = none := by
+  simp [Holds, resources, List.filterMap_eq_nil_iff]
+
+theorem resourcesOfType_holds_iff (name resourceType : String) (rule : ResourceSpec → Option String)
+    (graph : Graph) :
+    (resourcesOfType name resourceType rule).Holds graph
+      ↔ ∀ resource ∈ graph.resources, resource.resourceType = resourceType → rule resource = none := by
+  simp only [Holds, resourcesOfType, resources, List.filterMap_eq_nil_iff, Option.map_eq_none_iff]
+  constructor
+  · intro h resource member equal
+    have := h resource member
+    simpa [equal] using this
+  · intro h resource member
+    by_cases equal : resource.resourceType = resourceType
+    · simp [equal, h resource member equal]
+    · simp [equal]
+
 /-- The conjunction of several policies. -/
 def all (name : String) (policies : List Policy) : Policy :=
   ⟨name, fun graph => policies.flatMap (·.check graph)⟩
