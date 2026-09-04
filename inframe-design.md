@@ -3,7 +3,7 @@
 **Status:** Living architecture and implementation design  
 **Project name:** Inframe (`inframe`)  
 **Primary implementation language:** Rust  
-**Initial frontend language:** PureScript  
+**Frontend languages:** PureScript, Lean 4  
 **Initial provider target:** `digitalocean/digitalocean`  
 **Execution backend:** OpenTofu  
 **Initial provider version for reproducible E2E tests:** `2.100.0`  
@@ -59,8 +59,8 @@ Provider Schema IR
 language-neutral Binding Model
      │
      ├──► PureScript emitter
+     ├──► Lean 4 emitter
      ├──► TypeScript emitter       (future)
-     ├──► Rust emitter             (future)
      └──► other emitters           (future)
 ```
 
@@ -79,7 +79,7 @@ The most important architecture decision is:
 
 > **Use one language-neutral Graph IR and one set of graph semantics, but do not use one shared cross-language graph-construction runtime.**
 
-Each language gets a thin, idiomatic native library that produces the same canonical IR.
+Each language gets a thin, idiomatic native library that produces the same canonical IR. Two exist today: PureScript (section 8) and Lean 4 (section 8.5). The Lean library additionally exposes the graph and its validator to Lean's kernel, so policies become theorems checked during compilation.
 
 An optional remote-state service can be implemented separately by satisfying OpenTofu's standard HTTP backend protocol. It stores OpenTofu state as an opaque blob, adds locking, immutable version history, authentication, audit, and recovery, and does not invent a second state format.
 
@@ -583,6 +583,7 @@ Recommended initial workspace:
 │   ├── binding-model/
 │   ├── graph-ir/
 │   ├── emit-purescript/
+│   ├── emit-lean/
 │   ├── opentofu/
 │   ├── remote-state/          # optional after core E2E works
 │   └── cli/
@@ -590,6 +591,11 @@ Recommended initial workspace:
 │   ├── graph-core/
 │   ├── .generated/digitalocean/ # ignored generated adapter
 │   └── integration-digitalocean/
+├── lean/                        # Lake package `inframe`: the Lean core library
+│   ├── Inframe/
+│   ├── Test/
+│   └── integration-digitalocean/
+│       └── .generated/digitalocean/ # ignored generated adapter
 ├── fixtures/
 │   ├── provider-schema/
 │   ├── graph-ir/
@@ -825,6 +831,48 @@ emit-kotlin/
 ```
 
 They consume exactly the same `BindingPackage`.
+
+---
+
+## 7.4a `emit-lean`
+
+**Owns:** rendering a `BindingPackage` into a Lake package of Lean 4 modules.
+
+It is a peer of `emit-purescript` with the same inputs and the same module
+decomposition (`<Root>.Provider`, `<Root>.Resource.<Name>`, `<Root>.Data.<Name>`,
+plus a `<Root>` module that imports everything). Differences that follow from
+the target language:
+
+- **Namespaces instead of prefixes.** Each module opens `namespace <Root>.Resource.<Name>`.
+  Optional-argument setters live in the `Args` namespace and nested block setters in
+  the block's namespace, so callers write `args { … } |>.vpcUuid network.id` and
+  `nodePoolArgs { … } |>.nodeCount (lit 2)` rather than `nodePoolNodeCount`.
+- **Declaration order matters.** Nested block builders are emitted children-first
+  because a parent's setter refers to the child's `toExprNode`.
+- **Compile-time validated names.** `create`, `createWith`, `read`, `readWith`, and
+  `configureAs` take a `String` plus an auto-param proof `validIdentifier name = true := by decide`;
+  the generated code itself uses `Identifier.mk "digitalocean_tag"`, so generated
+  resource types are also proved valid when the package compiles.
+- **Computed-only nested objects** get an empty `inductive` marker whose doc comment
+  lists the shape, so handle fields read `Expr (List KubeConfig)` instead of `Expr Json`.
+- **Escaping.** Lean keywords (including the module-system tokens `public`, `meta`,
+  and `module`) and generated member names (`values`, `mk`, `toExprNode`, `resource`,
+  `dataSource`) are suffixed with `_`; type names that would shadow the core library
+  or the prelude are suffixed with `Block` or `Handle`. Doc comments neutralise `/-`
+  and `-/` because Lean block comments nest.
+- **Documentation is one level deep.** A field's doc comment lists the descriptions of
+  its direct nested fields only. Provider schemas unroll recursive blocks to a fixed
+  depth (AWS WAF rules reach 21,000 nested paths), and listing whole subtrees made
+  generated documentation quadratic in that size.
+- **Package metadata.** `lakefile.toml` requires the `inframe` core library by
+  relative path or git (from `[lean.core]`), pins `lean-toolchain`, and a
+  `lake-manifest.json` is emitted for path dependencies so consumers build without
+  a manifest warning.
+
+### Must not
+
+The same rules as `emit-purescript`: no schema parsing, no subprocesses, no
+graph lowering, no provider-specific hacks.
 
 ---
 
@@ -1088,6 +1136,50 @@ Explicit dependency API exists for non-dataflow relationships:
 withDependsOn
   [ resourceRef bootstrapThing ]
 ```
+
+---
+
+## 8.5 Lean graph runtime
+
+The Lean core library (`lean/`, Lake package `inframe`) mirrors the PureScript
+modules one to one:
+
+```text
+Inframe.Identifier   validIdentifier, Identifier (proof-carrying), Address
+Inframe.Value        Value (plain JSON ADT), Number (exact decimal), ToValue, Map
+Inframe.Core         ExprNode, Expr α, Input α, handles, combinators
+Inframe.Builder      InputObject, NodeOptions, specs, Graph, Infra, buildGraph
+Inframe.Json         Graph IR 1.0 encoder, renderGraph
+Inframe.Validate     Graph.validate (port of the Rust validator), dependencies
+Inframe.Policy       Policy, Violation, Policy.Holds, reports
+```
+
+Design decisions specific to Lean:
+
+- **Everything reduces in the kernel.** All recursive functions over `ExprNode`
+  are structurally recursive (`termination_by structural`), literals use a plain
+  `Value` inductive rather than `Lean.Json`, and maps are association lists. The
+  payoff is that `Graph.Valid g`, `Policy.Holds p g`, `Graph.dependsOn`, and
+  expression equality are decidable propositions proved with `decide`; no
+  `native_decide` is needed, so only the kernel is trusted.
+- **Proofs at the boundary, strings inside.** `addResource` takes `Identifier`s,
+  whose validity proofs are discharged from literals by `decide`; the stored
+  `ResourceSpec` keeps plain strings so policy authors compare `resourceType == "…"`
+  without unwrapping. `Graph.validate` re-checks identifiers anyway, matching Rust.
+- **`Infra` is a private state transformer**, not `StateM`, so programs cannot
+  read or overwrite the graph; only the builder primitives extend it.
+- **`Expr α` coerces to `Input α`.** The PureScript `computed` wrapper remains
+  available but is rarely needed.
+- **Numbers are exact.** `Number` is `Lean.JsonNumber`; `lit 2` and `lit 80.5`
+  elaborate through `OfNat`/`OfScientific` and serialize without rounding.
+- **Test executables double as proofs.** A stack's test module states theorems
+  (`theorem policies : p.Holds (buildGraph infra) := by decide`) and a `main` that
+  prints `Policy.report`; `inframe test --stack <name>` runs `lake -q exe <test>`,
+  so the theorems are checked before the report runs.
+
+Deriving `DecidableEq` for nested inductives is unsupported in Lean 4.33, so
+`Value` and `ExprNode` provide hand-written structural `BEq`; propositions are
+stated over `Violation`/`ValidationError` lists, which derive `DecidableEq`.
 
 ---
 
@@ -2154,6 +2246,12 @@ The golden tests catch formatting/shape regressions.
 
 Compilation catches invalid PureScript.
 
+The Lean emitter has the same shape of tests, and CI runs `lake build` on every
+generated DigitalOcean module. The emitter was also stress tested offline
+against `hashicorp/google` 8.1.0 and `hashicorp/aws` 6.63.0 (thousands of
+modules) to flush out keyword and name collisions; the reserved-word tables in
+`emit-lean` come from those runs.
+
 ---
 
 ## 20.4 Graph IR tests
@@ -2190,11 +2288,18 @@ Policies over symbolic expressions need three outcomes: pass, violation, and
 unknown. Unknown rules can be evaluated against machine-readable OpenTofu plan
 JSON once provider defaults and computed values are available.
 
-Cross-language conformance should be checked at the serialization boundary.
-The current CI pipes PureScript-produced documents through the Rust validator,
-and checks that the committed JSON Schema still matches the Rust model. Future
-frontends should run the same shared Graph IR fixtures rather than maintaining
-independent expectations for wire tags.
+In Lean the same policy is a proposition. `Policy.Holds policy graph` unfolds to
+`policy.check graph = []`, which is decidable, so `theorem … := by decide` makes
+the compiler evaluate the policy over the concrete graph and refuse to build a
+violating stack. A stack that is a function of a finite parameter type is proved
+for every value with `cases … <;> decide`, which a test suite can only sample.
+The Lean test executable still prints the report at run time for diagnostics.
+
+Cross-language conformance is checked at the serialization boundary. CI pipes
+both PureScript- and Lean-produced documents through the Rust validator, checks
+that the committed JSON Schema still matches the Rust model, and diffs the Graph
+IR that the two frontends render for the same platform stack, which must be
+byte-identical.
 
 ---
 
@@ -2331,7 +2436,8 @@ Version separately:
 3. Binding Model version.
 4. Graph IR wire-format version.
 5. PureScript core-library version.
-6. Generated provider version.
+6. Lean core-library version and pinned Lean toolchain.
+7. Generated provider version.
 
 Graph IR uses semantic compatibility rules:
 
@@ -2498,7 +2604,17 @@ Deliver credentialed tag lifecycle test:
 generate -> compile -> graph -> lower -> plan -> apply -> no-op plan -> destroy
 ```
 
-## Milestone 9 — optional remote state
+## Milestone 9 — Lean 4 frontend (delivered)
+
+Deliver:
+
+- Lean core library with the same semantics and wire format;
+- `emit-lean` peer of `emit-purescript`;
+- `[lean]` project configuration and `lake exe` based build/test;
+- reference validator and policies as `decide`-proved theorems;
+- cross-frontend conformance check in CI.
+
+## Milestone 10 — optional remote state
 
 Deliver:
 

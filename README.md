@@ -4,14 +4,24 @@ Inframe is an infrastructure-as-code interface that's actually good, I hope. I'm
 not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a
 functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
-and state management to OpenTofu, and can generate PureScript adapters for
-Terraform providers.
+and state management to OpenTofu, and generates typed adapters for Terraform
+providers in two frontend languages:
+
+- **PureScript**: infrastructure is a pure `Infra` value; policies are ordinary
+  tests over the graph.
+- **Lean 4**: the same pure graph, plus compile-time proofs. Resource names are
+  validated when the module compiles, the reference validator is a theorem,
+  and policies are decidable propositions that the Lean kernel checks, for
+  every parameterization of a stack at once.
+
+Both frontends render the same Graph IR document for the same stack (CI diffs
+them), and both are driven by the same `inframe` CLI.
 
 > Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
 it's mostly data plumbing, be wary and look at your plans before applying if you
 use this tool. It's quite experimental.
 
-## Example
+## Example in PureScript
 
 This stack creates a shared VPC, an autoscaling managed Kubernetes cluster, a
 versioned Spaces bucket, and an autoscaling PostgreSQL database.
@@ -110,12 +120,148 @@ databaseUsesManagedVpc resource
       _ -> false
 ```
 
+## The same stack in Lean 4
+
+The Lean 4 frontend is a Lake package with the same graph semantics, the same
+Graph IR encoder, and generated adapters produced from the same binding model.
+It is exercised in CI exactly like the PureScript one: the core library's
+theorems and tests run, every generated DigitalOcean module compiles, the
+integration stack is built and policy-checked through `inframe build` and
+`inframe test`, and its output is validated by the Rust CLI. The platform stack
+above, written in Lean, renders byte-identical Graph IR:
+
+```lean
+def infrastructureFor (env : Environment) : Infra Unit := do
+  let provider ← Provider.configure (Provider.args {} |>.token (secretEnv "DIGITALOCEAN_TOKEN"))
+
+  let versions ← Data.KubernetesVersions.readWith "available" (Data.KubernetesVersions.args {})
+    (dataSourceOptions |>.withProvider provider)
+
+  let network ← Vpc.create "platform" (Vpc.args
+    { name := lit "platform"
+      region := lit env.region })
+
+  let workerPool :=
+    KubernetesCluster.nodePoolArgs
+      { name := lit "workers"
+        size := lit "s-2vcpu-4gb" }
+      |>.nodeCount (lit 2)
+      |>.autoScale (lit true)
+      |>.minNodes (lit 2)
+      |>.maxNodes (lit env.workerMax)
+
+  let cluster ← KubernetesCluster.createWith "platform"
+    (KubernetesCluster.args
+      { name := lit "platform"
+        nodePool := [workerPool]
+        region := lit env.region
+        version := versions.latestVersion }
+      |>.autoUpgrade (lit true)
+      |>.vpcUuid network.id)
+    (resourceOptions
+      |>.withProvider provider
+      |>.createBeforeDestroy true)
+
+  let database ← DatabaseCluster.create "postgres"
+    (DatabaseCluster.args
+      { engine := lit "pg"
+        name := lit "platform-postgres"
+        nodeCount := lit 1
+        region := lit env.region
+        size := lit "db-s-1vcpu-1gb" }
+      |>.privateNetworkUuid network.id
+      |>.version (lit "15"))
+
+  output "cluster_endpoint" cluster.endpoint
+  output "database_host" database.host
+```
+
+The policy from the PureScript test becomes a theorem. Lean's kernel evaluates
+the policy over the concrete graph while the module compiles, so `lake build`
+(and therefore `inframe test`) fails when the stack violates it. Because the
+stack is a function of `Environment`, one theorem covers every environment:
+
+```lean
+def databaseUsesManagedVpc : Policy :=
+  Policy.resourcesOfType "database-uses-managed-vpc" "digitalocean_database_cluster" fun database =>
+    if database.argumentRefersTo "private_network_uuid" (.res "digitalocean_vpc" "platform") ["id"]
+    then none
+    else some "private_network_uuid must reference digitalocean_vpc.platform.id"
+
+theorem platform_valid : (buildGraph infrastructure).Valid := by decide
+
+theorem platform_policies (env : Environment) :
+    databaseUsesManagedVpc.Holds (buildGraph (infrastructureFor env)) := by
+  cases env <;> decide
+
+theorem database_depends_on_vpc :
+    (buildGraph infrastructure).dependsOn
+      (.res "digitalocean_database_cluster" "postgres") (.res "digitalocean_vpc" "platform") = true := by
+  decide
+```
+
+### What Lean adds over PureScript
+
+- **Identifiers are checked at compile time.** `Tag.create "smoke" …` carries a
+  proof that `"smoke"` is a valid OpenTofu identifier, discharged by `decide`
+  from the string literal. The same applies to provider aliases, output names,
+  `secretEnv` variable names, and function names in `unsafeCall`. In PureScript
+  these are runtime strings that `inframe graph validate` rejects later.
+- **The reference validator is a theorem.** `Graph.validate` is a Lean port of
+  the Rust validator (duplicate addresses, dangling references, self
+  dependencies, provider selection, replacement triggers, moves). `Graph.Valid g`
+  is decidable, so `by decide` proves a concrete graph valid before the CLI
+  ever sees it.
+- **Policies are propositions, not assertions.** A `Policy` is a function from
+  `Graph` to violations; `Policy.Holds policy graph` is decidable and proved by
+  the kernel. The same value prints a human-readable report at run time.
+- **Proofs quantify over parameters.** A stack that is a function of an
+  environment, a region list, or any other finite type is proved for all inputs
+  with `cases … <;> decide`; a test only ever checks one instantiation.
+- **Structural facts are theorems too.** Dependency edges (`Graph.dependsOn`),
+  the set of secrets a stack needs (`Graph.secretEnvironmentNames`), and
+  expression equality are all decidable, so refactors cannot silently reroute a
+  reference.
+- **Exact numbers.** Provider numbers are decimal `Number` literals rather than
+  IEEE doubles, so `lit 2` serializes as `2` and compares exactly.
+- **Ergonomics.** `Expr α` coerces to `Input α` (no `computed` wrapper), setters
+  are namespaced (`|>.nodeCount (lit 2)` instead of `nodePoolNodeCount`), and
+  handle fields carry provider documentation as hover text.
+
+Everything is checked by kernel `decide`; the Lean frontend never uses
+`native_decide`, so the trusted base is the Lean kernel plus the Rust validator
+that still runs on the emitted document.
+
+### Stress test
+
+The Lean emitter was exercised against the three provider schemas below by
+generating a package and running `lake build` on every module:
+
+| Provider | Modules | Generate | `lake build` (wall, 20 cores) |
+| --- | --- | --- | --- |
+| `digitalocean/digitalocean` 2.100.0 | 156 | < 1 s | 7 s |
+| `hashicorp/google` 8.1.0 | 1,797 | 1.2 s | 1 min 49 s |
+| `hashicorp/aws` 6.63.0 | 2,394 | 5.6 s | 2,388 ordinary modules in the parallel run; the six largest are built one at a time (see below) |
+
+Every ordinary module of all three providers compiles. The runs found six
+reserved words that the emitter now escapes (`continue`, `from`, `prefix`,
+`public`, `meta`, `matches`) and one scaling limit worth knowing about: six AWS
+resources (`aws_wafv2_web_acl_rule`, `aws_wafv2_web_acl`, `aws_wafv2_rule_group`,
+and the QuickSight dashboard, template, and analysis resources) unroll
+recursive nested blocks to 8,000 to 21,000 distinct block paths, so their
+generated modules are 19 to 56 MB of Lean and need more than 6 GB each to
+elaborate. Building them with Lake's default parallelism exhausted a 23 GB
+machine; Lake has no jobs flag, so bound it with `LEAN_NUM_THREADS=N lake
+build` on such packages. Sharing identical nested shapes across paths would
+shrink them and is future work for the binding model.
+
 ## How to use it
 
 ### 1. Install and build
 
-You need Rust 1.85+, OpenTofu 1.10+, PureScript 0.15.16, and Spago 1.x. From
-this repository:
+You need Rust 1.85+, OpenTofu 1.10+, and one frontend toolchain: PureScript
+0.15.16 with Spago 1.x, or the Lean 4 toolchain pinned in `lean/lean-toolchain`
+(install `elan`, which reads that file). From this repository:
 
 ```bash
 cargo build -p inframe-cli
@@ -141,12 +287,14 @@ Then generate every configured provider:
 inframe provider generate
 ```
 
-By convention the package above goes to
-`<purescript.directory>/.generated/digitalocean`. Generated adapters are
-gitignored build artifacts. Select one with `inframe provider generate
-digitalocean`; `--source`, `--version`, `--module-root`, and `--output` are
-available for ad hoc generation or overrides. `--schema-json` accepts a raw or
-normalized schema fixture for reproducible offline builds.
+This emits one package per configured frontend. By convention the PureScript
+package above goes to `<purescript.directory>/.generated/digitalocean` and the
+Lean package to `<lean.directory>/.generated/digitalocean`. Generated adapters
+are gitignored build artifacts. Select one provider with `inframe provider
+generate digitalocean` and one frontend with `--frontend purescript|lean`;
+`--source`, `--version`, `--module-root`, and `--output` are available for ad
+hoc generation or overrides. `--schema-json` accepts a raw or normalized schema
+fixture for reproducible offline builds.
 
 Point a Spago `extraPackages` entry at the conventional directory and depend on
 the generated package:
@@ -156,6 +304,20 @@ workspace:
   extraPackages:
     generated-digitalocean:
       path: .generated/digitalocean
+```
+
+A Lean project requires the generated package and the core library from its
+`lakefile.toml`; the generated package's own lakefile already points at the
+core library configured in `[lean.core]`:
+
+```toml
+[[require]]
+name = "inframe"
+path = ".."
+
+[[require]]
+name = "generated-digitalocean"
+path = ".generated/digitalocean"
 ```
 
 Generated adapters are ordinary PureScript source, so the PureScript language
@@ -199,6 +361,27 @@ test entry point runs assertions over the same pure infrastructure value.
 Reusable infrastructure is just ordinary pure functions called while
 constructing its `Infra` value.
 
+A project may instead, or additionally, declare a Lean frontend. For Lean
+stacks `main` and `test` name Lake executables (`lake exe <name>`) whose root
+modules print the graph and check policies; when both frontends are configured
+each stack picks one:
+
+```toml
+[lean]
+directory = "lean/integration-digitalocean"
+main = "infra"
+core = { path = "lean" }   # or { git = "https://github.com/by77er/inframe", rev = "...", subdir = "lean" }
+
+[stacks.platform]
+frontend = "lean"
+main = "platform"
+test = "platform-test"
+```
+
+This repository configures both: the `example` stack is PureScript and the
+`lean-example` stack is Lean, and `make conformance` checks that they build the
+same document.
+
 ### 4. Build, test, and inspect the graph
 
 ```bash
@@ -212,9 +395,11 @@ The graph commands resolve the last built artifact from `inframe.toml`.
 `inspect` prints a tree of provider pins, configured arguments, resources, data
 sources, symbolic outputs, moves, and dependency edges. An explicit JSON path
 or `-` for stdin remains available for debugging. `build` does not invoke
-OpenTofu or contact the cloud. `test` runs the stack's configured PureScript
-test entry point and preserves its exit status; the test library and structure
-remain the project's choice.
+OpenTofu or contact the cloud. `test` runs the stack's configured test entry
+point and preserves its exit status; the test library and structure remain the
+project's choice. For a Lean stack the policy theorems in the test executable's
+modules are checked by the compiler before the executable runs, so a violated
+policy fails the build.
 
 ### 5. Initialize, validate, and apply
 
@@ -265,4 +450,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 cd purescript
 spago test
+
+cd lean
+lake -q exe inframe-test
+cd integration-digitalocean
+lake build
 ```

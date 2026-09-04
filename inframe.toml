@@ -3,6 +3,11 @@ directory = "purescript"
 package = "integration-digitalocean"
 main = "Infra.Main"
 
+[lean]
+directory = "lean/integration-digitalocean"
+main = "infra"
+core = { path = "lean" }
+
 [providers.digitalocean]
 source = "digitalocean/digitalocean"
 version = "2.100.0"
@@ -16,8 +21,17 @@ graph_directory = ".inframe/graphs"
 type = "local"
 
 [stacks.example]
+frontend = "purescript"
 main = "Infra.Platform"
 test = "Infra.PlatformTest"
 
 [stacks.example.backend]
+type = "local"
+
+[stacks.lean-example]
+frontend = "lean"
+main = "platform"
+test = "platform-test"
+
+[stacks.lean-example.backend]
 type = "local"

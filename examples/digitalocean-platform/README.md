@@ -13,4 +13,7 @@ validates configuration without applying it; applying creates billable cloud
 resources. Replace the Spaces name with a globally unique value before use.
 
 The same graph is wired into the PureScript integration package as
-`Infra.Platform`, where CI compiles it and validates the emitted Graph IR.
+`Infra.Platform`, where CI compiles it and validates the emitted Graph IR. Its
+Lean 4 twin lives in `lean/integration-digitalocean/Infra/Platform.lean`, with
+compile-time policy proofs in `Infra/PlatformTest.lean`; CI checks that both
+frontends render byte-identical Graph IR.

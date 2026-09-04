@@ -11,3 +11,6 @@
 *.tfstate.*
 *.tfplan
 .env
+
+**/.lake/
+/lean/integration-digitalocean/.generated/

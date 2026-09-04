@@ -1,0 +1,27 @@
+name = "integration-digitalocean"
+version = "0.1.0"
+defaultTargets = ["Infra"]
+
+[[require]]
+name = "inframe"
+path = ".."
+
+[[require]]
+name = "generated-digitalocean"
+path = ".generated/digitalocean"
+
+[[lean_lib]]
+name = "Infra"
+globs = ["Infra.+"]
+
+[[lean_exe]]
+name = "infra"
+root = "Infra.Main"
+
+[[lean_exe]]
+name = "platform"
+root = "Infra.PlatformMain"
+
+[[lean_exe]]
+name = "platform-test"
+root = "Infra.PlatformTest"

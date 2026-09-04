@@ -58,6 +58,51 @@ jobs:
           cargo run -q -p inframe-cli -- build --stack example
           cargo run -q -p inframe-cli -- graph validate --stack example
           cargo run -q -p inframe-cli -- test --stack example
+      - name: Upload the PureScript graph for cross-frontend comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: purescript-graph
+          path: .inframe/graphs/example.json
+
+  lean:
+    runs-on: ubuntu-latest
+    needs: integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Lean
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean/lean-toolchain)"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Core library and its proofs
+        working-directory: lean
+        run: |
+          lake build
+          lake -q exe inframe-test
+      - name: Generate pinned DigitalOcean bindings
+        run: |
+          cargo run -q -p inframe-cli -- provider generate --frontend lean \
+            --schema-json fixtures/provider-schema/digitalocean-2.100.0.normalized.json
+      - name: Compile every generated module
+        working-directory: lean/integration-digitalocean/.generated/digitalocean
+        run: lake build
+      - name: Lean to Graph IR to Rust
+        working-directory: lean/integration-digitalocean
+        run: |
+          lake -q exe infra | cargo run -q -p inframe-cli -- graph validate -
+          lake -q exe platform | cargo run -q -p inframe-cli -- graph validate -
+      - name: Configured project build and compile-time policies
+        run: |
+          cargo run -q -p inframe-cli -- build --stack lean-example
+          cargo run -q -p inframe-cli -- graph validate --stack lean-example
+          cargo run -q -p inframe-cli -- test --stack lean-example
+      - uses: actions/download-artifact@v4
+        with:
+          name: purescript-graph
+          path: purescript-graph
+      - name: Lean and PureScript render identical Graph IR
+        run: diff purescript-graph/example.json .inframe/graphs/lean-example.json
 
   opentofu:
     runs-on: ubuntu-latest
