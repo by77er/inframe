@@ -202,9 +202,11 @@ inframe graph inspect --stack platform
 inframe graph validate --stack platform
 ```
 
-The graph commands resolve the last built artifact from `inframe.toml`; an
-explicit JSON path or `-` for stdin remains available for debugging. `build`
-does not invoke OpenTofu or contact the cloud.
+The graph commands resolve the last built artifact from `inframe.toml`.
+`inspect` prints a tree of provider pins, configured arguments, resources, data
+sources, symbolic outputs, moves, and dependency edges. An explicit JSON path
+or `-` for stdin remains available for debugging. `build` does not invoke
+OpenTofu or contact the cloud.
 
 ### 5. Initialize, validate, and apply
 

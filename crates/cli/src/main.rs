@@ -12,6 +12,7 @@ use inframe_graph_ir::GraphDocument;
 use inframe_opentofu::{OpenTofu, Workspace, secret_variable_name, to_pretty_json};
 use inframe_provider_schema::{ProviderRequest, SchemaAcquirer, normalize_schema};
 
+mod inspect;
 mod project;
 
 use project::{DEFAULT_CONFIG, Project};
@@ -407,21 +408,7 @@ fn graph_command(command: GraphCommand, project_path: &Path) -> Result<()> {
         }
         GraphCommand::Inspect(arguments) => {
             let graph = read_selected_graph(&arguments, project_path)?;
-            let dependencies = graph.dependencies()?;
-            println!("format: {}", graph.format_version);
-            println!("providers: {}", graph.required_providers.len());
-            println!("resources: {}", graph.resources.len());
-            println!("data sources: {}", graph.data_sources.len());
-            println!("outputs: {}", graph.outputs.len());
-            println!("dependencies: {}", dependencies.len());
-            for dependency in dependencies {
-                let kind = if dependency.explicit {
-                    "explicit"
-                } else {
-                    "inferred"
-                };
-                println!("  {} -> {} ({kind})", dependency.from, dependency.to);
-            }
+            print!("{}", inspect::render(&graph)?);
             Ok(())
         }
         GraphCommand::Schema(arguments) => {

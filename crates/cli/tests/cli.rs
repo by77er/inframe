@@ -74,7 +74,50 @@ type = "local"
         .args(["graph", "inspect", "--stack", "dev"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("outputs: 1"));
+        .stdout(predicate::str::contains("Outputs\n└── answer: 42"))
+        .stdout(predicate::str::contains(
+            "Summary: 0 providers, 0 resources, 0 data sources, 1 output, 0 dependencies",
+        ));
+}
+
+#[test]
+fn inspects_provider_resources_arguments_and_symbolic_outputs() {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let graph = workspace.join("fixtures/graph-ir/digitalocean-tag.json");
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["graph", "inspect"])
+        .arg(graph)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "digitalocean: digitalocean/digitalocean = 2.100.0",
+        ))
+        .stdout(predicate::str::contains("digitalocean_tag.smoke"))
+        .stdout(predicate::str::contains("name: \"inframe-smoke\""))
+        .stdout(predicate::str::contains(
+            "tag_id: digitalocean_tag.smoke.id",
+        ));
+}
+
+#[test]
+fn inspection_never_resolves_secret_environment_values() {
+    let directory = tempdir().unwrap();
+    let graph = directory.path().join("graph.json");
+    fs::write(&graph, SECRET_GRAPH).unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["graph", "inspect"])
+        .arg(graph)
+        .env("INFRAME_TEST_SECRET", "actual-secret-value")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "secret: secretEnv(\"INFRAME_TEST_SECRET\") (sensitive)",
+        ))
+        .stdout(predicate::str::contains("actual-secret-value").not());
 }
 
 #[test]
