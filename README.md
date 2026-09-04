@@ -391,7 +391,9 @@ inframe graph inspect --stack platform
 inframe graph validate --stack platform
 ```
 
-The graph commands resolve the last built artifact from `inframe.toml`.
+Every command that takes `--stack` builds the stack first, so `inspect`,
+`validate`, `plan`, and `apply` always reflect the current source; pass
+`--no-build` to the graph commands to look at the last built artifact instead.
 `inspect` prints a tree of provider pins, configured arguments, resources, data
 sources, symbolic outputs, moves, and dependency edges. An explicit JSON path
 or `-` for stdin remains available for debugging. `build` does not invoke

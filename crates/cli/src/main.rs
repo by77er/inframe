@@ -151,12 +151,15 @@ enum GraphCommand {
 
 #[derive(Debug, Args)]
 struct GraphPathArgs {
-    /// Graph IR path, or `-` for stdin. Omit to use a configured stack graph.
+    /// Graph IR path, or `-` for stdin. Omit to build a configured stack.
     #[arg(conflicts_with = "stack")]
     graph: Option<PathBuf>,
-    /// Resolve the last built graph for this project stack.
+    /// Build this project stack and use its graph.
     #[arg(long, required_unless_present = "graph")]
     stack: Option<String>,
+    /// Use the stack's last built graph instead of building it first.
+    #[arg(long, requires = "stack")]
+    no_build: bool,
 }
 
 #[derive(Debug, Args)]
@@ -512,13 +515,18 @@ fn read_selected_graph(arguments: &GraphPathArgs, project_path: &Path) -> Result
         .as_deref()
         .context("either a graph path or --stack is required")?;
     let project = Project::load(project_path)?;
-    project.stack(stack)?;
-    let path = project.graph_path(stack);
-    read_graph(&path).with_context(|| {
-        format!(
-            "no built graph found for stack `{stack}`; run `inframe build --stack {stack}` first"
-        )
-    })
+    if arguments.no_build {
+        project.stack(stack)?;
+        let path = project.graph_path(stack);
+        return read_graph(&path).with_context(|| {
+            format!(
+                "no built graph found for stack `{stack}`; run `inframe build --stack {stack}` or drop --no-build"
+            )
+        });
+    }
+    let (graph, path) = project.build(stack, None)?;
+    eprintln!("built stack `{stack}` to {}", path.display());
+    Ok(graph)
 }
 
 fn render(arguments: &RenderArgs) -> Result<()> {
@@ -542,7 +550,8 @@ fn run_graph(
         (graph, Workspace::new(base, &arguments.stack)?)
     } else {
         let project = Project::load(project_path)?;
-        let (graph, _) = project.build(&arguments.stack, None)?;
+        let (graph, path) = project.build(&arguments.stack, None)?;
+        eprintln!("built stack `{}` to {}", arguments.stack, path.display());
         let base = arguments
             .workspace
             .clone()

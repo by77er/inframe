@@ -50,7 +50,7 @@ fn validates_a_graph() {
 }
 
 #[test]
-fn inspects_the_configured_stack_graph_without_a_path() {
+fn inspects_the_last_built_stack_graph_with_no_build() {
     let directory = tempdir().unwrap();
     let project = directory.path().join("inframe.toml");
     let graph_directory = directory.path().join(".inframe/graphs");
@@ -71,7 +71,7 @@ type = "local"
         .unwrap()
         .arg("--project")
         .arg(&project)
-        .args(["graph", "inspect", "--stack", "dev"])
+        .args(["graph", "inspect", "--stack", "dev", "--no-build"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Outputs\n└── answer: 42"))
@@ -627,10 +627,23 @@ type = "local"
         .arg("--project")
         .arg(&project)
         .args(["build", "--stack", "dev"])
-        .env("PATH", path)
+        .env("PATH", &path)
         .assert()
         .success()
         .stdout(predicate::str::contains("built stack `dev`"));
     let built = fs::read_to_string(directory.path().join(".inframe/graphs/dev.json")).unwrap();
     assert!(built.contains("\"answer\""));
+
+    // Graph commands build the stack first rather than reading a stale artifact.
+    fs::write(directory.path().join(".inframe/graphs/dev.json"), "{}").unwrap();
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["graph", "inspect", "--stack", "dev"])
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("built stack `dev`"))
+        .stdout(predicate::str::contains("answer: 42"));
 }
