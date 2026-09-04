@@ -411,6 +411,10 @@ pub enum ValidationError {
     ReferenceKind { owner: String, target: Address },
     #[error("{owner} depends on itself")]
     SelfDependency { owner: Address },
+    #[error(
+        "{owner} uses data source `{target}` in replace_triggered_by; only managed resources are allowed"
+    )]
+    InvalidReplaceTriggeredBy { owner: Address, target: Address },
     #[error("move target `{0}` is not present in this graph")]
     MissingMoveTarget(Address),
     #[error("duplicate move target `{0}`")]
@@ -477,16 +481,7 @@ impl GraphDocument {
                 resource.provider.as_deref(),
                 &configured_providers,
             )?;
-            if let Some(lifecycle) = &resource.lifecycle {
-                for target in &lifecycle.replace_triggered_by {
-                    if !addresses.contains(target) {
-                        return Err(ValidationError::MissingReference {
-                            owner: resource.address().to_string(),
-                            target: target.clone(),
-                        });
-                    }
-                }
-            }
+            validate_replacement_triggers(resource, &addresses)?;
         }
         for data_source in &self.data_sources {
             validate_owner(
@@ -598,6 +593,30 @@ fn validate_owner<'a>(
         if !addresses.contains(target) {
             return Err(ValidationError::MissingReference {
                 owner: owner.to_string(),
+                target: target.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_replacement_triggers(
+    resource: &ResourceSpec,
+    addresses: &BTreeSet<Address>,
+) -> Result<(), ValidationError> {
+    let Some(lifecycle) = &resource.lifecycle else {
+        return Ok(());
+    };
+    for target in &lifecycle.replace_triggered_by {
+        if !target.is_resource() {
+            return Err(ValidationError::InvalidReplaceTriggeredBy {
+                owner: resource.address(),
+                target: target.clone(),
+            });
+        }
+        if !addresses.contains(target) {
+            return Err(ValidationError::MissingReference {
+                owner: resource.address().to_string(),
                 target: target.clone(),
             });
         }
@@ -941,6 +960,21 @@ mod tests {
         assert!(matches!(
             graph.validate(),
             Err(ValidationError::MissingProviderConfig { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_a_data_source_replace_trigger() {
+        let mut graph = tag_graph();
+        let data_source = graph.data_sources[0].address();
+        graph.resources[0].lifecycle = Some(Lifecycle {
+            replace_triggered_by: vec![data_source],
+            ..Lifecycle::default()
+        });
+
+        assert!(matches!(
+            graph.validate(),
+            Err(ValidationError::InvalidReplaceTriggeredBy { .. })
         ));
     }
 }

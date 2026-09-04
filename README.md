@@ -1,11 +1,11 @@
 # Inframe
 
-Inframe is an infrastructure as code tool that's actually good, I hope. I'm
+Inframe is an infrastructure-as-code interface that's actually good, I hope. I'm
 not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a
 functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
 and state management to OpenTofu, and can generate PureScript adapters for
-Terraform modules.
+Terraform providers.
 
 > Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
 it's mostly data plumbing, be wary and look at your plans before applying if you
@@ -139,6 +139,13 @@ workspace:
       path: .generated/digitalocean
 ```
 
+Generated adapters are ordinary PureScript source, so the PureScript language
+server provides completion, inferred signatures, hover types, and navigation
+after `spago build`. Open the configured `purescript` directory as the editor
+workspace (or add it as a workspace folder) so the language server finds its
+`spago.yaml`. Provider attribute descriptions are preserved during generation,
+but are not yet emitted as hover documentation.
+
 ### 3. Configure the project and stacks
 
 `inframe project init` creates a starter `inframe.toml`. A project connects its
@@ -231,4 +238,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 cd purescript
 spago test
+```
+
+Because a built graph is ordinary data, CI can also enforce cross-cutting
+policies without contacting the cloud. For example, this test fails if any
+DigitalOcean database is not connected to a managed VPC:
+
+```bash
+inframe build --stack platform
+jq -e '
+  all(
+    .resources[] | select(.type == "digitalocean_database_cluster");
+    .arguments.private_network_uuid.kind == "resource_attr"
+      and (.arguments.private_network_uuid.address | startswith("digitalocean_vpc."))
+  )
+' .inframe/graphs/platform.json
 ```

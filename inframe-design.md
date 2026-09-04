@@ -377,6 +377,52 @@ These can be future extensions.
 
 ---
 
+## 5.1 OpenTofu language compatibility boundary
+
+Inframe is not a general alternative syntax for the entire OpenTofu language.
+It constructs a finite, explicit graph and delegates planning and execution of
+that graph to OpenTofu. Version 1 supports only the semantics represented by
+Graph IR and implemented by both its validator and lowerer.
+
+The graph's cardinality is fixed while the host-language program runs:
+
+- host-language iteration may create one graph node per element when the
+  collection is known during graph construction;
+- an unresolved `Expr (Array a)` cannot determine how many resources exist;
+- native OpenTofu `count` and `for_each` are not represented;
+- autoscaling performed by a provider-managed resource remains supported
+  because it is an argument of one explicit graph node, not dynamic graph
+  topology.
+
+Related boundaries follow from that decision:
+
+- configuration parameters are ordinary typed host-language values; Inframe
+  does not expose general OpenTofu input-variable declarations;
+- composition uses host-language functions and packages, not OpenTofu module
+  blocks or module binding generation;
+- host-language conditions may include or omit nodes only when the condition is
+  known while constructing the graph;
+- `ifThenElse` represents an unresolved value expression, but cannot select
+  whether a resource exists;
+- nested blocks may be constructed from known host-language collections, but
+  OpenTofu `dynamic` blocks are not represented;
+- ephemeral resources and provisioners are not represented.
+
+The supported resource meta-arguments are an explicit subset: provider
+selection, `depends_on`, `create_before_destroy`, `prevent_destroy`,
+`ignore_changes`, and `replace_triggered_by`. Replacement triggers accept only
+managed resources, matching OpenTofu's semantics. Other lifecycle features,
+including `enabled`, `destroy`, preconditions, and postconditions, are not
+currently modeled.
+
+New OpenTofu language features do not become implicitly supported when the
+OpenTofu binary is upgraded. Each feature must be added deliberately to Graph
+IR, validation, lowering, frontend types, and compatibility tests. Features
+that require an unknown value to change graph topology are outside this
+architecture unless that finite-graph invariant is reconsidered explicitly.
+
+---
+
 # 6. Three distinct intermediate representations
 
 A major maintainability decision is to **not reuse one representation for every stage**.
@@ -2111,6 +2157,24 @@ Fuzz Graph IR deserialization and validation.
 
 ---
 
+### 20.4.1 User infrastructure policy tests
+
+Infrastructure tests should primarily enforce cross-cutting invariants rather
+than repeat individual resource declarations. A policy evaluates the completed
+graph, reports every violating address, and does not contact a provider.
+
+For example, a repository can build its production graph and assert that every
+DigitalOcean database's `private_network_uuid` is a symbolic reference to a
+managed `digitalocean_vpc` resource. The README contains a runnable version of
+that test using today's Graph IR. A native policy API should eventually make
+the same rule reusable and provide structured diagnostics.
+
+Policies over symbolic expressions need three outcomes: pass, violation, and
+unknown. Unknown rules can be evaluated against machine-readable OpenTofu plan
+JSON once provider defaults and computed values are available.
+
+---
+
 ## 20.5 OpenTofu lowering golden tests
 
 For small Graph IR fixtures, compare exact `.tofu.json`.
@@ -2491,15 +2555,18 @@ Do not prematurely generate the entire function universe.
 
 ## 26.4 `for_each` and `count`
 
-The frontend can often avoid them by expanding known collections directly into explicit resources.
-
-Support native `for_each`/`count` only when unresolved or very large graphs make them useful.
+The frontend expands known host-language collections into explicit resources.
+Native `for_each` and `count` are deliberately unsupported because an
+OpenTofu-computed collection would make graph cardinality unknown during graph
+construction. Adding either requires an explicit revision of the finite-graph
+boundary in section 5.1, not just a lowering shortcut.
 
 ## 26.5 Module support
 
-Later, add a separate module-introspection source that feeds the same Binding Model.
-
-Do not mix module semantics into provider-schema normalization.
+OpenTofu modules are deliberately unsupported; host-language functions and
+packages are Inframe's composition mechanism. Any future module-introspection
+feature would require a separately designed schema source and compatibility
+contract. It must not be mixed into provider-schema normalization.
 
 ## 26.6 Graph IR format
 

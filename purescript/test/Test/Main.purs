@@ -8,7 +8,7 @@ import Data.String.Pattern (Pattern(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Test.Assert (assert)
-import Inframe.Builder (Infra, InputObject, addResource, createBeforeDestroy, dependsOn, inputObject, insertInputField, output, requireProvider, resourceOptions, sensitiveOutput)
+import Inframe.Builder (Infra, InputObject, addResource, createBeforeDestroy, dependsOn, inputObject, insertInputField, output, replaceTriggeredBy, requireProvider, resourceOptions, sensitiveOutput)
 import Inframe.Core (argument, call, ifThenElse, inputJson, interpolate, lit, resourceAttr, secretEnv, template, text)
 import Inframe.Json (renderGraph)
 
@@ -20,7 +20,7 @@ program = do
   network <- addResource resourceOptions "digitalocean_vpc" "network" $ inputObject
     [ Tuple "name" (inputJson (lit "network")) ]
   tag <- addResource
-    (resourceOptions # dependsOn network # createBeforeDestroy true)
+    (resourceOptions # dependsOn network # replaceTriggeredBy network # createBeforeDestroy true)
     "digitalocean_tag"
     "app"
     $ inputObject
@@ -41,6 +41,7 @@ main = do
   assert $ contains (Pattern "resource_attr") rendered
   assert $ contains (Pattern "required_providers") rendered
   assert $ contains (Pattern "create_before_destroy") rendered
+  assert $ contains (Pattern "replace_triggered_by") rendered
   assert $ contains (Pattern "secret_env") rendered
   assert $ contains (Pattern "conditional") rendered
   assert $ contains (Pattern "function") rendered

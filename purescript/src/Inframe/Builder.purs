@@ -112,7 +112,7 @@ preventDestroy enabled = updateLifecycle \lifecycle -> lifecycle { preventDestro
 ignoreChanges :: forall provider. Array String -> ResourceOptions provider -> ResourceOptions provider
 ignoreChanges paths = updateLifecycle \lifecycle -> lifecycle { ignoreChanges = paths }
 
-replaceTriggeredBy :: forall provider handle. Dependable handle => handle -> ResourceOptions provider -> ResourceOptions provider
+replaceTriggeredBy :: forall provider resource. Resource resource -> ResourceOptions provider -> ResourceOptions provider
 replaceTriggeredBy handle = updateLifecycle \lifecycle -> lifecycle
   { replaceTriggeredBy = appendUnique (dependencyAddress handle) lifecycle.replaceTriggeredBy }
 
