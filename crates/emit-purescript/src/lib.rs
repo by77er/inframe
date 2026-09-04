@@ -251,6 +251,10 @@ fn render_item(
         output.push_str(&render_setter(field, &[]));
     }
     let handle_fields: Vec<_> = item.outputs().collect();
+    output.push_str(&render_record_documentation(
+        &format!("A symbolic handle to `{}`.", item.provider_type),
+        &handle_fields,
+    ));
     let _ = write!(output, "type {handle_name} =\n  {{ ");
     output.push_str(if data_source {
         "dataSource :: DataSource "
@@ -326,6 +330,73 @@ fn module_header(module: &str, exports: &[String]) -> String {
     }
     output.push_str("\n  ) where\n\n");
     output
+}
+
+fn render_doc_comment(description: &str) -> String {
+    let description = description.trim();
+    if description.is_empty() {
+        return String::new();
+    }
+    let mut output = String::new();
+    for line in description.lines() {
+        if line.trim().is_empty() {
+            output.push_str("-- |\n");
+        } else {
+            let _ = writeln!(output, "-- | {}", line.trim_end());
+        }
+    }
+    output
+}
+
+fn render_record_documentation(summary: &str, fields: &[&BindingField]) -> String {
+    let mut output = render_doc_comment(summary);
+    let mut entries = Vec::new();
+    for field in fields {
+        collect_field_documentation(field, "", &mut entries);
+    }
+    if entries.is_empty() {
+        return output;
+    }
+    output.push_str("-- |\n");
+    for (path, description) in entries {
+        let mut lines = description.lines();
+        let first = lines.next().unwrap_or_default().trim_end();
+        let _ = writeln!(output, "-- | - `{path}`: {first}");
+        for line in lines {
+            if line.trim().is_empty() {
+                output.push_str("-- |\n");
+            } else {
+                let _ = writeln!(output, "-- |   {}", line.trim_end());
+            }
+        }
+    }
+    output
+}
+
+fn collect_field_documentation<'a>(
+    field: &'a BindingField,
+    parent_path: &str,
+    entries: &mut Vec<(String, &'a str)>,
+) {
+    let name = safe_field_name(field);
+    let path = if parent_path.is_empty() {
+        name
+    } else {
+        format!("{parent_path}.{name}")
+    };
+    if let Some(description) = field
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+    {
+        entries.push((path.clone(), description));
+    }
+    if let Some(container) = nested_container(&field.r#type) {
+        for child in container.fields() {
+            collect_field_documentation(child, &path, entries);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -569,10 +640,12 @@ fn render_nested_builder(builder: &NestedBuilder<'_>) -> String {
         .iter()
         .filter(|field| field.required)
         .collect();
-    let mut output = format!(
-        "newtype {type_name} = {type_name} InputObject\n\n\
-         type {required_name} =\n  {{"
-    );
+    let mut output = format!("newtype {type_name} = {type_name} InputObject\n\n");
+    output.push_str(&render_record_documentation(
+        &format!("Required fields for `{type_name}`."),
+        &required,
+    ));
+    let _ = write!(output, "type {required_name} =\n  {{");
     render_required_fields(&mut output, &required, &builder.path);
     let _ = write!(
         output,
@@ -599,7 +672,8 @@ fn render_nested_builder(builder: &NestedBuilder<'_>) -> String {
 
 fn render_args(fields: &[BindingField]) -> String {
     let required: Vec<_> = fields.iter().filter(|field| field.required).collect();
-    let mut output = String::from("type Required =\n  {");
+    let mut output = render_record_documentation("Required arguments.", &required);
+    output.push_str("type Required =\n  {");
     render_required_fields(&mut output, &required, &[]);
     output.push_str("\n  }\n\nnewtype Args = Args InputObject\n\n");
     let required_argument = if required.is_empty() { "_" } else { "required" };
@@ -645,11 +719,18 @@ fn render_setter(field: &BindingField, parent_path: &[String]) -> String {
     let path = child_path(parent_path, field);
     let input_type = render_input_type(&field.r#type, &path);
     let encoded = render_input_node("value", &field.r#type, &path);
-    format!(
+    let mut output = field
+        .description
+        .as_deref()
+        .map(render_doc_comment)
+        .unwrap_or_default();
+    let _ = write!(
+        output,
         "{name} :: {input_type} -> Args -> Args\n\
          {name} value (Args values) = Args (insertInputField \"{}\" ({encoded}) values)\n\n",
         field.provider_name
-    )
+    );
+    output
 }
 
 fn render_nested_setter(builder: &NestedBuilder<'_>, field: &BindingField) -> String {
@@ -658,11 +739,18 @@ fn render_nested_setter(builder: &NestedBuilder<'_>, field: &BindingField) -> St
     let input_type = render_input_type(&field.r#type, &path);
     let encoded = render_input_node("value", &field.r#type, &path);
     let type_name = builder_type_name(&builder.path);
-    format!(
+    let mut output = field
+        .description
+        .as_deref()
+        .map(render_doc_comment)
+        .unwrap_or_default();
+    let _ = write!(
+        output,
         "{name} :: {input_type} -> {type_name} -> {type_name}\n\
          {name} value ({type_name} values) = {type_name} (insertInputField \"{}\" ({encoded}) values)\n\n",
         field.provider_name
-    )
+    );
+    output
 }
 
 fn render_input_type(r#type: &BindingType, path: &[String]) -> String {
@@ -805,7 +893,7 @@ mod tests {
             sensitive: false,
             block: false,
             target_reserved: false,
-            description: None,
+            description: Some("The tag name.\nMust be unique within the account.".into()),
         };
         let id = BindingField {
             provider_name: "id".into(),
@@ -817,7 +905,7 @@ mod tests {
             sensitive: false,
             block: false,
             target_reserved: false,
-            description: None,
+            description: Some("The provider-assigned tag identifier.".into()),
         };
         let nested_field = |provider_name: &str,
                             public_name: &str,
@@ -836,27 +924,32 @@ mod tests {
             target_reserved: false,
             description: None,
         };
+        let nested_name = nested_field("name", "name", BindingType::String, true, false, false);
+        let mut auto_scale = nested_field(
+            "auto_scale",
+            "autoScale",
+            BindingType::Bool,
+            false,
+            true,
+            false,
+        );
+        auto_scale.description = Some("Whether automatic scaling is enabled.".into());
+        let mut actual_node_count = nested_field(
+            "actual_node_count",
+            "actualNodeCount",
+            BindingType::Number,
+            false,
+            false,
+            true,
+        );
+        actual_node_count.description = Some("The current number of nodes.".into());
         let mut node_pool = nested_field(
             "node_pool",
             "nodePool",
             BindingType::List(Box::new(BindingType::Object(vec![
-                nested_field("name", "name", BindingType::String, true, false, false),
-                nested_field(
-                    "auto_scale",
-                    "autoScale",
-                    BindingType::Bool,
-                    false,
-                    true,
-                    false,
-                ),
-                nested_field(
-                    "actual_node_count",
-                    "actualNodeCount",
-                    BindingType::Number,
-                    false,
-                    false,
-                    true,
-                ),
+                nested_name,
+                auto_scale,
+                actual_node_count,
             ]))),
             true,
             false,
@@ -906,9 +999,16 @@ mod tests {
         assert!(source.contains("newtype NodePool = NodePool InputObject"));
         assert!(source.contains("type NodePoolRequired =\n  { name :: Input String"));
         assert!(source.contains("nodePoolAutoScale :: Input Boolean -> NodePool -> NodePool"));
+        assert!(
+            source.contains("-- | Whether automatic scaling is enabled.\nnodePoolAutoScale ::")
+        );
         assert!(!source.contains("nodePoolActualNodeCount ::"));
         assert!(source.contains("nodePool :: Array NodePool"));
         assert!(source.contains("nodePool: resourceAttr handle [ \"node_pool\" ]"));
+        assert!(source.contains("-- | - `name`: The tag name."));
+        assert!(source.contains("-- |   Must be unique within the account."));
+        assert!(source.contains("-- | - `id`: The provider-assigned tag identifier."));
+        assert!(source.contains("-- | - `nodePool.actualNodeCount`: The current number of nodes."));
         assert!(
             source.contains(
                 "Tuple \"node_pool\" (arrayExprNode (map nodePoolNode required.nodePool))"

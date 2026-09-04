@@ -162,8 +162,11 @@ Generated adapters are ordinary PureScript source, so the PureScript language
 server provides completion, inferred signatures, hover types, and navigation
 after `spago build`. Open the configured `purescript` directory as the editor
 workspace (or add it as a workspace folder) so the language server finds its
-`spago.yaml`. Provider attribute descriptions are preserved during generation,
-but are not yet emitted as hover documentation.
+`spago.yaml`. Provider attribute descriptions are emitted as PureScript `-- |`
+documentation on generated setters and as field catalogs on `Required` and
+symbolic handle types. Those declarations appear in language-server hovers and
+generated compiler documentation; direct record-field hovers may show only the
+field type, depending on editor support.
 
 ### 3. Configure the project and stacks
 

@@ -232,6 +232,17 @@ type = "local"
             "requireProvider \"digitalocean\" \"digitalocean/digitalocean\" \"= 2.100.0\""
         )
     );
+    let provider = fs::read_to_string(
+        directory
+            .path()
+            .join("src/.generated/digitalocean/src/DigitalOcean/Provider.purs"),
+    )
+    .unwrap();
+    assert!(
+        provider.contains(
+            "-- | The token key for API operations.\ntoken :: Input String -> Args -> Args"
+        )
+    );
 }
 
 #[test]

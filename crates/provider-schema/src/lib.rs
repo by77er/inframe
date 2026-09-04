@@ -478,7 +478,11 @@ mod tests {
           "resource_schemas": {
             "digitalocean_tag": { "block": { "attributes": {
               "id": { "type": "string", "computed": true },
-              "name": { "type": "string", "required": true },
+              "name": {
+                "type": "string",
+                "required": true,
+                "description": "name of the tag"
+              },
               "node_pool": {
                 "nested_type": {
                   "nesting_mode": "list",
@@ -511,6 +515,10 @@ mod tests {
         assert!(tag.attributes["name"].required);
         assert!(tag.attributes["id"].computed);
         assert_eq!(tag.attributes["name"].r#type, SchemaType::String);
+        assert_eq!(
+            tag.attributes["name"].description.as_deref(),
+            Some("name of the tag")
+        );
         let SchemaType::List(node_pool) = &tag.attributes["node_pool"].r#type else {
             panic!("node_pool should be a list");
         };

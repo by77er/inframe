@@ -295,7 +295,7 @@ mod tests {
                         optional: false,
                         computed: false,
                         sensitive: false,
-                        description: None,
+                        description: Some("name of the tag".into()),
                     },
                 ),
                 (
@@ -323,6 +323,10 @@ mod tests {
         assert_eq!(package.resources[0].public_name, "Tag");
         assert_eq!(package.resources[0].required_inputs().count(), 1);
         assert_eq!(package.resources[0].optional_inputs().count(), 1);
+        assert_eq!(
+            package.resources[0].fields[0].description.as_deref(),
+            Some("name of the tag")
+        );
         assert!(package.resources[0].fields[1].target_reserved);
         assert!(package.resources[0].fields[1].sensitive);
     }
