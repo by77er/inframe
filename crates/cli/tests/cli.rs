@@ -361,3 +361,276 @@ fn requires_secrets_only_at_plan_execution_and_never_writes_their_values() {
     assert!(rendered.contains("inframe_secret_INFRAME_TEST_SECRET"));
     assert!(!rendered.contains("actual-secret-value"));
 }
+
+#[test]
+fn generates_lean_bindings_with_a_relative_core_dependency() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::write(
+        &project,
+        r#"[lean]
+directory = "infra"
+core = { path = "core" }
+
+[providers.digitalocean]
+source = "digitalocean/digitalocean"
+version = "2.100.0"
+module_root = "DigitalOcean"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/provider-schema/digitalocean-2.100.0.normalized.json");
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["provider", "generate", "--schema-json"])
+        .arg(fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "generated 79 resources and 77 data sources for `digitalocean` (Lean)",
+        ));
+
+    let package = directory.path().join("infra/.generated/digitalocean");
+    let resource = fs::read_to_string(package.join("DigitalOcean/Resource/Tag.lean")).unwrap();
+    assert!(resource.contains(
+        "requireProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\""
+    ));
+    assert!(resource.contains(
+        "def create (name : String) (a : Args) (valid : validIdentifier name = true := by decide)"
+    ));
+    let lakefile = fs::read_to_string(package.join("lakefile.toml")).unwrap();
+    assert!(lakefile.contains("[[require]]\nname = \"inframe\"\npath = \"../../../core\""));
+    assert!(package.join("lake-manifest.json").is_file());
+    assert!(package.join("lean-toolchain").is_file());
+    assert!(!directory.path().join("purescript").exists());
+}
+
+#[test]
+fn generates_both_frontends_from_one_fixture() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "example"
+
+[lean]
+
+[providers.digitalocean]
+source = "digitalocean/digitalocean"
+version = "2.100.0"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/provider-schema/digitalocean-2.100.0.normalized.json");
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["provider", "generate", "--schema-json"])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(PureScript) in"))
+        .stdout(predicate::str::contains("(Lean) in"));
+    assert!(
+        directory
+            .path()
+            .join("purescript/.generated/digitalocean/src/Digitalocean/Resource/Tag.purs")
+            .is_file()
+    );
+    let lakefile = fs::read_to_string(
+        directory
+            .path()
+            .join("lean/.generated/digitalocean/lakefile.toml"),
+    )
+    .unwrap();
+    assert!(lakefile.contains("git = \"https://github.com/by77er/inframe\""));
+    assert!(lakefile.contains("subDir = \"lean\""));
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["provider", "generate", "--schema-json"])
+        .arg(&fixture)
+        .arg("--output")
+        .arg(directory.path().join("elsewhere"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--output requires --frontend"));
+}
+
+#[test]
+fn requires_a_frontend_per_stack_when_both_are_configured() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "example"
+
+[lean]
+
+[stacks.dev.backend]
+type = "local"
+
+[stacks.typed]
+frontend = "lean"
+test = "policies"
+
+[stacks.typed.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "stack `dev` must set `frontend = \"purescript\"` or `frontend = \"lean\"`",
+        ));
+
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "example"
+
+[stacks.dev]
+frontend = "lean"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "selects the lean frontend but [lean] is not configured",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+fn runs_the_configured_lean_test_and_preserves_its_exit_code() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let bin = directory.path().join("bin");
+    let lake = bin.join("lake");
+    let invocation = directory.path().join("lake-args");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(
+        &project,
+        r#"[lean]
+directory = "lean"
+
+[stacks.dev]
+test = "policies"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &lake,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$INFRAME_TEST_ARGS\"\npwd >> \"$INFRAME_TEST_ARGS\"\nexit 23\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&lake).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&lake, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["test", "--stack", "dev"])
+        .env("PATH", path)
+        .env("INFRAME_TEST_ARGS", &invocation)
+        .assert()
+        .code(23);
+
+    let recorded = fs::read_to_string(invocation).unwrap();
+    assert!(recorded.starts_with("-q\nexe\npolicies\n"));
+    assert!(recorded.trim_end().ends_with("/lean"));
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_a_lean_stack_from_the_executable_output() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let bin = directory.path().join("bin");
+    let lake = bin.join("lake");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(
+        &project,
+        r#"[lean]
+main = "graph"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &lake,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"-q exe graph\" ] || exit 9\necho 'building...' >&2\ncat <<'GRAPH'\n{GRAPH}\nGRAPH\n"
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&lake).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&lake, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("built stack `dev`"));
+    let built = fs::read_to_string(directory.path().join(".inframe/graphs/dev.json")).unwrap();
+    assert!(built.contains("\"answer\""));
+}

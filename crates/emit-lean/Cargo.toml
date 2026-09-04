@@ -1,0 +1,15 @@
+[package]
+name = "inframe-emit-lean"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+inframe-binding-model = { path = "../binding-model" }
+
+[lints]
+workspace = true

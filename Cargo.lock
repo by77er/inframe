@@ -304,6 +304,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "inframe-binding-model",
+ "inframe-emit-lean",
  "inframe-emit-purescript",
  "inframe-graph-ir",
  "inframe-opentofu",
@@ -313,6 +314,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "inframe-emit-lean"
+version = "0.1.0"
+dependencies = [
+ "inframe-binding-model",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

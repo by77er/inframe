@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, env};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use inframe_binding_model::derive_bindings;
-use inframe_emit_purescript::render_package;
+use inframe_emit_lean::CoreDependency;
 use inframe_graph_ir::GraphDocument;
 use inframe_opentofu::{OpenTofu, Workspace, secret_variable_name, to_pretty_json};
 use inframe_provider_schema::{ProviderRequest, SchemaAcquirer, normalize_schema};
@@ -15,7 +15,9 @@ use inframe_provider_schema::{ProviderRequest, SchemaAcquirer, normalize_schema}
 mod inspect;
 mod project;
 
-use project::{DEFAULT_CONFIG, Project};
+use project::{
+    DEFAULT_CONFIG, Frontend, FrontendTarget, INFRAME_REPOSITORY, Project, ProviderGeneration,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,9 +42,9 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
-    /// Compile a configured PureScript stack to Graph IR without running `OpenTofu`.
+    /// Compile a configured PureScript or Lean stack to Graph IR without running `OpenTofu`.
     Build(BuildArgs),
-    /// Compile and run a configured PureScript infrastructure test entry point.
+    /// Compile and run a configured stack's infrastructure test entry point.
     Test(TestArgs),
     /// Acquire and generate provider bindings.
     Provider {
@@ -97,7 +99,7 @@ struct TestArgs {
 enum ProviderCommand {
     /// Print deterministic metadata about an acquired provider schema.
     Inspect(ProviderInspectArgs),
-    /// Generate an importable PureScript provider package.
+    /// Generate importable PureScript and/or Lean provider packages.
     Generate(ProviderGenerateArgs),
 }
 
@@ -132,6 +134,9 @@ struct ProviderGenerateArgs {
     /// Read a raw `tofu providers schema -json` fixture instead of acquiring it.
     #[arg(long)]
     schema_json: Option<PathBuf>,
+    /// Generate for only this frontend; defaults to every configured frontend.
+    #[arg(long, value_enum)]
+    frontend: Option<Frontend>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -249,7 +254,8 @@ fn test_project(arguments: &TestArgs, project_path: &Path) -> Result<()> {
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!(
-            "PureScript tests for stack `{}` terminated by signal",
+            "{} tests for stack `{}` terminated by signal",
+            project.stack_frontend(&arguments.stack)?.name(),
             arguments.stack
         ),
     }
@@ -282,56 +288,81 @@ fn provider_command(
     }
 }
 
-#[derive(Debug)]
-struct ProviderGeneration {
-    source: String,
-    version: String,
-    module_root: String,
-    output: PathBuf,
-}
-
+#[allow(clippy::too_many_lines)]
 fn generate_providers(
     arguments: ProviderGenerateArgs,
     project_path: &Path,
     tofu_binary: &Path,
 ) -> Result<()> {
-    let mut providers = if let (Some(source), Some(version)) =
+    let project = project_path
+        .is_file()
+        .then(|| Project::load(project_path))
+        .transpose()?;
+    let mut generations = if let (Some(source), Some(version)) =
         (arguments.source.as_ref(), arguments.version.as_ref())
     {
         let name = arguments
             .provider
             .clone()
             .unwrap_or_else(|| provider_name(source).to_owned());
-        let output = match arguments.output.clone() {
-            Some(output) => output,
-            None if project_path.is_file() => {
-                Project::load(project_path)?.default_provider_output(&name)
-            }
-            None => PathBuf::from("purescript/.generated").join(&name),
+        let frontend = match (arguments.frontend, &project) {
+            (Some(frontend), _) => frontend,
+            (None, Some(project)) => match project.frontends().as_slice() {
+                [frontend] => *frontend,
+                _ => bail!(
+                    "both frontends are configured; pass --frontend purescript or --frontend lean"
+                ),
+            },
+            (None, None) => Frontend::PureScript,
+        };
+        let output = match (arguments.output.clone(), &project) {
+            (Some(output), _) => output,
+            (None, Some(project)) => project.default_provider_output(frontend, &name),
+            (None, None) => PathBuf::from(match frontend {
+                Frontend::PureScript => "purescript/.generated",
+                Frontend::Lean => "lean/.generated",
+            })
+            .join(&name),
+        };
+        let lean_core = match frontend {
+            Frontend::PureScript => None,
+            Frontend::Lean => Some(match &project {
+                Some(project) if project.frontends().contains(&Frontend::Lean) => {
+                    project.lean_core_dependency(&output)?
+                }
+                _ => CoreDependency::Git {
+                    url: INFRAME_REPOSITORY.to_owned(),
+                    rev: "main".to_owned(),
+                    sub_dir: Some("lean".to_owned()),
+                },
+            }),
         };
         vec![ProviderGeneration {
             source: source.clone(),
             version: version.clone(),
-            module_root: arguments
-                .module_root
-                .clone()
-                .unwrap_or_else(|| pascal_case(&name)),
-            output,
+            targets: vec![FrontendTarget {
+                frontend,
+                module_root: arguments
+                    .module_root
+                    .clone()
+                    .unwrap_or_else(|| pascal_case(&name)),
+                output,
+                lean_core,
+            }],
+            name,
         }]
     } else {
-        Project::load(project_path)?
-            .provider_generations(arguments.provider.as_deref())?
-            .into_iter()
-            .map(|provider| ProviderGeneration {
-                source: provider.source,
-                version: provider.version,
-                module_root: provider.module_root,
-                output: provider.output,
-            })
-            .collect()
+        let loaded;
+        let project = if let Some(project) = &project {
+            project
+        } else {
+            loaded = Project::load(project_path)?;
+            &loaded
+        };
+        project.provider_generations(arguments.provider.as_deref(), arguments.frontend)?
     };
 
-    if providers.len() > 1
+    if generations.len() > 1
         && (arguments.module_root.is_some()
             || arguments.output.is_some()
             || arguments.schema_json.is_some())
@@ -340,34 +371,62 @@ fn generate_providers(
             "--module-root, --output, and --schema-json require selecting one configured provider"
         );
     }
-    if let Some(provider) = providers.first_mut() {
+    if let Some(generation) = generations.first_mut() {
         if let Some(module_root) = arguments.module_root {
-            provider.module_root = module_root;
+            for target in &mut generation.targets {
+                target.module_root.clone_from(&module_root);
+            }
         }
         if let Some(output) = arguments.output {
-            provider.output = output;
+            let [target] = generation.targets.as_mut_slice() else {
+                bail!("--output requires --frontend when both frontends are configured");
+            };
+            if target.frontend == Frontend::Lean {
+                if let Some(project) = &project {
+                    target.lean_core = Some(project.lean_core_dependency(&output)?);
+                }
+            }
+            target.output = output;
         }
     }
 
-    for provider in providers {
+    for generation in generations {
         let request = ProviderRequest {
-            source: provider.source,
-            version: provider.version,
+            source: generation.source,
+            version: generation.version,
         };
         let schema = load_provider_schema(&request, arguments.schema_json.clone(), tofu_binary)?;
         let hash = schema.sha256()?;
         let bindings = derive_bindings(&schema).context("failed to derive provider bindings")?;
-        let generated = render_package(&bindings, &provider.module_root, &hash)
-            .context("failed to render PureScript package")?;
-        generated
-            .write_to(&provider.output)
-            .with_context(|| format!("failed to write {}", provider.output.display()))?;
-        println!(
-            "generated {} resources and {} data sources in {}",
-            bindings.resources.len(),
-            bindings.data_sources.len(),
-            provider.output.display()
-        );
+        for target in generation.targets {
+            let written = match target.frontend {
+                Frontend::PureScript => {
+                    inframe_emit_purescript::render_package(&bindings, &target.module_root, &hash)
+                        .context("failed to render PureScript package")?
+                        .write_to(&target.output)
+                        .map_err(anyhow::Error::from)
+                }
+                Frontend::Lean => {
+                    let core = target
+                        .lean_core
+                        .as_ref()
+                        .context("missing Lean core dependency")?;
+                    inframe_emit_lean::render_package(&bindings, &target.module_root, &hash, core)
+                        .context("failed to render Lean package")?
+                        .write_to(&target.output)
+                        .map_err(anyhow::Error::from)
+                }
+            };
+            written.with_context(|| format!("failed to write {}", target.output.display()))?;
+            println!(
+                "generated {} resources and {} data sources for `{}` ({}) in {}",
+                bindings.resources.len(),
+                bindings.data_sources.len(),
+                generation.name,
+                target.frontend.name(),
+                target.output.display()
+            );
+        }
     }
     Ok(())
 }

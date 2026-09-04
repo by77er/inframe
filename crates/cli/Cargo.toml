@@ -16,6 +16,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 inframe-binding-model = { path = "../binding-model" }
+inframe-emit-lean = { path = "../emit-lean" }
 inframe-emit-purescript = { path = "../emit-purescript" }
 inframe-graph-ir = { path = "../graph-ir" }
 inframe-opentofu = { path = "../opentofu" }

@@ -1,0 +1,1266 @@
+//! Deterministic Lean 4 provider-binding emitter.
+//!
+//! Renders a language-neutral [`BindingPackage`] into a Lake package whose modules mirror
+//! the PureScript adapters: one module per resource and data source, a provider module,
+//! required-argument structures, optional-argument setters, nested block builders, and
+//! typed symbolic handles. Logical names are validated at compile time through the core
+//! library's `Identifier` proofs.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use inframe_binding_model::{
+    BindingField, BindingItem, BindingPackage, BindingProvider, BindingType,
+};
+use serde::Serialize;
+use thiserror::Error;
+
+/// The Lean toolchain pinned by generated packages and by the core library.
+pub const LEAN_TOOLCHAIN: &str = "leanprover/lean4:v4.33.1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedPackage {
+    pub files: BTreeMap<PathBuf, String>,
+}
+
+impl GeneratedPackage {
+    pub fn write_to(&self, output: &Path) -> Result<(), EmitError> {
+        for (relative_path, contents) in &self.files {
+            let path = output.join(relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, contents)?;
+        }
+        Ok(())
+    }
+}
+
+/// How the generated Lake package locates the `inframe` core library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreDependency {
+    /// A relative path written verbatim into the lakefile.
+    Path(String),
+    /// A git requirement.
+    Git {
+        url: String,
+        rev: String,
+        sub_dir: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct Manifest<'a> {
+    provider_source: &'a str,
+    provider_version: &'a str,
+    schema_sha256: &'a str,
+    generator_version: &'a str,
+    binding_model_version: &'static str,
+    graph_ir_version: &'static str,
+    lean_toolchain: &'static str,
+}
+
+#[derive(Debug, Error)]
+pub enum EmitError {
+    #[error("invalid Lean module root `{0}`")]
+    InvalidModuleRoot(String),
+    #[error("failed to write generated package")]
+    Io(#[from] std::io::Error),
+    #[error("failed to render provider manifest")]
+    Json(#[from] serde_json::Error),
+}
+
+pub fn render_package(
+    package: &BindingPackage,
+    module_root: &str,
+    schema_sha256: &str,
+    core: &CoreDependency,
+) -> Result<GeneratedPackage, EmitError> {
+    if !valid_module_root(module_root) {
+        return Err(EmitError::InvalidModuleRoot(module_root.to_owned()));
+    }
+    let mut files = BTreeMap::new();
+    let mut modules = vec![format!("{module_root}.Provider")];
+    files.insert(
+        module_path(&format!("{module_root}.Provider")),
+        render_provider(package, module_root),
+    );
+    for resource in &package.resources {
+        let module = format!("{module_root}.Resource.{}", resource.public_name);
+        files.insert(
+            module_path(&module),
+            render_item(resource, &module, module_root, &package.provider, false),
+        );
+        modules.push(module);
+    }
+    for data_source in &package.data_sources {
+        let module = format!("{module_root}.Data.{}", data_source.public_name);
+        files.insert(
+            module_path(&module),
+            render_item(data_source, &module, module_root, &package.provider, true),
+        );
+        modules.push(module);
+    }
+    let mut root = header_comment(&package.provider);
+    for module in &modules {
+        let _ = writeln!(root, "import {module}");
+    }
+    files.insert(module_path(module_root), root);
+    let manifest = Manifest {
+        provider_source: &package.provider.source,
+        provider_version: &package.provider.version,
+        schema_sha256,
+        generator_version: env!("CARGO_PKG_VERSION"),
+        binding_model_version: "1.0",
+        graph_ir_version: "1.0",
+        lean_toolchain: LEAN_TOOLCHAIN,
+    };
+    let mut manifest = serde_json::to_string_pretty(&manifest)?;
+    manifest.push('\n');
+    files.insert(PathBuf::from("provider-manifest.json"), manifest);
+    files.insert(
+        PathBuf::from("README.md"),
+        format!(
+            "# {module_root}\n\nGenerated Lean 4 bindings for `{}` `{}`. Do not edit by hand.\n",
+            package.provider.source, package.provider.version
+        ),
+    );
+    files.insert(
+        PathBuf::from("lean-toolchain"),
+        format!("{LEAN_TOOLCHAIN}\n"),
+    );
+    files.insert(
+        PathBuf::from("lakefile.toml"),
+        render_lakefile(package, module_root, core),
+    );
+    if let CoreDependency::Path(path) = core {
+        files.insert(
+            PathBuf::from("lake-manifest.json"),
+            render_manifest(&package.provider, path),
+        );
+    }
+    Ok(GeneratedPackage { files })
+}
+
+/// Lake's manifest for a package whose only dependency is a local checkout of the core
+/// library. Git dependencies record a resolved commit, which only Lake can compute, so
+/// those packages let `lake` create the manifest on first use.
+fn render_manifest(provider: &BindingProvider, core_path: &str) -> String {
+    let manifest = serde_json::json!({
+        "version": "1.2.0",
+        "packagesDir": ".lake/packages",
+        "packages": [{
+            "type": "path",
+            "scope": "",
+            "name": "inframe",
+            "manifestFile": "lake-manifest.json",
+            "inherited": false,
+            "dir": core_path,
+            "configFile": "lakefile.toml"
+        }],
+        "name": format!("«generated-{}»", provider.public_name.to_ascii_lowercase()),
+        "lakeDir": ".lake",
+        "fixedToolchain": false
+    });
+    let mut output = serde_json::to_string_pretty(&manifest).unwrap_or_default();
+    output.push('\n');
+    output
+}
+
+fn render_lakefile(package: &BindingPackage, module_root: &str, core: &CoreDependency) -> String {
+    let mut output = format!(
+        "name = \"generated-{}\"\nversion = \"{}\"\ndefaultTargets = [\"{module_root}\"]\n\n[[require]]\nname = \"inframe\"\n",
+        package.provider.public_name.to_ascii_lowercase(),
+        lake_version(&package.provider.version)
+    );
+    match core {
+        CoreDependency::Path(path) => {
+            let _ = writeln!(output, "path = \"{}\"", escape_toml(path));
+        }
+        CoreDependency::Git { url, rev, sub_dir } => {
+            let _ = writeln!(output, "git = \"{}\"", escape_toml(url));
+            let _ = writeln!(output, "rev = \"{}\"", escape_toml(rev));
+            if let Some(sub_dir) = sub_dir {
+                let _ = writeln!(output, "subDir = \"{}\"", escape_toml(sub_dir));
+            }
+        }
+    }
+    let _ = write!(
+        output,
+        "\n[[lean_lib]]\nname = \"{module_root}\"\nglobs = [\"{module_root}.*\"]\n"
+    );
+    output
+}
+
+/// Lake requires a semantic version; provider versions such as `2.100.0` already qualify,
+/// anything else falls back to `0.0.0`.
+fn lake_version(version: &str) -> &str {
+    let mut parts = version.split('.');
+    let numeric = |part: Option<&str>| {
+        part.is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    };
+    if numeric(parts.next())
+        && numeric(parts.next())
+        && numeric(parts.next())
+        && parts.next().is_none()
+    {
+        version
+    } else {
+        "0.0.0"
+    }
+}
+
+fn escape_toml(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn valid_module_root(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|segment| {
+            segment
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_uppercase())
+                && segment
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+}
+
+fn module_path(module: &str) -> PathBuf {
+    PathBuf::from(module.replace('.', "/") + ".lean")
+}
+
+fn header_comment(provider: &BindingProvider) -> String {
+    format!(
+        "-- Generated by inframe from `{}` {}. Do not edit by hand.\n",
+        provider.source, provider.version
+    )
+}
+
+fn provider_marker(module_root: &str) -> String {
+    format!(
+        "{}Provider",
+        module_root.rsplit('.').next().unwrap_or(module_root)
+    )
+}
+
+fn provider_local_name_from_source(source: &str) -> &str {
+    source.rsplit('/').next().unwrap_or(source)
+}
+
+fn render_provider(package: &BindingPackage, module_root: &str) -> String {
+    let provider = &package.provider;
+    let fields = &provider.fields;
+    let marker = provider_marker(module_root);
+    let mut output = header_comment(provider);
+    let _ = write!(
+        output,
+        "import Inframe\n\nnamespace {module_root}.Provider\n\nopen Inframe\n\n"
+    );
+    let _ = write!(
+        output,
+        "/-- Phantom type tagging handles to configured `{}` providers. -/\ninductive {marker}\n\n",
+        provider.source
+    );
+    output.push_str(&render_nested_types(fields, &[&marker]));
+    output.push_str(&render_args(
+        fields,
+        &format!("the `{}` provider", provider.source),
+    ));
+    let local_name = provider_local_name_from_source(&provider.source);
+    let version = format!("= {}", provider.version);
+    let _ = write!(
+        output,
+        "/-- Configure the default `{local_name}` provider. -/\n\
+         def configure (a : Args) : Infra (Inframe.Provider {marker}) :=\n  \
+           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.values\n\n\
+         /-- Configure an aliased `{local_name}` provider. The alias is validated at compile time. -/\n\
+         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by decide) :\n    \
+           Infra (Inframe.Provider {marker}) :=\n  \
+           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.values\n\n\
+         end {module_root}.Provider\n",
+        escape_string(&provider.source),
+        escape_string(&provider.source)
+    );
+    output
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_item(
+    item: &BindingItem,
+    module: &str,
+    module_root: &str,
+    provider: &BindingProvider,
+    data_source: bool,
+) -> String {
+    let marker = provider_marker(module_root);
+    let node = format!(
+        "{}{}",
+        item.public_name,
+        if data_source {
+            "DataSource"
+        } else {
+            "Resource"
+        }
+    );
+    let handle_name = safe_handle_name(&item.public_name, &node);
+    let kind = if data_source {
+        "data source"
+    } else {
+        "resource"
+    };
+    let mut output = header_comment(provider);
+    let _ = write!(
+        output,
+        "import Inframe\nimport {module_root}.Provider\n\nnamespace {module}\n\nopen Inframe\n\n"
+    );
+    let _ = write!(
+        output,
+        "/-- Phantom type tagging handles to `{}` {kind}s. -/\ninductive {node}\n\n",
+        item.provider_type
+    );
+    output.push_str(&render_nested_types(&item.fields, &[&handle_name, &node]));
+    output.push_str(&render_args(
+        &item.fields,
+        &format!("`{}`", item.provider_type),
+    ));
+    let handle_fields: Vec<_> = item.outputs().collect();
+    let handle_reserved: &[&str] = if data_source {
+        &["dataSource"]
+    } else {
+        &["resource"]
+    };
+    let _ = write!(
+        output,
+        "/-- A symbolic handle to `{}`. Every field is an unresolved OpenTofu expression. -/\nstructure {handle_name} where\n",
+        item.provider_type
+    );
+    if data_source {
+        let _ = writeln!(output, "  dataSource : DataSource {node}");
+    } else {
+        let _ = writeln!(output, "  resource : Resource {node}");
+    }
+    for field in &handle_fields {
+        output.push_str(&indent_doc(&field_documentation(field), "  "));
+        let _ = writeln!(
+            output,
+            "  {} : Expr {}",
+            safe_field_name(field, handle_reserved),
+            render_type_argument(&field.r#type, std::slice::from_ref(&field.public_name))
+        );
+    }
+    output.push('\n');
+    let (operation, operation_with, options_type, default_options, add, attr, handle_key) =
+        if data_source {
+            (
+                "read",
+                "readWith",
+                "DataSourceOptions",
+                "dataSourceOptions",
+                "addDataSource",
+                "dataSourceAttr",
+                "dataSource",
+            )
+        } else {
+            (
+                "create",
+                "createWith",
+                "ResourceOptions",
+                "resourceOptions",
+                "addResource",
+                "resourceAttr",
+                "resource",
+            )
+        };
+    let local_name = provider_local_name_from_source(&provider.source);
+    let _ = write!(
+        output,
+        "/-- Add `{}.<name>` to the graph with explicit options. The logical name is validated at\ncompile time. -/\n\
+         def {operation_with} (name : String) (a : Args) (options : {options_type} {module_root}.Provider.{marker})\n    \
+           (valid : validIdentifier name = true := by decide) : Infra {handle_name} := do\n  \
+           requireProvider (Identifier.mk \"{local_name}\") \"{}\" \"= {}\"\n  \
+           let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.values\n  \
+           pure\n    {{ {handle_key} := handle",
+        item.provider_type,
+        escape_string(&provider.source),
+        escape_string(&provider.version),
+        item.provider_type
+    );
+    for field in &handle_fields {
+        let _ = write!(
+            output,
+            "\n      {} := {attr} handle [\"{}\"]",
+            safe_field_name(field, handle_reserved),
+            escape_string(&field.provider_name)
+        );
+    }
+    let _ = write!(
+        output,
+        " }}\n\n\
+         /-- Add `{}.<name>` to the graph with default options. -/\n\
+         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by decide) :\n    \
+           Infra {handle_name} :=\n  \
+           {operation_with} name a {default_options} valid\n\n\
+         end {module}\n",
+        item.provider_type
+    );
+    output
+}
+
+fn render_args(fields: &[BindingField], subject: &str) -> String {
+    let required: Vec<_> = fields.iter().filter(|field| field.required).collect();
+    let mut output =
+        format!("/-- Required arguments for {subject}. -/\nstructure Required where\n");
+    render_required_fields(&mut output, &required, &[]);
+    let _ = write!(
+        output,
+        "\n/-- Arguments for {subject}. Build with `args` and refine with `Args.*` setters, for example\n`args {{ .. }} |>.someField (lit value)`. -/\nstructure Args where\n  values : InputObject\n\n"
+    );
+    let argument = if required.is_empty() { "_" } else { "required" };
+    let _ = write!(
+        output,
+        "def args ({argument} : Required) : Args :=\n  ⟨InputObject.ofList\n    ["
+    );
+    render_required_values(&mut output, &required, &[]);
+    output.push_str("]⟩\n\n");
+    for field in fields.iter().filter(|field| field.optional) {
+        output.push_str(&render_setter("Args", "a", field, &[]));
+    }
+    output
+}
+
+fn render_required_fields(output: &mut String, required: &[&BindingField], parent_path: &[String]) {
+    for field in required {
+        let path = child_path(parent_path, field);
+        output.push_str(&indent_doc(&field_documentation(field), "  "));
+        let _ = writeln!(
+            output,
+            "  {} : {}",
+            safe_field_name(field, &[]),
+            render_input_type(&field.r#type, &path)
+        );
+    }
+}
+
+fn render_required_values(output: &mut String, required: &[&BindingField], parent_path: &[String]) {
+    for (index, field) in required.iter().enumerate() {
+        let separator = if index == 0 { " " } else { "\n    , " };
+        let value = format!("required.{}", safe_field_name(field, &[]));
+        let path = child_path(parent_path, field);
+        let _ = write!(
+            output,
+            "{separator}(\"{}\", {})",
+            escape_string(&field.provider_name),
+            render_input_node(&value, &field.r#type, &path)
+        );
+    }
+    if !required.is_empty() {
+        output.push(' ');
+    }
+}
+
+fn render_setter(
+    type_name: &str,
+    receiver: &str,
+    field: &BindingField,
+    parent_path: &[String],
+) -> String {
+    let name = safe_field_name(field, SETTER_RESERVED);
+    let path = child_path(parent_path, field);
+    let input_type = render_input_type(&field.r#type, &path);
+    let encoded = render_input_node("value", &field.r#type, &path);
+    let mut output = field_documentation(field);
+    let _ = write!(
+        output,
+        "def {type_name}.{name} (value : {input_type}) ({receiver} : {type_name}) : {type_name} :=\n  \
+           ⟨{receiver}.values.insert \"{}\" ({encoded})⟩\n\n",
+        escape_string(&field.provider_name)
+    );
+    output
+}
+
+/// Nested object types reachable from a top-level field: builders for input blocks and
+/// phantom markers for computed-only shapes. Children are emitted before their parents so
+/// that setters can refer to the child's `toExprNode`.
+#[derive(Debug)]
+struct NestedType<'a> {
+    path: Vec<String>,
+    fields: &'a [BindingField],
+    builder: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NestedContainer<'a> {
+    Single(&'a [BindingField]),
+    Array(&'a [BindingField]),
+    Map(&'a [BindingField]),
+}
+
+impl<'a> NestedContainer<'a> {
+    fn fields(self) -> &'a [BindingField] {
+        match self {
+            Self::Single(fields) | Self::Array(fields) | Self::Map(fields) => fields,
+        }
+    }
+}
+
+fn nested_container(r#type: &BindingType) -> Option<NestedContainer<'_>> {
+    match r#type {
+        BindingType::Object(fields) => Some(NestedContainer::Single(fields)),
+        BindingType::List(item) | BindingType::Set(item) => match item.as_ref() {
+            BindingType::Object(fields) => Some(NestedContainer::Array(fields)),
+            _ => None,
+        },
+        BindingType::Map(item) => match item.as_ref() {
+            BindingType::Object(fields) => Some(NestedContainer::Map(fields)),
+            _ => None,
+        },
+        BindingType::String
+        | BindingType::Bool
+        | BindingType::Number
+        | BindingType::Tuple(_)
+        | BindingType::Dynamic => None,
+    }
+}
+
+/// The object shape behind any number of collection layers, if there is exactly one.
+fn object_fields(r#type: &BindingType) -> Option<&[BindingField]> {
+    match r#type {
+        BindingType::Object(fields) => Some(fields),
+        BindingType::List(item) | BindingType::Set(item) | BindingType::Map(item) => {
+            object_fields(item)
+        }
+        BindingType::String
+        | BindingType::Bool
+        | BindingType::Number
+        | BindingType::Tuple(_)
+        | BindingType::Dynamic => None,
+    }
+}
+
+fn collect_nested_types(fields: &[BindingField]) -> Vec<NestedType<'_>> {
+    fn visit_builder<'a>(
+        field: &'a BindingField,
+        parent_path: &[String],
+        types: &mut Vec<NestedType<'a>>,
+    ) {
+        if !field.required && !field.optional {
+            return;
+        }
+        let Some(container) = nested_container(&field.r#type) else {
+            return;
+        };
+        let path = child_path(parent_path, field);
+        for child in container.fields() {
+            visit_builder(child, &path, types);
+        }
+        types.push(NestedType {
+            path,
+            fields: container.fields(),
+            builder: true,
+        });
+    }
+
+    let mut types = Vec::new();
+    for field in fields {
+        let path = vec![field.public_name.clone()];
+        if (field.required || field.optional) && nested_container(&field.r#type).is_some() {
+            visit_builder(field, &[], &mut types);
+        } else if let Some(fields) = object_fields(&field.r#type) {
+            types.push(NestedType {
+                path,
+                fields,
+                builder: false,
+            });
+        }
+    }
+    types
+}
+
+fn render_nested_types(fields: &[BindingField], reserved: &[&str]) -> String {
+    let mut output = String::new();
+    for nested in collect_nested_types(fields) {
+        if nested.builder {
+            output.push_str(&render_nested_builder(&nested, reserved));
+        } else {
+            output.push_str(&render_nested_marker(&nested, reserved));
+        }
+    }
+    output
+}
+
+fn render_nested_marker(nested: &NestedType<'_>, reserved: &[&str]) -> String {
+    let type_name = nested_type_name(&nested.path, reserved);
+    let mut doc = format!(
+        "The shape of the computed `{}` attribute.",
+        nested.path.join(".")
+    );
+    if !nested.fields.is_empty() {
+        doc.push('\n');
+        for field in nested.fields {
+            match field
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+            {
+                Some(description) => {
+                    let _ = write!(
+                        doc,
+                        "\n- `{}`: {}",
+                        field.public_name,
+                        first_line(description)
+                    );
+                }
+                None => {
+                    let _ = write!(doc, "\n- `{}`", field.public_name);
+                }
+            }
+        }
+    }
+    format!("{}inductive {type_name}\n\n", doc_comment(&doc))
+}
+
+fn render_nested_builder(nested: &NestedType<'_>, reserved: &[&str]) -> String {
+    let type_name = nested_type_name(&nested.path, reserved);
+    let required_name = format!("{type_name}Required");
+    let constructor_name = format!("{}Args", builder_prefix(&nested.path));
+    let provider_path = nested.path.join(".");
+    let required: Vec<_> = nested
+        .fields
+        .iter()
+        .filter(|field| field.required)
+        .collect();
+    let mut output = format!(
+        "/-- Builder for the `{provider_path}` block. Start with `{constructor_name}` and refine with\n`{type_name}.*` setters. -/\nstructure {type_name} where\n  values : InputObject\n\n"
+    );
+    let _ = write!(
+        output,
+        "/-- Required fields of `{type_name}`. -/\nstructure {required_name} where\n"
+    );
+    render_required_fields(&mut output, &required, &nested.path);
+    let argument = if required.is_empty() { "_" } else { "required" };
+    let _ = write!(
+        output,
+        "\ndef {constructor_name} ({argument} : {required_name}) : {type_name} :=\n  ⟨InputObject.ofList\n    ["
+    );
+    render_required_values(&mut output, &required, &nested.path);
+    output.push_str("]⟩\n\n");
+    for field in nested.fields.iter().filter(|field| field.optional) {
+        output.push_str(&render_setter(&type_name, "block", field, &nested.path));
+    }
+    let _ = write!(
+        output,
+        "def {type_name}.toExprNode (block : {type_name}) : ExprNode :=\n  block.values.toExprNode\n\n"
+    );
+    output
+}
+
+fn render_input_type(r#type: &BindingType, path: &[String]) -> String {
+    match nested_container(r#type) {
+        Some(NestedContainer::Single(_)) => nested_type_name(path, &[]),
+        Some(NestedContainer::Array(_)) => format!("List {}", nested_type_name(path, &[])),
+        Some(NestedContainer::Map(_)) => {
+            format!("List (String × {})", nested_type_name(path, &[]))
+        }
+        None => format!("Input {}", render_type_argument(r#type, path)),
+    }
+}
+
+fn render_input_node(value: &str, r#type: &BindingType, path: &[String]) -> String {
+    let type_name = nested_type_name(path, &[]);
+    match nested_container(r#type) {
+        Some(NestedContainer::Single(_)) => format!("{type_name}.toExprNode {value}"),
+        Some(NestedContainer::Array(_)) => {
+            format!("ExprNode.array ({value}.map {type_name}.toExprNode)")
+        }
+        Some(NestedContainer::Map(_)) => format!(
+            "ExprNode.object ({value}.map fun (key, block) => (key, {type_name}.toExprNode block))"
+        ),
+        None => format!("inputNode {value}"),
+    }
+}
+
+fn render_type(r#type: &BindingType, path: &[String]) -> String {
+    match r#type {
+        BindingType::String => "String".into(),
+        BindingType::Bool => "Bool".into(),
+        BindingType::Number => "Number".into(),
+        BindingType::List(item) | BindingType::Set(item) => {
+            format!("List {}", render_type_argument(item, path))
+        }
+        BindingType::Map(item) => format!("Map {}", render_type_argument(item, path)),
+        BindingType::Tuple(_) | BindingType::Dynamic => "Value".into(),
+        BindingType::Object(_) => nested_type_name(path, &[]),
+    }
+}
+
+fn render_type_argument(r#type: &BindingType, path: &[String]) -> String {
+    match r#type {
+        BindingType::String
+        | BindingType::Bool
+        | BindingType::Number
+        | BindingType::Tuple(_)
+        | BindingType::Dynamic
+        | BindingType::Object(_) => render_type(r#type, path),
+        BindingType::List(_) | BindingType::Set(_) | BindingType::Map(_) => {
+            format!("({})", render_type(r#type, path))
+        }
+    }
+}
+
+fn child_path(parent_path: &[String], field: &BindingField) -> Vec<String> {
+    let mut path = parent_path.to_vec();
+    path.push(field.public_name.clone());
+    path
+}
+
+fn nested_type_name(path: &[String], reserved: &[&str]) -> String {
+    let name: String = path.iter().map(|part| upper_first(part)).collect();
+    safe_type_name(&name, reserved, "Block")
+}
+
+fn builder_prefix(path: &[String]) -> String {
+    let Some((first, rest)) = path.split_first() else {
+        return String::new();
+    };
+    let mut prefix = first.clone();
+    for part in rest {
+        prefix.push_str(&upper_first(part));
+    }
+    prefix
+}
+
+fn upper_first(value: &str) -> String {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
+        .unwrap_or_default()
+}
+
+/// Names that would clash with generated members of the same `Args`/block namespace.
+const SETTER_RESERVED: &[&str] = &["values", "mk", "toExprNode"];
+
+/// Type names that generated modules already use, either from the core library (which is
+/// opened) or from Lean's prelude.
+const RESERVED_TYPE_NAMES: &[&str] = &[
+    "Type",
+    "Prop",
+    "Sort",
+    "String",
+    "Bool",
+    "Nat",
+    "Int",
+    "Float",
+    "Char",
+    "List",
+    "Array",
+    "Option",
+    "Unit",
+    "Value",
+    "Number",
+    "Map",
+    "Expr",
+    "ExprNode",
+    "Input",
+    "InputObject",
+    "Identifier",
+    "Address",
+    "Resource",
+    "DataSource",
+    "Provider",
+    "Infra",
+    "Args",
+    "Required",
+    "Lean",
+    "Inframe",
+];
+
+fn safe_type_name(name: &str, reserved: &[&str], suffix: &str) -> String {
+    if RESERVED_TYPE_NAMES.contains(&name) || reserved.contains(&name) {
+        format!("{name}{suffix}")
+    } else {
+        name.to_owned()
+    }
+}
+
+fn safe_handle_name(name: &str, node: &str) -> String {
+    safe_type_name(name, &[node], "Handle")
+}
+
+/// Lean 4 tokens that cannot be used as plain identifiers.
+fn lean_reserved(name: &str) -> bool {
+    matches!(
+        name,
+        "abbrev"
+            | "at"
+            | "attribute"
+            | "axiom"
+            | "break"
+            | "by"
+            | "calc"
+            | "catch"
+            | "class"
+            | "continue"
+            | "declare_syntax_cat"
+            | "decreasing_by"
+            | "def"
+            | "deriving"
+            | "do"
+            | "elab"
+            | "else"
+            | "end"
+            | "example"
+            | "exists"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "forall"
+            | "from"
+            | "fun"
+            | "generalizing"
+            | "have"
+            | "hiding"
+            | "if"
+            | "import"
+            | "in"
+            | "include"
+            | "inductive"
+            | "infix"
+            | "infixl"
+            | "infixr"
+            | "instance"
+            | "let"
+            | "local"
+            | "macro"
+            | "macro_rules"
+            | "match"
+            | "matches"
+            | "meta"
+            | "module"
+            | "mut"
+            | "mutual"
+            | "namespace"
+            | "nofun"
+            | "nomatch"
+            | "noncomputable"
+            | "nonrec"
+            | "notation"
+            | "omit"
+            | "only"
+            | "opaque"
+            | "open"
+            | "partial"
+            | "postfix"
+            | "prefix"
+            | "private"
+            | "protected"
+            | "public"
+            | "renaming"
+            | "repeat"
+            | "return"
+            | "scoped"
+            | "section"
+            | "set_option"
+            | "show"
+            | "sorry"
+            | "structure"
+            | "suffices"
+            | "syntax"
+            | "termination_by"
+            | "then"
+            | "theorem"
+            | "this"
+            | "true"
+            | "try"
+            | "universe"
+            | "unless"
+            | "unsafe"
+            | "until"
+            | "using"
+            | "variable"
+            | "where"
+            | "while"
+            | "with"
+    )
+}
+
+fn safe_field_name(field: &BindingField, reserved: &[&str]) -> String {
+    let name = &field.public_name;
+    if lean_reserved(name)
+        || reserved.contains(&name.as_str())
+        || name.starts_with(|c: char| c.is_ascii_digit())
+    {
+        format!("{name}_")
+    } else {
+        name.clone()
+    }
+}
+
+fn escape_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '"' => output.push_str("\\\""),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            other => output.push(other),
+        }
+    }
+    output
+}
+
+/// Lean block comments nest, so both delimiters must be neutralised inside doc text.
+fn escape_doc(value: &str) -> String {
+    value.replace("-/", "- /").replace("/-", "/ -")
+}
+
+fn first_line(description: &str) -> String {
+    escape_doc(description.lines().next().unwrap_or_default().trim_end())
+}
+
+fn doc_comment(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<_> = text.lines().map(str::trim_end).collect();
+    if lines.len() == 1 {
+        return format!("/-- {} -/\n", lines[0]);
+    }
+    let mut output = String::from("/-- ");
+    output.push_str(lines[0]);
+    for line in &lines[1..] {
+        output.push('\n');
+        output.push_str(line);
+    }
+    output.push_str(" -/\n");
+    output
+}
+
+fn indent_doc(doc: &str, indent: &str) -> String {
+    let mut output = String::new();
+    for line in doc.lines() {
+        let _ = writeln!(output, "{indent}{line}");
+    }
+    output
+}
+
+/// The description of a field followed by the descriptions of its direct nested fields, so
+/// that hovers on a block-typed field explain the block's contents. Only one level is listed:
+/// provider schemas unroll recursive blocks to a fixed depth (AWS WAF rules reach 21,000
+/// nested paths), and listing whole subtrees made the documentation quadratic in that size.
+fn field_documentation(field: &BindingField) -> String {
+    let mut text = field
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(escape_doc)
+        .unwrap_or_default();
+    let documented_children: Vec<_> = object_fields(&field.r#type)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|child| {
+            child
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .map(|description| (child.public_name.as_str(), description))
+        })
+        .collect();
+    if !documented_children.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        for (name, description) in documented_children {
+            let _ = write!(text, "\n- `{name}`: {}", first_line(description));
+        }
+    }
+    doc_comment(&text)
+}
+
+#[cfg(test)]
+mod tests {
+    use inframe_binding_model::{BindingProvider, BindingType};
+
+    use super::*;
+
+    fn field(
+        provider_name: &str,
+        public_name: &str,
+        r#type: BindingType,
+        required: bool,
+        optional: bool,
+        computed: bool,
+    ) -> BindingField {
+        BindingField {
+            provider_name: provider_name.into(),
+            public_name: public_name.into(),
+            r#type,
+            required,
+            optional,
+            computed,
+            sensitive: false,
+            block: false,
+            target_reserved: false,
+            description: None,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn package() -> BindingPackage {
+        let mut name = field("name", "name", BindingType::String, true, false, false);
+        name.description = Some("The tag name.\nMust be unique within the account.".into());
+        let mut id = field("id", "id", BindingType::String, false, false, true);
+        id.description = Some("The provider-assigned tag identifier.".into());
+        let nested_name = field("name", "name", BindingType::String, true, false, false);
+        let mut auto_scale = field(
+            "auto_scale",
+            "autoScale",
+            BindingType::Bool,
+            false,
+            true,
+            false,
+        );
+        auto_scale.description = Some("Whether automatic scaling is enabled.".into());
+        let mut actual_node_count = field(
+            "actual_node_count",
+            "actualNodeCount",
+            BindingType::Number,
+            false,
+            false,
+            true,
+        );
+        actual_node_count.description = Some("The current number of nodes.".into());
+        let taint_key = field("key", "key", BindingType::String, true, false, false);
+        let taint = field(
+            "taint",
+            "taint",
+            BindingType::List(Box::new(BindingType::Object(vec![taint_key]))),
+            false,
+            true,
+            false,
+        );
+        let mut node_pool = field(
+            "node_pool",
+            "nodePool",
+            BindingType::List(Box::new(BindingType::Object(vec![
+                nested_name,
+                auto_scale,
+                actual_node_count,
+                taint,
+            ]))),
+            true,
+            false,
+            false,
+        );
+        node_pool.block = true;
+        let mut kube_config = field(
+            "kube_config",
+            "kubeConfig",
+            BindingType::List(Box::new(BindingType::Object(vec![field(
+                "raw_config",
+                "rawConfig",
+                BindingType::String,
+                false,
+                false,
+                true,
+            )]))),
+            false,
+            false,
+            true,
+        );
+        kube_config.description = Some("Credentials for the cluster.".into());
+        let end = field("end", "end", BindingType::String, false, true, false);
+        let values = field(
+            "values",
+            "values",
+            BindingType::List(Box::new(BindingType::String)),
+            false,
+            true,
+            false,
+        );
+        let labels = field(
+            "labels",
+            "labels",
+            BindingType::Map(Box::new(BindingType::String)),
+            false,
+            true,
+            false,
+        );
+        BindingPackage {
+            provider: BindingProvider {
+                source: "digitalocean/digitalocean".into(),
+                version: "2.100.0".into(),
+                public_name: "Digitalocean".into(),
+                fields: vec![field(
+                    "token",
+                    "token",
+                    BindingType::String,
+                    false,
+                    true,
+                    false,
+                )],
+            },
+            resources: vec![BindingItem {
+                provider_type: "digitalocean_tag".into(),
+                public_name: "Tag".into(),
+                fields: vec![end, id, kube_config, labels, name, node_pool, values],
+            }],
+            data_sources: vec![BindingItem {
+                provider_type: "digitalocean_tag".into(),
+                public_name: "Tag".into(),
+                fields: vec![field(
+                    "name",
+                    "name",
+                    BindingType::String,
+                    true,
+                    false,
+                    false,
+                )],
+            }],
+        }
+    }
+
+    fn core() -> CoreDependency {
+        CoreDependency::Path("../..".into())
+    }
+
+    #[test]
+    fn emits_a_typed_resource_module() {
+        let generated = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
+        let provider = &generated.files[Path::new("DigitalOcean/Provider.lean")];
+        assert!(provider.contains("inductive DigitalOceanProvider"));
+        assert!(
+            provider.contains(
+                "def configure (a : Args) : Infra (Inframe.Provider DigitalOceanProvider)"
+            )
+        );
+        assert!(provider.contains(
+            "addProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\" none a.values"
+        ));
+        assert!(provider.contains("def Args.token (value : Input String) (a : Args) : Args"));
+
+        let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
+        assert!(source.contains("namespace DigitalOcean.Resource.Tag"));
+        assert!(source.contains("inductive TagResource"));
+        assert!(source.contains("structure Required where\n  /-- The tag name.\n  Must be unique within the account. -/\n  name : Input String"));
+        assert!(source.contains("def create (name : String) (a : Args) (valid : validIdentifier name = true := by decide)"));
+        assert!(source.contains(
+            "def createWith (name : String) (a : Args) (options : ResourceOptions DigitalOcean.Provider.DigitalOceanProvider)"
+        ));
+        assert!(source.contains(
+            "requireProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\""
+        ));
+        assert!(source.contains(
+            "addResource options (Identifier.mk \"digitalocean_tag\") ⟨name, valid⟩ a.values"
+        ));
+        assert!(source.contains("      id := resourceAttr handle [\"id\"]"));
+        assert!(
+            source.contains("  /-- The provider-assigned tag identifier. -/\n  id : Expr String")
+        );
+        assert!(source.contains("structure NodePool where\n  values : InputObject"));
+        assert!(source.contains("structure NodePoolRequired where\n  name : Input String"));
+        assert!(source.contains("def nodePoolArgs (required : NodePoolRequired) : NodePool"));
+        assert!(source.contains("/-- Whether automatic scaling is enabled. -/\ndef NodePool.autoScale (value : Input Bool) (block : NodePool) : NodePool"));
+        assert!(!source.contains("NodePool.actualNodeCount"));
+        assert!(source.contains("nodePool : List NodePool"));
+        assert!(source.contains("nodePool : Expr (List NodePool)"));
+        assert!(source.contains(
+            "(\"node_pool\", ExprNode.array (required.nodePool.map NodePool.toExprNode))"
+        ));
+        assert!(source.contains(
+            "def NodePool.taint (value : List NodePoolTaint) (block : NodePool) : NodePool"
+        ));
+        assert!(source.contains("inductive KubeConfig"));
+        assert!(source.contains("- `rawConfig`"));
+        assert!(source.contains("kubeConfig : Expr (List KubeConfig)"));
+        assert!(source.contains("def Args.end_ (value : Input String) (a : Args) : Args"));
+        assert!(
+            source.contains("def Args.values_ (value : Input (List String)) (a : Args) : Args")
+        );
+        assert!(source.contains("labels : Expr (Map String)"));
+        assert!(source.contains("end DigitalOcean.Resource.Tag"));
+
+        let taint_position = source.find("structure NodePoolTaint where").unwrap();
+        let pool_position = source.find("structure NodePool where").unwrap();
+        assert!(
+            taint_position < pool_position,
+            "children are emitted before parents"
+        );
+
+        let data = &generated.files[Path::new("DigitalOcean/Data/Tag.lean")];
+        assert!(data.contains("def readWith (name : String) (a : Args) (options : DataSourceOptions DigitalOcean.Provider.DigitalOceanProvider)"));
+        assert!(data.contains("dataSourceAttr handle [\"name\"]"));
+
+        let root = &generated.files[Path::new("DigitalOcean.lean")];
+        assert!(root.contains("import DigitalOcean.Provider\nimport DigitalOcean.Resource.Tag\nimport DigitalOcean.Data.Tag\n"));
+
+        let manifest = &generated.files[Path::new("lake-manifest.json")];
+        assert!(manifest.contains("\"dir\": \"../..\""));
+        assert!(manifest.contains("\"name\": \"«generated-digitalocean»\""));
+
+        let lakefile = &generated.files[Path::new("lakefile.toml")];
+        assert!(lakefile.contains("name = \"generated-digitalocean\""));
+        assert!(lakefile.contains("[[require]]\nname = \"inframe\"\npath = \"../..\""));
+        assert!(lakefile.contains("globs = [\"DigitalOcean.*\"]"));
+        assert_eq!(
+            generated.files[Path::new("lean-toolchain")],
+            format!("{LEAN_TOOLCHAIN}\n")
+        );
+    }
+
+    #[test]
+    fn git_core_dependency_is_rendered() {
+        let generated = render_package(
+            &package(),
+            "DigitalOcean",
+            "abc",
+            &CoreDependency::Git {
+                url: "https://github.com/by77er/inframe".into(),
+                rev: "main".into(),
+                sub_dir: Some("lean".into()),
+            },
+        )
+        .unwrap();
+        let lakefile = &generated.files[Path::new("lakefile.toml")];
+        assert!(lakefile.contains(
+            "git = \"https://github.com/by77er/inframe\"\nrev = \"main\"\nsubDir = \"lean\""
+        ));
+        assert!(
+            !generated
+                .files
+                .contains_key(Path::new("lake-manifest.json"))
+        );
+    }
+
+    #[test]
+    fn output_is_deterministic() {
+        let first = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
+        let second = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn rejects_invalid_module_roots() {
+        assert!(render_package(&package(), "digitalOcean", "abc", &core()).is_err());
+        assert!(render_package(&package(), "", "abc", &core()).is_err());
+    }
+
+    #[test]
+    fn doc_delimiters_are_neutralised() {
+        assert_eq!(escape_doc("a -/ b /- c"), "a - / b / - c");
+        assert_eq!(lake_version("2.100.0"), "2.100.0");
+        assert_eq!(lake_version("v2"), "0.0.0");
+    }
+}

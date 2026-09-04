@@ -2,6 +2,7 @@
 members = [
   "crates/binding-model",
   "crates/cli",
+  "crates/emit-lean",
   "crates/emit-purescript",
   "crates/graph-ir",
   "crates/opentofu",
