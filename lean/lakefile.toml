@@ -1,0 +1,15 @@
+name = "inframe"
+version = "0.1.0"
+defaultTargets = ["Inframe"]
+
+[[lean_lib]]
+name = "Inframe"
+globs = ["Inframe.*"]
+
+[[lean_lib]]
+name = "Test"
+globs = ["Test.+"]
+
+[[lean_exe]]
+name = "inframe-test"
+root = "Test.Main"
