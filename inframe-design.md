@@ -1178,6 +1178,9 @@ Design decisions specific to Lean:
   whose validity proofs are discharged from literals by `decide`; the stored
   `ResourceSpec` keeps plain strings so policy authors compare `resourceType == "…"`
   without unwrapping. `Graph.validate` re-checks identifiers anyway, matching Rust.
+  Handles (`Resource r`, `DataSource r`) keep the validated identifiers, so a
+  combinator can derive a further resource's name from a handle (an assignment
+  named after the resource it assigns) without re-validating strings at run time.
 - **`Infra` is a private state transformer**, not `StateM`, so programs cannot
   read or overwrite the graph; only the builder primitives extend it. The one
   introspection primitive is `Infra.capture`, which runs a sub-program and also

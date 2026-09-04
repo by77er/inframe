@@ -297,7 +297,7 @@ def addResource (options : ResourceOptions p) (resourceType name : Identifier)
         dependsOn := options.explicitDependencies
         provider := options.provider
         lifecycle := options.lifecycle }
-    (resourceHandle spec.address, { graph with resources := graph.resources ++ [spec] })⟩
+    (resourceHandle resourceType name, { graph with resources := graph.resources ++ [spec] })⟩
 
 /-- Append a data source and return its typed handle. -/
 def addDataSource (options : DataSourceOptions p) (dataSourceType name : Identifier)
@@ -309,7 +309,8 @@ def addDataSource (options : DataSourceOptions p) (dataSourceType name : Identif
         arguments := values.fields
         dependsOn := options.explicitDependencies
         provider := options.provider }
-    (dataSourceHandle spec.address, { graph with dataSources := graph.dataSources ++ [spec] })⟩
+    (dataSourceHandle dataSourceType name,
+      { graph with dataSources := graph.dataSources ++ [spec] })⟩
 
 private def outputWithSensitivity [OutputValue v] (sensitive : Bool) (name : String) (value : v) :
     Infra Unit :=
@@ -363,7 +364,7 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
 @[simp] theorem run_addResource_fst (options : ResourceOptions p) (resourceType name : Identifier)
     (values : InputObject) (graph : Graph) :
     ((addResource (r := r) options resourceType name values).run graph).1
-      = resourceHandle (.resource resourceType.raw name.raw) := rfl
+      = resourceHandle resourceType name := rfl
 
 @[simp] theorem run_addResource_resources (options : ResourceOptions p)
     (resourceType name : Identifier) (values : InputObject) (graph : Graph) :
@@ -373,7 +374,7 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
 @[simp] theorem run_addDataSource_fst (options : DataSourceOptions p)
     (dataSourceType name : Identifier) (values : InputObject) (graph : Graph) :
     ((addDataSource (r := r) options dataSourceType name values).run graph).1
-      = dataSourceHandle (.dataSource dataSourceType.raw name.raw) := rfl
+      = dataSourceHandle dataSourceType name := rfl
 
 @[simp] theorem run_addDataSource_resources (options : DataSourceOptions p)
     (dataSourceType name : Identifier) (values : InputObject) (graph : Graph) :

@@ -137,13 +137,23 @@ inductive Input (α : Type) where
 structure UnsafeArgument where
   node : ExprNode
 
-/-- A typed handle to a managed-resource address. -/
+/-- A typed handle to a managed resource. It keeps the validated identifiers it was created
+with, so combinators can derive further names (an assignment, an attachment) from a handle
+without re-validating strings at run time. -/
 structure Resource (r : Type) where
-  address : Address
+  resourceType : Identifier
+  name : Identifier
 
-/-- A typed handle to a data-source address. -/
+/-- A typed handle to a data source. -/
 structure DataSource (r : Type) where
-  address : Address
+  dataSourceType : Identifier
+  name : Identifier
+
+def Resource.address (handle : Resource r) : Address :=
+  .resource handle.resourceType.raw handle.name.raw
+
+def DataSource.address (handle : DataSource r) : Address :=
+  .dataSource handle.dataSourceType.raw handle.name.raw
 
 /-- A typed handle to a configured provider (including an optional alias). -/
 structure Provider (p : Type) where
@@ -219,8 +229,8 @@ def secretEnv (name : String) (_valid : validEnvironmentName name = true := by d
     Input String :=
   symbolic (.secretEnvironment name)
 
-def resourceHandle (address : Address) : Resource r := ⟨address⟩
-def dataSourceHandle (address : Address) : DataSource r := ⟨address⟩
+def resourceHandle (resourceType name : Identifier) : Resource r := ⟨resourceType, name⟩
+def dataSourceHandle (dataSourceType name : Identifier) : DataSource r := ⟨dataSourceType, name⟩
 def providerHandle (address : String) : Provider p := ⟨address⟩
 def providerAddress (provider : Provider p) : String := provider.address
 
