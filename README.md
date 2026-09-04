@@ -1,38 +1,20 @@
 # Inframe
 
-Inframe is infrastructure as typed, ordinary code—without turning resource
-discovery into an effectful program or taking on the job of being a Terraform
-engine. A PureScript program builds an immutable graph; the `inframe` CLI
-validates and lowers it to deterministic `.tofu.json`; OpenTofu still owns
-providers, planning, state, apply, and destroy.
+Inframe is an infrastructure as code tool that's actually good, I hope. I'm
+not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a
+functional approach in order to make composition, testing, and modularization
+clear and easy to understand. It delegates the mechanics of resource creation
+and state management to OpenTofu, and can generate PureScript adapters for
+Terraform modules.
 
-The shape is deliberate. Pulumi-style systems make resource registration part
-of program execution, which is convenient but couples the infrastructure graph
-to effects, runtime ordering, and asynchronous output values. That makes the
-whole desired state harder to inspect, transform, and test as data before
-anything runs. HCL keeps the graph declarative, but its main abstraction is the
-module: reusable logic tends to require directory structure, variable/output
-plumbing, and awkward conditional or repeated-resource patterns. Inframe keeps
-the pure graph and OpenTofu execution model while using a real typed language
-for small functions, data structures, and composition.
-
-Provider schemas are the API definition. Inframe generates discoverable
-builders with required constructor fields, optional setters, typed nested
-objects, computed outputs, and provider-safe resource options:
-
-```text
-PureScript program -> immutable Graph IR -> validated OpenTofu JSON -> OpenTofu
-```
-
-The implementation follows [the design](inframe-design.md) and is currently
-tested against `digitalocean/digitalocean` `2.100.0`.
+> Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
+it's mostly data plumbing, be wary and look at your plans before applying if you
+use this tool. It's quite experimental.
 
 ## Example
 
 This stack creates a shared VPC, an autoscaling managed Kubernetes cluster, a
-versioned Spaces bucket, and an autoscaling PostgreSQL database. It is abridged
-from the checked example in
-[examples/digitalocean-platform/Main.purs](examples/digitalocean-platform/Main.purs).
+versioned Spaces bucket, and an autoscaling PostgreSQL database.
 
 ```purescript
 infrastructure :: Infra Unit
@@ -108,14 +90,6 @@ infrastructure = do
   output "bucket_endpoint" bucket.endpoint
   output "database_host" database.host
 ```
-
-`create` only appends a node to the `Infra` value. Each generated constructor
-also records its baked-in provider source and version, so a default provider is
-lazy: `Vpc.create` needs no explicit provider configuration. `createWith` is
-the strict form—it accepts a typed handle returned by `configure`, which is
-useful for aliases and explicit selection. References such as
-`computed network.id` remain symbolic and become dependency edges during graph
-validation. `secretEnv` records an environment variable name, never its value.
 
 ## How to use it
 
