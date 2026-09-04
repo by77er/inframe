@@ -1186,8 +1186,19 @@ Design decisions specific to Lean:
   introspection primitive is `Infra.capture`, which runs a sub-program and also
   returns the resources it added, so a stack can define scope combinators such as
   "assign everything created in this block to a project" without leaving `Infra`.
-- **`Expr α` coerces to `Input α`.** The PureScript `computed` wrapper remains
-  available but is rarely needed.
+- **One value type.** Where PureScript distinguishes `Expr a` (symbolic) from
+  `Input a` (known or symbolic), Lean has only `Input α` with constructors `known`
+  and `symbolic`; handle attributes are symbolic inputs. Known values coerce
+  (`Coe α (Input α)` for every `ToValue α`, plus `OfNat`/`OfScientific` for
+  numbers), so `region := "nyc3"` and `nodeCount := 1` need no `lit`.
+- **A small DSL over inputs.** OpenTofu string and conversion functions are
+  dot-notation on inputs (`Input.tonumber`, `.lower`, `.replace`, `.substr`, `.split`,
+  `.join`, `.startswith`, …), `++` concatenates string inputs into one flat
+  template, `xs[i]`/`m[k]` index symbolic lists and maps, and
+  `tf!"web-{droplet.id}.internal"` builds a template with Lean's interpolated
+  string syntax (any `Interpolated` value in braces; all-known text folds to a
+  literal). Generated handles carry `Dependable`/`Managed` instances so
+  `dependsOn network` and `replaceTriggeredBy network` take the handle itself.
 - **Numbers are exact.** `Number` is `Lean.JsonNumber`; `lit 2` and `lit 80.5`
   elaborate through `OfNat`/`OfScientific` and serialize without rounding.
 - **Test executables double as proofs.** A stack's test module states theorems
@@ -1318,14 +1329,13 @@ ifThenElse
 interpolate
 ```
 
-The Lean API adds a `Fn` namespace of typed wrappers for OpenTofu functions
-with fixed signatures (conversions `tonumber`, `tostring`, `tobool`; string
-functions `lower`, `upper`, `trimspace`, `replace`, `substr`, `split`, `join`,
-`startswith`, `endswith`, `strcontains`; and `length`), so string manipulation
-of computed values and the common case of a provider typing one value
-differently on two resources need no `unsafeCall`. Combinators that take an
-expression in a polymorphic position (`interpolate`, `unsafeArgument`) accept
-both `Expr α` and `Input α` through the `HasNode` class.
+The Lean API adds typed wrappers for OpenTofu functions with fixed signatures
+as dot-notation on `Input` (conversions `tonumber`, `tostring`, `tobool`;
+string functions `lower`, `upper`, `trimspace`, `replace`, `substr`, `split`,
+`join`, `startswith`, `endswith`, `strcontains`; and `length`), `++` and the
+`tf!"…{x}…"` interpolation macro for templates, so string manipulation of
+computed values and the common case of a provider typing one value differently
+on two resources need no `unsafeCall`.
 
 Only operations that the lowerer knows how to serialize are allowed on unresolved expressions.
 

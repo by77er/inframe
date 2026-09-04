@@ -27,8 +27,13 @@ def program : Infra Unit := do
       |>.insert "purpose" (inputNode (ifThenElse (lit true) (lit "prod") (lit "dev")))
       |>.insert "normalized" (inputNode (unsafeCall "lower" [unsafeArgument (lit "APP")] : Input String))
       |>.insert "count" (inputNode (lit (2 : Number))))
-  sensitiveOutput "tag_id" (resourceAttr tag ["id"] : Expr String)
+  sensitiveOutput "tag_id" (resourceAttr tag ["id"] : Input String)
   output "literal" (lit "known-now" : Input String)
+  output "greeting" (tf!"hello {(resourceAttr tag ["name"] : Input String)}, {count}")
+  output "joined" (array [resourceAttr tag ["id"], "known"] |>.join ",")
+  output "first" (array ["a", "b"] : Input (List String))[0]
+where
+  count : Input Number := 2
 
 def graph : Graph := buildGraph program
 
@@ -61,10 +66,20 @@ theorem tags_are_named : tagsAreNamed.Holds graph := by decide
 theorem purpose_is_symbolic : noProdPurpose.Holds graph := by decide
 
 theorem typed_functions_lower_to_calls :
-    (inputNode (Fn.tonumber (lit "42")) == .function "tonumber" [.literal (.string "42")]) = true ∧
-    (inputNode (Fn.join (lit ",") (lit ["a", "b"]))
+    (inputNode (Input.tonumber "42") == .function "tonumber" [.literal (.string "42")]) = true ∧
+    (inputNode (Input.join ["a", "b"] ",")
       == .function "join" [.literal (.string ","), .literal (.array [.string "a", .string "b"])]) = true := by
   decide
+
+/-- `tf!` folds known text and splices symbolic parts into one flat template. -/
+theorem interpolation_is_a_flat_template (x : Input String) (hx : x = .symbolic (.secretEnvironment "X")) :
+    tf!"a-{x}-b" = .symbolic (.template [.text "a-", .interpolation (.secretEnvironment "X"), .text "-b"]) ∧
+    tf!"a-{"b"}" = (.known (.string "a-b") : Input String) ∧
+    ((2 : Input Number) == lit (2 : Number)) = true ∧
+    (((array ["a", "b"] : Input (List String))[0] : Input String)
+      == index (array ["a", "b"]) 0) = true := by
+  subst hx
+  exact ⟨rfl, rfl, by decide, by decide⟩
 
 theorem literal_equality_is_decidable :
     (ExprNode.literal (.string "a") == ExprNode.literal (.string "a")) = true ∧

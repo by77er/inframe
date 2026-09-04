@@ -124,6 +124,10 @@ databaseUsesManagedVpc resource
 
 The Lean 4 frontend is a Lake package with the same graph semantics, the same
 Graph IR encoder, and generated adapters produced from the same binding model.
+Known values are plain literals (they coerce to provider inputs), handle
+attributes are symbolic inputs, and computed strings are shaped with OpenTofu's
+own functions as dot-notation (`droplet.id.tonumber`, `name.replace " " "-"`)
+or interpolated with `tf!"web-{droplet.id}.internal"`.
 It is exercised in CI exactly like the PureScript one: the core library's
 theorems and tests run, every generated DigitalOcean module compiles, the
 integration stack is built and policy-checked through `inframe build` and
@@ -138,25 +142,25 @@ def infrastructureFor (env : Environment) (databases : List Identifier) : Infra 
     (dataSourceOptions |>.withProvider provider)
 
   let network ← Vpc.create "platform" (Vpc.args
-    { name := lit "platform"
-      region := lit env.region })
+    { name := "platform"
+      region := env.region })
 
   let workerPool :=
     KubernetesCluster.nodePoolArgs
-      { name := lit "workers"
-        size := lit "s-2vcpu-4gb" }
-      |>.nodeCount (lit 2)
-      |>.autoScale (lit true)
-      |>.minNodes (lit 2)
-      |>.maxNodes (lit env.workerMax)
+      { name := "workers"
+        size := "s-2vcpu-4gb" }
+      |>.nodeCount 2
+      |>.autoScale true
+      |>.minNodes 2
+      |>.maxNodes env.workerMax
 
   let cluster ← KubernetesCluster.createWith "platform"
     (KubernetesCluster.args
-      { name := lit "platform"
+      { name := "platform"
         nodePool := [workerPool]
-        region := lit env.region
+        region := env.region
         version := versions.latestVersion }
-      |>.autoUpgrade (lit true)
+      |>.autoUpgrade true
       |>.vpcUuid network.id)
     (resourceOptions
       |>.withProvider provider

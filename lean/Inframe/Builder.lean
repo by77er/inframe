@@ -49,13 +49,6 @@ shape; provider schemas can unroll to tens of thousands of shapes in one module.
 structure Block (tag : String) where
   values : InputObject
 
-/-- Values accepted by `output` and `sensitiveOutput`. -/
-class OutputValue (v : Type) where
-  outputValueNode : v → ExprNode
-
-instance : OutputValue (Expr α) := ⟨exprNode⟩
-instance : OutputValue (Input α) := ⟨inputNode⟩
-
 structure LifecycleOptions where
   createBeforeDestroy : Bool := false
   preventDestroy : Bool := false
@@ -105,10 +98,12 @@ def preventDestroy (enabled : Bool) (options : ResourceOptions p) : ResourceOpti
 def ignoreChanges (paths : List String) (options : ResourceOptions p) : ResourceOptions p :=
   updateLifecycle (fun lifecycle => { lifecycle with ignoreChanges := paths }) options
 
-def replaceTriggeredBy (handle : Resource r) (options : ResourceOptions p) : ResourceOptions p :=
+def replaceTriggeredBy [Managed h] (handle : h) (options : ResourceOptions p) : ResourceOptions p :=
   updateLifecycle
     (fun lifecycle =>
-      { lifecycle with replaceTriggeredBy := appendUnique handle.address lifecycle.replaceTriggeredBy })
+      { lifecycle with
+        replaceTriggeredBy :=
+          appendUnique (Managed.resourceAddress handle) lifecycle.replaceTriggeredBy })
     options
 
 end NodeOptions
@@ -312,19 +307,18 @@ def addDataSource (options : DataSourceOptions p) (dataSourceType name : Identif
     (dataSourceHandle dataSourceType name,
       { graph with dataSources := graph.dataSources ++ [spec] })⟩
 
-private def outputWithSensitivity [OutputValue v] (sensitive : Bool) (name : String) (value : v) :
+private def outputWithSensitivity (sensitive : Bool) (name : String) (value : Input α) :
     Infra Unit :=
   Infra.modify fun graph =>
-    { graph with
-      outputs := Infra.replaceOrAppend name ⟨OutputValue.outputValueNode value, sensitive⟩ graph.outputs }
+    { graph with outputs := Infra.replaceOrAppend name ⟨inputNode value, sensitive⟩ graph.outputs }
 
 /-- Declare a root output. The name is validated at compile time. -/
-def output [OutputValue v] (name : String) (value : v)
+def output (name : String) (value : Input α)
     (_valid : validIdentifier name = true := by decide) : Infra Unit :=
   outputWithSensitivity false name value
 
 /-- Declare a root output that OpenTofu must redact. -/
-def sensitiveOutput [OutputValue v] (name : String) (value : v)
+def sensitiveOutput (name : String) (value : Input α)
     (_valid : validIdentifier name = true := by decide) : Infra Unit :=
   outputWithSensitivity true name value
 
@@ -344,8 +338,8 @@ def Infra.capture (program : Infra α) : Infra (α × List ResourceSpec) :=
 
 /-- A symbolic attribute of an already-added resource. The caller chooses the result type, so
 this is an escape hatch like `unsafeCall`; generated handles are the typed path. -/
-def ResourceSpec.unsafeAttr (resource : ResourceSpec) (path : List String) : Expr α :=
-  ⟨.resourceAttribute resource.address path⟩
+def ResourceSpec.unsafeAttr (resource : ResourceSpec) (path : List String) : Input α :=
+  .symbolic (.resourceAttribute resource.address path)
 
 /-- Run a program against the empty graph and keep only the graph. Pure. -/
 def buildGraph (program : Infra α) : Graph :=
@@ -397,11 +391,11 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
     (graph : Graph) :
     ((requireProvider localName source version).run graph).2.resources = graph.resources := rfl
 
-@[simp] theorem run_output [OutputValue v] (name : String) (value : v)
+@[simp] theorem run_output (name : String) (value : Input α)
     (valid : validIdentifier name = true) (graph : Graph) :
     ((output name value valid).run graph).2.resources = graph.resources := rfl
 
-@[simp] theorem run_sensitiveOutput [OutputValue v] (name : String) (value : v)
+@[simp] theorem run_sensitiveOutput (name : String) (value : Input α)
     (valid : validIdentifier name = true) (graph : Graph) :
     ((sensitiveOutput name value valid).run graph).2.resources = graph.resources := rfl
 

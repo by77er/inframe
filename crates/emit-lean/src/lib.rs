@@ -342,7 +342,7 @@ fn render_item(
     };
     let _ = write!(
         output,
-        "/-- A symbolic handle to `{}`. Every field is an unresolved OpenTofu expression. -/\nstructure {handle_name} where\n",
+        "/-- A symbolic handle to `{}`. Every field is a symbolic input resolved by OpenTofu. -/\nstructure {handle_name} where\n",
         item.provider_type
     );
     if data_source {
@@ -354,7 +354,7 @@ fn render_item(
         output.push_str(&indent_doc(&field_documentation(field), "  "));
         let _ = writeln!(
             output,
-            "  {} : Expr {}",
+            "  {} : Input {}",
             safe_field_name(field, handle_reserved),
             render_type_argument(
                 &field.r#type,
@@ -364,6 +364,18 @@ fn render_item(
         );
     }
     output.push('\n');
+    if data_source {
+        let _ = write!(
+            output,
+            "instance : Dependable {handle_name} := ⟨fun handle => handle.dataSource.address⟩\n\n"
+        );
+    } else {
+        let _ = write!(
+            output,
+            "instance : Dependable {handle_name} := ⟨fun handle => handle.resource.address⟩\n\
+             instance : Managed {handle_name} := ⟨fun handle => handle.resource.address⟩\n\n"
+        );
+    }
     let (operation, operation_with, options_type, default_options, add, attr, handle_key) =
         if data_source {
             (
@@ -1265,7 +1277,13 @@ mod tests {
         ));
         assert!(source.contains("      id := resourceAttr handle [\"id\"]"));
         assert!(
-            source.contains("  /-- The provider-assigned tag identifier. -/\n  id : Expr String")
+            source.contains("instance : Dependable Tag := ⟨fun handle => handle.resource.address⟩")
+        );
+        assert!(
+            source.contains("instance : Managed Tag := ⟨fun handle => handle.resource.address⟩")
+        );
+        assert!(
+            source.contains("  /-- The provider-assigned tag identifier. -/\n  id : Input String")
         );
         assert!(source.contains("abbrev NodePool := Block \"DigitalOcean.Resource.Tag.NodePool\""));
         assert!(source.contains("abbrev Args := Block \"DigitalOcean.Resource.Tag.Args\""));
@@ -1274,7 +1292,7 @@ mod tests {
         assert!(source.contains("/-- Whether automatic scaling is enabled. -/\ndef NodePool.autoScale (value : Input Bool) (block : NodePool) : NodePool"));
         assert!(!source.contains("NodePool.actualNodeCount"));
         assert!(source.contains("nodePool : List NodePool"));
-        assert!(source.contains("nodePool : Expr (List NodePool)"));
+        assert!(source.contains("nodePool : Input (List NodePool)"));
         assert!(source.contains(
             "(\"node_pool\", ExprNode.array (required.nodePool.map NodePool.toExprNode))"
         ));
@@ -1283,12 +1301,12 @@ mod tests {
         ));
         assert!(source.contains("inductive KubeConfig"));
         assert!(source.contains("- `rawConfig`"));
-        assert!(source.contains("kubeConfig : Expr (List KubeConfig)"));
+        assert!(source.contains("kubeConfig : Input (List KubeConfig)"));
         assert!(source.contains("def Args.end_ (value : Input String) (a : Args) : Args"));
         assert!(
             source.contains("def Args.values_ (value : Input (List String)) (a : Args) : Args")
         );
-        assert!(source.contains("labels : Expr (Map String)"));
+        assert!(source.contains("labels : Input (Map String)"));
         assert!(source.contains("end DigitalOcean.Resource.Tag"));
 
         let taint_position = source.find("abbrev NodePoolTaint := Block").unwrap();
@@ -1301,6 +1319,10 @@ mod tests {
         let data = &generated.files[Path::new("DigitalOcean/Data/Tag.lean")];
         assert!(data.contains("def readWith (name : String) (a : Args) (options : DataSourceOptions DigitalOcean.Provider.DigitalOceanProvider)"));
         assert!(data.contains("dataSourceAttr handle [\"name\"]"));
+        assert!(
+            data.contains("instance : Dependable Tag := ⟨fun handle => handle.dataSource.address⟩")
+        );
+        assert!(!data.contains("instance : Managed Tag"));
 
         let root = &generated.files[Path::new("DigitalOcean.lean")];
         assert!(root.contains("import DigitalOcean.Provider\nimport DigitalOcean.Resource.Tag\nimport DigitalOcean.Data.Tag\n"));
@@ -1354,7 +1376,7 @@ mod tests {
         assert!(!source.contains("abbrev Secondary"));
         assert!(source.contains("primary : List Primary"));
         assert!(source.contains("def Args.secondary (value : List Primary) (a : Args) : Args"));
-        assert!(source.contains("secondary : Expr (List Primary)"));
+        assert!(source.contains("secondary : Input (List Primary)"));
         assert!(source.contains("abbrev Different := Block"));
         assert!(source.contains("def primaryArgs (required : PrimaryRequired) : Primary"));
         assert_eq!(source.matches("def Primary.value ").count(), 1);

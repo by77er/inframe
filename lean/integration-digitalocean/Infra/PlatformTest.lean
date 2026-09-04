@@ -72,7 +72,7 @@ core's `run` lemmas to compute what each step adds to the graph. -/
 /-- Each database `createDatabases` adds references the platform VPC, whatever the list. -/
 theorem createDatabases_ok (env : Environment) (network : Vpc.Vpc) (databases : List Identifier)
     (graph : Graph)
-    (vpc : network.id.node = ExprNode.resourceAttribute (.res "digitalocean_vpc" "platform") ["id"])
+    (vpc : inputNode network.id = ExprNode.resourceAttribute (.res "digitalocean_vpc" "platform") ["id"])
     (before : ∀ r ∈ graph.resources, r.resourceType = "digitalocean_database_cluster" → databaseRule r = none) :
     ∀ r ∈ ((createDatabases env network databases).run graph).2.resources,
       r.resourceType = "digitalocean_database_cluster" → databaseRule r = none := by
@@ -91,7 +91,7 @@ theorem createDatabases_ok (env : Environment) (network : Vpc.Vpc) (databases : 
       simp [databaseRule, ResourceSpec.argumentRefersTo, ResourceSpec.argument?, resourceSpecOf,
         DatabaseCluster.args, DatabaseCluster.Args.privateNetworkUuid,
         DatabaseCluster.Args.storageAutoscale, DatabaseCluster.Args.version,
-        InputObject.replaceOrAppend, List.lookup, inputNode, computed, vpc, ExprNode.refersTo]
+        InputObject.replaceOrAppend, List.lookup, vpc, ExprNode.refersTo]
 
 /-- The database policy holds for every environment and every list of databases. -/
 theorem databases_use_managed_vpc (env : Environment) (databases : List Identifier) :
