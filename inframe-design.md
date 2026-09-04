@@ -1319,9 +1319,13 @@ interpolate
 ```
 
 The Lean API adds a `Fn` namespace of typed wrappers for OpenTofu functions
-with fixed signatures (`Fn.tonumber`, `Fn.tostring`, `Fn.tobool`, `Fn.lower`,
-`Fn.upper`, `Fn.trimspace`, `Fn.length`, `Fn.join`), so the common case of a
-provider typing one value differently on two resources needs no `unsafeCall`.
+with fixed signatures (conversions `tonumber`, `tostring`, `tobool`; string
+functions `lower`, `upper`, `trimspace`, `replace`, `substr`, `split`, `join`,
+`startswith`, `endswith`, `strcontains`; and `length`), so string manipulation
+of computed values and the common case of a provider typing one value
+differently on two resources need no `unsafeCall`. Combinators that take an
+expression in a polymorphic position (`interpolate`, `unsafeArgument`) accept
+both `Expr α` and `Input α` through the `HasNode` class.
 
 Only operations that the lowerer knows how to serialize are allowed on unresolved expressions.
 

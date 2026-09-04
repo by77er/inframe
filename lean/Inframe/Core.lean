@@ -203,8 +203,17 @@ def lookup (collection : Input (Map α)) (key : Input String) : Input α :=
 def ifThenElse (condition : Input Bool) (whenTrue whenFalse : Input α) : Input α :=
   symbolic (.conditional (inputNode condition) (inputNode whenTrue) (inputNode whenFalse))
 
-def unsafeArgument (value : Input α) : UnsafeArgument :=
-  ⟨inputNode value⟩
+/-- Anything that can stand in an expression position: a symbolic `Expr α` or an `Input α`.
+Combinators whose parameter type would otherwise be a bare `Input ?α` accept this instead, so
+callers can pass handle attributes without an explicit `computed`. -/
+class HasNode (v : Type) where
+  node : v → ExprNode
+
+instance : HasNode (Expr α) := ⟨exprNode⟩
+instance : HasNode (Input α) := ⟨inputNode⟩
+
+def unsafeArgument [HasNode v] (value : v) : UnsafeArgument :=
+  ⟨HasNode.node value⟩
 
 /-- Call an OpenTofu function without a statically checked signature. The caller chooses the
 result type, so prefer typed combinators when available. The function name is validated at
@@ -216,8 +225,8 @@ def unsafeCall (name : String) (args : List UnsafeArgument)
 def text (value : String) : TemplatePart :=
   .text value
 
-def interpolate (value : Input α) : TemplatePart :=
-  .interpolation (inputNode value)
+def interpolate [HasNode v] (value : v) : TemplatePart :=
+  .interpolation (HasNode.node value)
 
 def template (parts : List TemplatePart) : Input String :=
   symbolic (.template parts)
@@ -261,6 +270,24 @@ def length (value : Input (List α)) : Input Number :=
 
 def join (separator : Input String) (items : Input (List String)) : Input String :=
   call "join" [inputNode separator, inputNode items]
+
+def split (separator : Input String) (value : Input String) : Input (List String) :=
+  call "split" [inputNode separator, inputNode value]
+
+def replace (value search replacement : Input String) : Input String :=
+  call "replace" [inputNode value, inputNode search, inputNode replacement]
+
+def substr (value : Input String) (offset length : Input Number) : Input String :=
+  call "substr" [inputNode value, inputNode offset, inputNode length]
+
+def startswith (value prefix_ : Input String) : Input Bool :=
+  call "startswith" [inputNode value, inputNode prefix_]
+
+def endswith (value suffix : Input String) : Input Bool :=
+  call "endswith" [inputNode value, inputNode suffix]
+
+def strcontains (value needle : Input String) : Input Bool :=
+  call "strcontains" [inputNode value, inputNode needle]
 
 end Fn
 
