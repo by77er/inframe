@@ -48,11 +48,9 @@ module DigitalOcean.Resource.DatabaseOpensearchConfig
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseOpensearchConfigResource
 
@@ -60,129 +58,129 @@ type Required =
   { clusterId :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   ])
 
 actionAutoCreateIndexEnabled :: Input Boolean -> Args -> Args
-actionAutoCreateIndexEnabled value (Args values) = Args (Object.insert "action_auto_create_index_enabled" (inputJson value) values)
+actionAutoCreateIndexEnabled value (Args values) = Args (insertInputField "action_auto_create_index_enabled" (inputJson value) values)
 
 actionDestructiveRequiresName :: Input Boolean -> Args -> Args
-actionDestructiveRequiresName value (Args values) = Args (Object.insert "action_destructive_requires_name" (inputJson value) values)
+actionDestructiveRequiresName value (Args values) = Args (insertInputField "action_destructive_requires_name" (inputJson value) values)
 
 clusterMaxShardsPerNode :: Input Number -> Args -> Args
-clusterMaxShardsPerNode value (Args values) = Args (Object.insert "cluster_max_shards_per_node" (inputJson value) values)
+clusterMaxShardsPerNode value (Args values) = Args (insertInputField "cluster_max_shards_per_node" (inputJson value) values)
 
 clusterRoutingAllocationNodeConcurrentRecoveries :: Input Number -> Args -> Args
-clusterRoutingAllocationNodeConcurrentRecoveries value (Args values) = Args (Object.insert "cluster_routing_allocation_node_concurrent_recoveries" (inputJson value) values)
+clusterRoutingAllocationNodeConcurrentRecoveries value (Args values) = Args (insertInputField "cluster_routing_allocation_node_concurrent_recoveries" (inputJson value) values)
 
 enableSecurityAudit :: Input Boolean -> Args -> Args
-enableSecurityAudit value (Args values) = Args (Object.insert "enable_security_audit" (inputJson value) values)
+enableSecurityAudit value (Args values) = Args (insertInputField "enable_security_audit" (inputJson value) values)
 
 httpMaxContentLengthBytes :: Input Number -> Args -> Args
-httpMaxContentLengthBytes value (Args values) = Args (Object.insert "http_max_content_length_bytes" (inputJson value) values)
+httpMaxContentLengthBytes value (Args values) = Args (insertInputField "http_max_content_length_bytes" (inputJson value) values)
 
 httpMaxHeaderSizeBytes :: Input Number -> Args -> Args
-httpMaxHeaderSizeBytes value (Args values) = Args (Object.insert "http_max_header_size_bytes" (inputJson value) values)
+httpMaxHeaderSizeBytes value (Args values) = Args (insertInputField "http_max_header_size_bytes" (inputJson value) values)
 
 httpMaxInitialLineLengthBytes :: Input Number -> Args -> Args
-httpMaxInitialLineLengthBytes value (Args values) = Args (Object.insert "http_max_initial_line_length_bytes" (inputJson value) values)
+httpMaxInitialLineLengthBytes value (Args values) = Args (insertInputField "http_max_initial_line_length_bytes" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 indicesFielddataCacheSizePercentage :: Input Number -> Args -> Args
-indicesFielddataCacheSizePercentage value (Args values) = Args (Object.insert "indices_fielddata_cache_size_percentage" (inputJson value) values)
+indicesFielddataCacheSizePercentage value (Args values) = Args (insertInputField "indices_fielddata_cache_size_percentage" (inputJson value) values)
 
 indicesMemoryIndexBufferSizePercentage :: Input Number -> Args -> Args
-indicesMemoryIndexBufferSizePercentage value (Args values) = Args (Object.insert "indices_memory_index_buffer_size_percentage" (inputJson value) values)
+indicesMemoryIndexBufferSizePercentage value (Args values) = Args (insertInputField "indices_memory_index_buffer_size_percentage" (inputJson value) values)
 
 indicesMemoryMaxIndexBufferSizeMb :: Input Number -> Args -> Args
-indicesMemoryMaxIndexBufferSizeMb value (Args values) = Args (Object.insert "indices_memory_max_index_buffer_size_mb" (inputJson value) values)
+indicesMemoryMaxIndexBufferSizeMb value (Args values) = Args (insertInputField "indices_memory_max_index_buffer_size_mb" (inputJson value) values)
 
 indicesMemoryMinIndexBufferSizeMb :: Input Number -> Args -> Args
-indicesMemoryMinIndexBufferSizeMb value (Args values) = Args (Object.insert "indices_memory_min_index_buffer_size_mb" (inputJson value) values)
+indicesMemoryMinIndexBufferSizeMb value (Args values) = Args (insertInputField "indices_memory_min_index_buffer_size_mb" (inputJson value) values)
 
 indicesQueriesCacheSizePercentage :: Input Number -> Args -> Args
-indicesQueriesCacheSizePercentage value (Args values) = Args (Object.insert "indices_queries_cache_size_percentage" (inputJson value) values)
+indicesQueriesCacheSizePercentage value (Args values) = Args (insertInputField "indices_queries_cache_size_percentage" (inputJson value) values)
 
 indicesQueryBoolMaxClauseCount :: Input Number -> Args -> Args
-indicesQueryBoolMaxClauseCount value (Args values) = Args (Object.insert "indices_query_bool_max_clause_count" (inputJson value) values)
+indicesQueryBoolMaxClauseCount value (Args values) = Args (insertInputField "indices_query_bool_max_clause_count" (inputJson value) values)
 
 indicesRecoveryMaxConcurrentFileChunks :: Input Number -> Args -> Args
-indicesRecoveryMaxConcurrentFileChunks value (Args values) = Args (Object.insert "indices_recovery_max_concurrent_file_chunks" (inputJson value) values)
+indicesRecoveryMaxConcurrentFileChunks value (Args values) = Args (insertInputField "indices_recovery_max_concurrent_file_chunks" (inputJson value) values)
 
 indicesRecoveryMaxMbPerSec :: Input Number -> Args -> Args
-indicesRecoveryMaxMbPerSec value (Args values) = Args (Object.insert "indices_recovery_max_mb_per_sec" (inputJson value) values)
+indicesRecoveryMaxMbPerSec value (Args values) = Args (insertInputField "indices_recovery_max_mb_per_sec" (inputJson value) values)
 
 ismEnabled :: Input Boolean -> Args -> Args
-ismEnabled value (Args values) = Args (Object.insert "ism_enabled" (inputJson value) values)
+ismEnabled value (Args values) = Args (insertInputField "ism_enabled" (inputJson value) values)
 
 ismHistoryEnabled :: Input Boolean -> Args -> Args
-ismHistoryEnabled value (Args values) = Args (Object.insert "ism_history_enabled" (inputJson value) values)
+ismHistoryEnabled value (Args values) = Args (insertInputField "ism_history_enabled" (inputJson value) values)
 
 ismHistoryMaxAgeHours :: Input Number -> Args -> Args
-ismHistoryMaxAgeHours value (Args values) = Args (Object.insert "ism_history_max_age_hours" (inputJson value) values)
+ismHistoryMaxAgeHours value (Args values) = Args (insertInputField "ism_history_max_age_hours" (inputJson value) values)
 
 ismHistoryMaxDocs :: Input Number -> Args -> Args
-ismHistoryMaxDocs value (Args values) = Args (Object.insert "ism_history_max_docs" (inputJson value) values)
+ismHistoryMaxDocs value (Args values) = Args (insertInputField "ism_history_max_docs" (inputJson value) values)
 
 ismHistoryRolloverCheckPeriodHours :: Input Number -> Args -> Args
-ismHistoryRolloverCheckPeriodHours value (Args values) = Args (Object.insert "ism_history_rollover_check_period_hours" (inputJson value) values)
+ismHistoryRolloverCheckPeriodHours value (Args values) = Args (insertInputField "ism_history_rollover_check_period_hours" (inputJson value) values)
 
 ismHistoryRolloverRetentionPeriodDays :: Input Number -> Args -> Args
-ismHistoryRolloverRetentionPeriodDays value (Args values) = Args (Object.insert "ism_history_rollover_retention_period_days" (inputJson value) values)
+ismHistoryRolloverRetentionPeriodDays value (Args values) = Args (insertInputField "ism_history_rollover_retention_period_days" (inputJson value) values)
 
 overrideMainResponseVersion :: Input Boolean -> Args -> Args
-overrideMainResponseVersion value (Args values) = Args (Object.insert "override_main_response_version" (inputJson value) values)
+overrideMainResponseVersion value (Args values) = Args (insertInputField "override_main_response_version" (inputJson value) values)
 
 pluginsAlertingFilterByBackendRolesEnabled :: Input Boolean -> Args -> Args
-pluginsAlertingFilterByBackendRolesEnabled value (Args values) = Args (Object.insert "plugins_alerting_filter_by_backend_roles_enabled" (inputJson value) values)
+pluginsAlertingFilterByBackendRolesEnabled value (Args values) = Args (insertInputField "plugins_alerting_filter_by_backend_roles_enabled" (inputJson value) values)
 
 reindexRemoteWhitelist :: Input (Array String) -> Args -> Args
-reindexRemoteWhitelist value (Args values) = Args (Object.insert "reindex_remote_whitelist" (inputJson value) values)
+reindexRemoteWhitelist value (Args values) = Args (insertInputField "reindex_remote_whitelist" (inputJson value) values)
 
 scriptMaxCompilationsRate :: Input String -> Args -> Args
-scriptMaxCompilationsRate value (Args values) = Args (Object.insert "script_max_compilations_rate" (inputJson value) values)
+scriptMaxCompilationsRate value (Args values) = Args (insertInputField "script_max_compilations_rate" (inputJson value) values)
 
 searchMaxBuckets :: Input Number -> Args -> Args
-searchMaxBuckets value (Args values) = Args (Object.insert "search_max_buckets" (inputJson value) values)
+searchMaxBuckets value (Args values) = Args (insertInputField "search_max_buckets" (inputJson value) values)
 
 threadPoolAnalyzeQueueSize :: Input Number -> Args -> Args
-threadPoolAnalyzeQueueSize value (Args values) = Args (Object.insert "thread_pool_analyze_queue_size" (inputJson value) values)
+threadPoolAnalyzeQueueSize value (Args values) = Args (insertInputField "thread_pool_analyze_queue_size" (inputJson value) values)
 
 threadPoolAnalyzeSize :: Input Number -> Args -> Args
-threadPoolAnalyzeSize value (Args values) = Args (Object.insert "thread_pool_analyze_size" (inputJson value) values)
+threadPoolAnalyzeSize value (Args values) = Args (insertInputField "thread_pool_analyze_size" (inputJson value) values)
 
 threadPoolForceMergeSize :: Input Number -> Args -> Args
-threadPoolForceMergeSize value (Args values) = Args (Object.insert "thread_pool_force_merge_size" (inputJson value) values)
+threadPoolForceMergeSize value (Args values) = Args (insertInputField "thread_pool_force_merge_size" (inputJson value) values)
 
 threadPoolGetQueueSize :: Input Number -> Args -> Args
-threadPoolGetQueueSize value (Args values) = Args (Object.insert "thread_pool_get_queue_size" (inputJson value) values)
+threadPoolGetQueueSize value (Args values) = Args (insertInputField "thread_pool_get_queue_size" (inputJson value) values)
 
 threadPoolGetSize :: Input Number -> Args -> Args
-threadPoolGetSize value (Args values) = Args (Object.insert "thread_pool_get_size" (inputJson value) values)
+threadPoolGetSize value (Args values) = Args (insertInputField "thread_pool_get_size" (inputJson value) values)
 
 threadPoolSearchQueueSize :: Input Number -> Args -> Args
-threadPoolSearchQueueSize value (Args values) = Args (Object.insert "thread_pool_search_queue_size" (inputJson value) values)
+threadPoolSearchQueueSize value (Args values) = Args (insertInputField "thread_pool_search_queue_size" (inputJson value) values)
 
 threadPoolSearchSize :: Input Number -> Args -> Args
-threadPoolSearchSize value (Args values) = Args (Object.insert "thread_pool_search_size" (inputJson value) values)
+threadPoolSearchSize value (Args values) = Args (insertInputField "thread_pool_search_size" (inputJson value) values)
 
 threadPoolSearchThrottledQueueSize :: Input Number -> Args -> Args
-threadPoolSearchThrottledQueueSize value (Args values) = Args (Object.insert "thread_pool_search_throttled_queue_size" (inputJson value) values)
+threadPoolSearchThrottledQueueSize value (Args values) = Args (insertInputField "thread_pool_search_throttled_queue_size" (inputJson value) values)
 
 threadPoolSearchThrottledSize :: Input Number -> Args -> Args
-threadPoolSearchThrottledSize value (Args values) = Args (Object.insert "thread_pool_search_throttled_size" (inputJson value) values)
+threadPoolSearchThrottledSize value (Args values) = Args (insertInputField "thread_pool_search_throttled_size" (inputJson value) values)
 
 threadPoolWriteQueueSize :: Input Number -> Args -> Args
-threadPoolWriteQueueSize value (Args values) = Args (Object.insert "thread_pool_write_queue_size" (inputJson value) values)
+threadPoolWriteQueueSize value (Args values) = Args (insertInputField "thread_pool_write_queue_size" (inputJson value) values)
 
 threadPoolWriteSize :: Input Number -> Args -> Args
-threadPoolWriteSize value (Args values) = Args (Object.insert "thread_pool_write_size" (inputJson value) values)
+threadPoolWriteSize value (Args values) = Args (insertInputField "thread_pool_write_size" (inputJson value) values)
 
 type DatabaseOpensearchConfig =
   { resource :: Resource DatabaseOpensearchConfigResource

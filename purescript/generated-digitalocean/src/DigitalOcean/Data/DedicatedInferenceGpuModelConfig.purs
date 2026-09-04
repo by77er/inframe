@@ -10,10 +10,8 @@ module DigitalOcean.Data.DedicatedInferenceGpuModelConfig
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, DataSource, dataSourceAttr)
 
 data DedicatedInferenceGpuModelConfigDataSource
 
@@ -21,15 +19,15 @@ type Required =
   {
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args _ = Args (Object.fromFoldable
+args _ = Args (inputObject
   [
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 type DedicatedInferenceGpuModelConfig =
   { dataSource :: DataSource DedicatedInferenceGpuModelConfigDataSource

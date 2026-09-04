@@ -16,11 +16,9 @@ module DigitalOcean.Resource.DatabaseLogsinkRsyslog
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseLogsinkRsyslogResource
 
@@ -31,10 +29,10 @@ type Required =
   , server :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   , Tuple "name" (inputJson required.name)
   , Tuple "port" (inputJson required.port)
@@ -42,25 +40,25 @@ args required = Args (Object.fromFoldable
   ])
 
 caCert :: Input String -> Args -> Args
-caCert value (Args values) = Args (Object.insert "ca_cert" (inputJson value) values)
+caCert value (Args values) = Args (insertInputField "ca_cert" (inputJson value) values)
 
 clientCert :: Input String -> Args -> Args
-clientCert value (Args values) = Args (Object.insert "client_cert" (inputJson value) values)
+clientCert value (Args values) = Args (insertInputField "client_cert" (inputJson value) values)
 
 clientKey :: Input String -> Args -> Args
-clientKey value (Args values) = Args (Object.insert "client_key" (inputJson value) values)
+clientKey value (Args values) = Args (insertInputField "client_key" (inputJson value) values)
 
 format :: Input String -> Args -> Args
-format value (Args values) = Args (Object.insert "format" (inputJson value) values)
+format value (Args values) = Args (insertInputField "format" (inputJson value) values)
 
 logline :: Input String -> Args -> Args
-logline value (Args values) = Args (Object.insert "logline" (inputJson value) values)
+logline value (Args values) = Args (insertInputField "logline" (inputJson value) values)
 
 structuredData :: Input String -> Args -> Args
-structuredData value (Args values) = Args (Object.insert "structured_data" (inputJson value) values)
+structuredData value (Args values) = Args (insertInputField "structured_data" (inputJson value) values)
 
 tls :: Input Boolean -> Args -> Args
-tls value (Args values) = Args (Object.insert "tls" (inputJson value) values)
+tls value (Args values) = Args (insertInputField "tls" (inputJson value) values)
 
 type DatabaseLogsinkRsyslog =
   { resource :: Resource DatabaseLogsinkRsyslogResource

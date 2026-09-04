@@ -4,6 +4,7 @@
 **/.spago/
 **/output/
 **/node_modules/
+.psc-ide-port
 *.tfstate
 *.tfstate.*
 *.tfplan

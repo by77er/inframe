@@ -197,18 +197,7 @@ fn binding_type(schema_type: &SchemaType) -> BindingType {
         SchemaType::Object(fields) => BindingType::Object(
             fields
                 .iter()
-                .map(|(name, r#type)| BindingField {
-                    provider_name: name.clone(),
-                    public_name: field_name(name),
-                    r#type: binding_type(r#type),
-                    required: true,
-                    optional: false,
-                    computed: false,
-                    sensitive: false,
-                    block: false,
-                    target_reserved: reserved_words().contains(field_name(name).as_str()),
-                    description: None,
-                })
+                .map(|(name, attribute)| derive_attribute(name, attribute))
                 .collect(),
         ),
         SchemaType::Tuple(items) => BindingType::Tuple(items.iter().map(binding_type).collect()),
@@ -341,5 +330,60 @@ mod tests {
     fn names_are_stable() {
         assert_eq!(pascal_case("project_resources"), "ProjectResources");
         assert_eq!(field_name("vpc_uuid"), "vpcUuid");
+    }
+
+    #[test]
+    fn preserves_nested_attribute_roles() {
+        let nested = AttributeSchema {
+            r#type: SchemaType::List(Box::new(SchemaType::Object(BTreeMap::from([
+                (
+                    "name".into(),
+                    AttributeSchema {
+                        r#type: SchemaType::String,
+                        required: true,
+                        optional: false,
+                        computed: false,
+                        sensitive: false,
+                        description: None,
+                    },
+                ),
+                (
+                    "actual_node_count".into(),
+                    AttributeSchema {
+                        r#type: SchemaType::Number,
+                        required: false,
+                        optional: false,
+                        computed: true,
+                        sensitive: false,
+                        description: None,
+                    },
+                ),
+            ])))),
+            required: true,
+            optional: false,
+            computed: false,
+            sensitive: false,
+            description: None,
+        };
+        let fields = derive_fields(&BlockSchema {
+            attributes: BTreeMap::from([("node_pool".into(), nested)]),
+            blocks: BTreeMap::new(),
+        });
+        let BindingType::List(item) = &fields[0].r#type else {
+            panic!("node_pool should be a list");
+        };
+        let BindingType::Object(children) = item.as_ref() else {
+            panic!("node_pool entries should be objects");
+        };
+        assert!(
+            children
+                .iter()
+                .any(|field| field.public_name == "name" && field.required)
+        );
+        assert!(
+            children
+                .iter()
+                .any(|field| field.public_name == "actualNodeCount" && field.computed)
+        );
     }
 }

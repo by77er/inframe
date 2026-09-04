@@ -10,11 +10,9 @@ module DigitalOcean.Resource.FloatingIpAssignment
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data FloatingIpAssignmentResource
 
@@ -23,16 +21,16 @@ type Required =
   , ipAddress :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "droplet_id" (inputJson required.dropletId)
   , Tuple "ip_address" (inputJson required.ipAddress)
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 type FloatingIpAssignment =
   { resource :: Resource FloatingIpAssignmentResource

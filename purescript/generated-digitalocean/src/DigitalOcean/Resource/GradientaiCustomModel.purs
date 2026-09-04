@@ -5,6 +5,22 @@ module DigitalOcean.Resource.GradientaiCustomModel
   , GradientaiCustomModelResource
   , args
   , create
+  , SourceRef
+  , SourceRefRequired
+  , sourceRefArgs
+  , sourceRefAccessType
+  , sourceRefBucket
+  , sourceRefCommitSha
+  , sourceRefHfToken
+  , sourceRefPrefix
+  , sourceRefRegion
+  , sourceRefRepoId
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
+  , timeoutsDelete
+  , timeoutsUpdate
   , acceptTermsAndConditions
   , description
   , id
@@ -17,60 +33,117 @@ module DigitalOcean.Resource.GradientaiCustomModel
   , timeouts
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data GradientaiCustomModelResource
 
+newtype SourceRef = SourceRef InputObject
+
+type SourceRefRequired =
+  {
+  }
+
+sourceRefArgs :: SourceRefRequired -> SourceRef
+sourceRefArgs _ = SourceRef (inputObject
+  [
+  ])
+
+sourceRefAccessType :: Input String -> SourceRef -> SourceRef
+sourceRefAccessType value (SourceRef values) = SourceRef (insertInputField "access_type" (inputJson value) values)
+
+sourceRefBucket :: Input String -> SourceRef -> SourceRef
+sourceRefBucket value (SourceRef values) = SourceRef (insertInputField "bucket" (inputJson value) values)
+
+sourceRefCommitSha :: Input String -> SourceRef -> SourceRef
+sourceRefCommitSha value (SourceRef values) = SourceRef (insertInputField "commit_sha" (inputJson value) values)
+
+sourceRefHfToken :: Input String -> SourceRef -> SourceRef
+sourceRefHfToken value (SourceRef values) = SourceRef (insertInputField "hf_token" (inputJson value) values)
+
+sourceRefPrefix :: Input String -> SourceRef -> SourceRef
+sourceRefPrefix value (SourceRef values) = SourceRef (insertInputField "prefix" (inputJson value) values)
+
+sourceRefRegion :: Input String -> SourceRef -> SourceRef
+sourceRefRegion value (SourceRef values) = SourceRef (insertInputField "region" (inputJson value) values)
+
+sourceRefRepoId :: Input String -> SourceRef -> SourceRef
+sourceRefRepoId value (SourceRef values) = SourceRef (insertInputField "repo_id" (inputJson value) values)
+
+sourceRefJson :: SourceRef -> Json
+sourceRefJson (SourceRef values) = inputObjectJson values
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsDelete :: Input String -> Timeouts -> Timeouts
+timeoutsDelete value (Timeouts values) = Timeouts (insertInputField "delete" (inputJson value) values)
+
+timeoutsUpdate :: Input String -> Timeouts -> Timeouts
+timeoutsUpdate value (Timeouts values) = Timeouts (insertInputField "update" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
+
 type Required =
   { name :: Input String
-  , sourceRef :: Input (Array ({ accessType :: String, bucket :: String, commitSha :: String, hfToken :: String, prefix :: String, region :: String, repoId :: String }))
+  , sourceRef :: Array SourceRef
   , sourceType :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
-  , Tuple "source_ref" (inputJson required.sourceRef)
+  , Tuple "source_ref" (arrayExprJson (map sourceRefJson required.sourceRef))
   , Tuple "source_type" (inputJson required.sourceType)
   ])
 
 acceptTermsAndConditions :: Input Boolean -> Args -> Args
-acceptTermsAndConditions value (Args values) = Args (Object.insert "accept_terms_and_conditions" (inputJson value) values)
+acceptTermsAndConditions value (Args values) = Args (insertInputField "accept_terms_and_conditions" (inputJson value) values)
 
 description :: Input String -> Args -> Args
-description value (Args values) = Args (Object.insert "description" (inputJson value) values)
+description value (Args values) = Args (insertInputField "description" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 inputModalities :: Input (Array String) -> Args -> Args
-inputModalities value (Args values) = Args (Object.insert "input_modalities" (inputJson value) values)
+inputModalities value (Args values) = Args (insertInputField "input_modalities" (inputJson value) values)
 
 license :: Input String -> Args -> Args
-license value (Args values) = Args (Object.insert "license" (inputJson value) values)
+license value (Args values) = Args (insertInputField "license" (inputJson value) values)
 
 outputModalities :: Input (Array String) -> Args -> Args
-outputModalities value (Args values) = Args (Object.insert "output_modalities" (inputJson value) values)
+outputModalities value (Args values) = Args (insertInputField "output_modalities" (inputJson value) values)
 
 parameters :: Input String -> Args -> Args
-parameters value (Args values) = Args (Object.insert "parameters" (inputJson value) values)
+parameters value (Args values) = Args (insertInputField "parameters" (inputJson value) values)
 
 preferredGpuRegion :: Input String -> Args -> Args
-preferredGpuRegion value (Args values) = Args (Object.insert "preferred_gpu_region" (inputJson value) values)
+preferredGpuRegion value (Args values) = Args (insertInputField "preferred_gpu_region" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
-timeouts :: Input ({ create :: String, delete :: String, update :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type GradientaiCustomModel =
   { resource :: Resource GradientaiCustomModelResource

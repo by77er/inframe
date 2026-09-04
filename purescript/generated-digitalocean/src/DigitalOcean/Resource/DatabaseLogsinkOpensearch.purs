@@ -12,11 +12,9 @@ module DigitalOcean.Resource.DatabaseLogsinkOpensearch
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseLogsinkOpensearchResource
 
@@ -27,10 +25,10 @@ type Required =
   , name :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   , Tuple "endpoint" (inputJson required.endpoint)
   , Tuple "index_prefix" (inputJson required.indexPrefix)
@@ -38,13 +36,13 @@ args required = Args (Object.fromFoldable
   ])
 
 caCert :: Input String -> Args -> Args
-caCert value (Args values) = Args (Object.insert "ca_cert" (inputJson value) values)
+caCert value (Args values) = Args (insertInputField "ca_cert" (inputJson value) values)
 
 indexDaysMax :: Input Number -> Args -> Args
-indexDaysMax value (Args values) = Args (Object.insert "index_days_max" (inputJson value) values)
+indexDaysMax value (Args values) = Args (insertInputField "index_days_max" (inputJson value) values)
 
 timeoutSeconds :: Input Number -> Args -> Args
-timeoutSeconds value (Args values) = Args (Object.insert "timeout_seconds" (inputJson value) values)
+timeoutSeconds value (Args values) = Args (insertInputField "timeout_seconds" (inputJson value) values)
 
 type DatabaseLogsinkOpensearch =
   { resource :: Resource DatabaseLogsinkOpensearchResource

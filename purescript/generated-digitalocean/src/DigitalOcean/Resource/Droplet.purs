@@ -5,6 +5,18 @@ module DigitalOcean.Resource.Droplet
   , DropletResource
   , args
   , create
+  , BackupPolicy
+  , BackupPolicyRequired
+  , backupPolicyArgs
+  , backupPolicyHour
+  , backupPolicyPlan
+  , backupPolicyWeekday
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
+  , timeoutsDelete
+  , timeoutsUpdate
   , backupPolicy
   , backups
   , dropletAgent
@@ -26,15 +38,60 @@ module DigitalOcean.Resource.Droplet
   , vpcUuid
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data DropletResource
+
+newtype BackupPolicy = BackupPolicy InputObject
+
+type BackupPolicyRequired =
+  {
+  }
+
+backupPolicyArgs :: BackupPolicyRequired -> BackupPolicy
+backupPolicyArgs _ = BackupPolicy (inputObject
+  [
+  ])
+
+backupPolicyHour :: Input Number -> BackupPolicy -> BackupPolicy
+backupPolicyHour value (BackupPolicy values) = BackupPolicy (insertInputField "hour" (inputJson value) values)
+
+backupPolicyPlan :: Input String -> BackupPolicy -> BackupPolicy
+backupPolicyPlan value (BackupPolicy values) = BackupPolicy (insertInputField "plan" (inputJson value) values)
+
+backupPolicyWeekday :: Input String -> BackupPolicy -> BackupPolicy
+backupPolicyWeekday value (BackupPolicy values) = BackupPolicy (insertInputField "weekday" (inputJson value) values)
+
+backupPolicyJson :: BackupPolicy -> Json
+backupPolicyJson (BackupPolicy values) = inputObjectJson values
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsDelete :: Input String -> Timeouts -> Timeouts
+timeoutsDelete value (Timeouts values) = Timeouts (insertInputField "delete" (inputJson value) values)
+
+timeoutsUpdate :: Input String -> Timeouts -> Timeouts
+timeoutsUpdate value (Timeouts values) = Timeouts (insertInputField "update" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { image :: Input String
@@ -42,71 +99,71 @@ type Required =
   , size :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "image" (inputJson required.image)
   , Tuple "name" (inputJson required.name)
   , Tuple "size" (inputJson required.size)
   ])
 
-backupPolicy :: Input (Array ({ hour :: Number, plan :: String, weekday :: String })) -> Args -> Args
-backupPolicy value (Args values) = Args (Object.insert "backup_policy" (inputJson value) values)
+backupPolicy :: Array BackupPolicy -> Args -> Args
+backupPolicy value (Args values) = Args (insertInputField "backup_policy" (arrayExprJson (map backupPolicyJson value)) values)
 
 backups :: Input Boolean -> Args -> Args
-backups value (Args values) = Args (Object.insert "backups" (inputJson value) values)
+backups value (Args values) = Args (insertInputField "backups" (inputJson value) values)
 
 dropletAgent :: Input Boolean -> Args -> Args
-dropletAgent value (Args values) = Args (Object.insert "droplet_agent" (inputJson value) values)
+dropletAgent value (Args values) = Args (insertInputField "droplet_agent" (inputJson value) values)
 
 gpuPartitionMode :: Input String -> Args -> Args
-gpuPartitionMode value (Args values) = Args (Object.insert "gpu_partition_mode" (inputJson value) values)
+gpuPartitionMode value (Args values) = Args (insertInputField "gpu_partition_mode" (inputJson value) values)
 
 gracefulShutdown :: Input Boolean -> Args -> Args
-gracefulShutdown value (Args values) = Args (Object.insert "graceful_shutdown" (inputJson value) values)
+gracefulShutdown value (Args values) = Args (insertInputField "graceful_shutdown" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 ipv6 :: Input Boolean -> Args -> Args
-ipv6 value (Args values) = Args (Object.insert "ipv6" (inputJson value) values)
+ipv6 value (Args values) = Args (insertInputField "ipv6" (inputJson value) values)
 
 ipv6Address :: Input String -> Args -> Args
-ipv6Address value (Args values) = Args (Object.insert "ipv6_address" (inputJson value) values)
+ipv6Address value (Args values) = Args (insertInputField "ipv6_address" (inputJson value) values)
 
 monitoring :: Input Boolean -> Args -> Args
-monitoring value (Args values) = Args (Object.insert "monitoring" (inputJson value) values)
+monitoring value (Args values) = Args (insertInputField "monitoring" (inputJson value) values)
 
 privateNetworking :: Input Boolean -> Args -> Args
-privateNetworking value (Args values) = Args (Object.insert "private_networking" (inputJson value) values)
+privateNetworking value (Args values) = Args (insertInputField "private_networking" (inputJson value) values)
 
 publicNetworking :: Input Boolean -> Args -> Args
-publicNetworking value (Args values) = Args (Object.insert "public_networking" (inputJson value) values)
+publicNetworking value (Args values) = Args (insertInputField "public_networking" (inputJson value) values)
 
 region :: Input String -> Args -> Args
-region value (Args values) = Args (Object.insert "region" (inputJson value) values)
+region value (Args values) = Args (insertInputField "region" (inputJson value) values)
 
 resizeDisk :: Input Boolean -> Args -> Args
-resizeDisk value (Args values) = Args (Object.insert "resize_disk" (inputJson value) values)
+resizeDisk value (Args values) = Args (insertInputField "resize_disk" (inputJson value) values)
 
 sshKeys :: Input (Array String) -> Args -> Args
-sshKeys value (Args values) = Args (Object.insert "ssh_keys" (inputJson value) values)
+sshKeys value (Args values) = Args (insertInputField "ssh_keys" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
-timeouts :: Input ({ create :: String, delete :: String, update :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 userData :: Input String -> Args -> Args
-userData value (Args values) = Args (Object.insert "user_data" (inputJson value) values)
+userData value (Args values) = Args (insertInputField "user_data" (inputJson value) values)
 
 volumeIds :: Input (Array String) -> Args -> Args
-volumeIds value (Args values) = Args (Object.insert "volume_ids" (inputJson value) values)
+volumeIds value (Args values) = Args (insertInputField "volume_ids" (inputJson value) values)
 
 vpcUuid :: Input String -> Args -> Args
-vpcUuid value (Args values) = Args (Object.insert "vpc_uuid" (inputJson value) values)
+vpcUuid value (Args values) = Args (insertInputField "vpc_uuid" (inputJson value) values)
 
 type Droplet =
   { resource :: Resource DropletResource

@@ -7,6 +7,8 @@ module TofuDag.Core
   , computed
   , inputJson
   , exprJson
+  , arrayExprJson
+  , objectExprJson
   , resourceHandle
   , dataSourceHandle
   , resourceAttr
@@ -15,7 +17,7 @@ module TofuDag.Core
 
 import Prelude
 
-import Data.Argonaut.Core (Json, fromObject, fromString)
+import Data.Argonaut.Core (Json, fromArray, fromObject, fromString)
 import Data.Argonaut.Encode (class EncodeJson, encodeJson)
 import Data.Tuple (Tuple(..))
 import Foreign.Object as Object
@@ -54,6 +56,22 @@ inputJson (Computed (Expr expression)) = expression
 
 exprJson :: forall a. Expr a -> Json
 exprJson (Expr expression) = expression
+
+-- | Build an array expression from already encoded child expressions.
+arrayExprJson :: Array Json -> Json
+arrayExprJson items =
+  fromObject $ Object.fromFoldable
+    [ Tuple "kind" (fromString "array")
+    , Tuple "items" (fromArray items)
+    ]
+
+-- | Build an object expression from already encoded child expressions.
+objectExprJson :: Object.Object Json -> Json
+objectExprJson fields =
+  fromObject $ Object.fromFoldable
+    [ Tuple "kind" (fromString "object")
+    , Tuple "fields" (fromObject fields)
+    ]
 
 resourceHandle :: forall r. String -> Resource r
 resourceHandle = Resource

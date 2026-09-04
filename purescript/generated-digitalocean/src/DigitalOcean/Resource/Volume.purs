@@ -16,11 +16,9 @@ module DigitalOcean.Resource.Volume
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data VolumeResource
 
@@ -30,35 +28,35 @@ type Required =
   , size :: Input Number
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   , Tuple "region" (inputJson required.region)
   , Tuple "size" (inputJson required.size)
   ])
 
 description :: Input String -> Args -> Args
-description value (Args values) = Args (Object.insert "description" (inputJson value) values)
+description value (Args values) = Args (insertInputField "description" (inputJson value) values)
 
 filesystemType :: Input String -> Args -> Args
-filesystemType value (Args values) = Args (Object.insert "filesystem_type" (inputJson value) values)
+filesystemType value (Args values) = Args (insertInputField "filesystem_type" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 initialFilesystemLabel :: Input String -> Args -> Args
-initialFilesystemLabel value (Args values) = Args (Object.insert "initial_filesystem_label" (inputJson value) values)
+initialFilesystemLabel value (Args values) = Args (insertInputField "initial_filesystem_label" (inputJson value) values)
 
 initialFilesystemType :: Input String -> Args -> Args
-initialFilesystemType value (Args values) = Args (Object.insert "initial_filesystem_type" (inputJson value) values)
+initialFilesystemType value (Args values) = Args (insertInputField "initial_filesystem_type" (inputJson value) values)
 
 snapshotId :: Input String -> Args -> Args
-snapshotId value (Args values) = Args (Object.insert "snapshot_id" (inputJson value) values)
+snapshotId value (Args values) = Args (insertInputField "snapshot_id" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
 type Volume =
   { resource :: Resource VolumeResource

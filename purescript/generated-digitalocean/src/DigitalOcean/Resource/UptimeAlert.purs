@@ -5,46 +5,89 @@ module DigitalOcean.Resource.UptimeAlert
   , UptimeAlertResource
   , args
   , create
+  , Notifications
+  , NotificationsRequired
+  , notificationsArgs
+  , notificationsEmail
+  , notificationsSlack
+  , NotificationsSlack
+  , NotificationsSlackRequired
+  , notificationsSlackArgs
   , comparison
   , period
   , threshold
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data UptimeAlertResource
+
+newtype Notifications = Notifications InputObject
+
+type NotificationsRequired =
+  {
+  }
+
+notificationsArgs :: NotificationsRequired -> Notifications
+notificationsArgs _ = Notifications (inputObject
+  [
+  ])
+
+notificationsEmail :: Input (Array String) -> Notifications -> Notifications
+notificationsEmail value (Notifications values) = Notifications (insertInputField "email" (inputJson value) values)
+
+notificationsSlack :: Array NotificationsSlack -> Notifications -> Notifications
+notificationsSlack value (Notifications values) = Notifications (insertInputField "slack" (arrayExprJson (map notificationsSlackJson value)) values)
+
+notificationsJson :: Notifications -> Json
+notificationsJson (Notifications values) = inputObjectJson values
+
+newtype NotificationsSlack = NotificationsSlack InputObject
+
+type NotificationsSlackRequired =
+  { channel :: Input String
+  , url :: Input String
+  }
+
+notificationsSlackArgs :: NotificationsSlackRequired -> NotificationsSlack
+notificationsSlackArgs required = NotificationsSlack (inputObject
+  [ Tuple "channel" (inputJson required.channel)
+  , Tuple "url" (inputJson required.url)
+  ])
+
+notificationsSlackJson :: NotificationsSlack -> Json
+notificationsSlackJson (NotificationsSlack values) = inputObjectJson values
 
 type Required =
   { checkId :: Input String
   , name :: Input String
-  , notifications :: Input (Array ({ email :: Array String, slack :: Array ({ channel :: String, url :: String }) }))
+  , notifications :: Array Notifications
   , type_ :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "check_id" (inputJson required.checkId)
   , Tuple "name" (inputJson required.name)
-  , Tuple "notifications" (inputJson required.notifications)
+  , Tuple "notifications" (arrayExprJson (map notificationsJson required.notifications))
   , Tuple "type" (inputJson required.type_)
   ])
 
 comparison :: Input String -> Args -> Args
-comparison value (Args values) = Args (Object.insert "comparison" (inputJson value) values)
+comparison value (Args values) = Args (insertInputField "comparison" (inputJson value) values)
 
 period :: Input String -> Args -> Args
-period value (Args values) = Args (Object.insert "period" (inputJson value) values)
+period value (Args values) = Args (insertInputField "period" (inputJson value) values)
 
 threshold :: Input Number -> Args -> Args
-threshold value (Args values) = Args (Object.insert "threshold" (inputJson value) values)
+threshold value (Args values) = Args (insertInputField "threshold" (inputJson value) values)
 
 type UptimeAlert =
   { resource :: Resource UptimeAlertResource

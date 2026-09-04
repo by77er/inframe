@@ -5,6 +5,22 @@ module DigitalOcean.Resource.DatabaseCluster
   , DatabaseClusterResource
   , args
   , create
+  , BackupRestore
+  , BackupRestoreRequired
+  , backupRestoreArgs
+  , backupRestoreBackupCreatedAt
+  , MaintenanceWindow
+  , MaintenanceWindowRequired
+  , maintenanceWindowArgs
+  , StorageAutoscale
+  , StorageAutoscaleRequired
+  , storageAutoscaleArgs
+  , storageAutoscaleIncrementGib
+  , storageAutoscaleThresholdPercent
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
   , backupRestore
   , evictionPolicy
   , id
@@ -19,15 +35,84 @@ module DigitalOcean.Resource.DatabaseCluster
   , version
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data DatabaseClusterResource
+
+newtype BackupRestore = BackupRestore InputObject
+
+type BackupRestoreRequired =
+  { databaseName :: Input String
+  }
+
+backupRestoreArgs :: BackupRestoreRequired -> BackupRestore
+backupRestoreArgs required = BackupRestore (inputObject
+  [ Tuple "database_name" (inputJson required.databaseName)
+  ])
+
+backupRestoreBackupCreatedAt :: Input String -> BackupRestore -> BackupRestore
+backupRestoreBackupCreatedAt value (BackupRestore values) = BackupRestore (insertInputField "backup_created_at" (inputJson value) values)
+
+backupRestoreJson :: BackupRestore -> Json
+backupRestoreJson (BackupRestore values) = inputObjectJson values
+
+newtype MaintenanceWindow = MaintenanceWindow InputObject
+
+type MaintenanceWindowRequired =
+  { day :: Input String
+  , hour :: Input String
+  }
+
+maintenanceWindowArgs :: MaintenanceWindowRequired -> MaintenanceWindow
+maintenanceWindowArgs required = MaintenanceWindow (inputObject
+  [ Tuple "day" (inputJson required.day)
+  , Tuple "hour" (inputJson required.hour)
+  ])
+
+maintenanceWindowJson :: MaintenanceWindow -> Json
+maintenanceWindowJson (MaintenanceWindow values) = inputObjectJson values
+
+newtype StorageAutoscale = StorageAutoscale InputObject
+
+type StorageAutoscaleRequired =
+  { enabled :: Input Boolean
+  }
+
+storageAutoscaleArgs :: StorageAutoscaleRequired -> StorageAutoscale
+storageAutoscaleArgs required = StorageAutoscale (inputObject
+  [ Tuple "enabled" (inputJson required.enabled)
+  ])
+
+storageAutoscaleIncrementGib :: Input Number -> StorageAutoscale -> StorageAutoscale
+storageAutoscaleIncrementGib value (StorageAutoscale values) = StorageAutoscale (insertInputField "increment_gib" (inputJson value) values)
+
+storageAutoscaleThresholdPercent :: Input Number -> StorageAutoscale -> StorageAutoscale
+storageAutoscaleThresholdPercent value (StorageAutoscale values) = StorageAutoscale (insertInputField "threshold_percent" (inputJson value) values)
+
+storageAutoscaleJson :: StorageAutoscale -> Json
+storageAutoscaleJson (StorageAutoscale values) = inputObjectJson values
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { engine :: Input String
@@ -37,10 +122,10 @@ type Required =
   , size :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "engine" (inputJson required.engine)
   , Tuple "name" (inputJson required.name)
   , Tuple "node_count" (inputJson required.nodeCount)
@@ -48,41 +133,41 @@ args required = Args (Object.fromFoldable
   , Tuple "size" (inputJson required.size)
   ])
 
-backupRestore :: Input (Array ({ backupCreatedAt :: String, databaseName :: String })) -> Args -> Args
-backupRestore value (Args values) = Args (Object.insert "backup_restore" (inputJson value) values)
+backupRestore :: Array BackupRestore -> Args -> Args
+backupRestore value (Args values) = Args (insertInputField "backup_restore" (arrayExprJson (map backupRestoreJson value)) values)
 
 evictionPolicy :: Input String -> Args -> Args
-evictionPolicy value (Args values) = Args (Object.insert "eviction_policy" (inputJson value) values)
+evictionPolicy value (Args values) = Args (insertInputField "eviction_policy" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
-maintenanceWindow :: Input (Array ({ day :: String, hour :: String })) -> Args -> Args
-maintenanceWindow value (Args values) = Args (Object.insert "maintenance_window" (inputJson value) values)
+maintenanceWindow :: Array MaintenanceWindow -> Args -> Args
+maintenanceWindow value (Args values) = Args (insertInputField "maintenance_window" (arrayExprJson (map maintenanceWindowJson value)) values)
 
 privateNetworkUuid :: Input String -> Args -> Args
-privateNetworkUuid value (Args values) = Args (Object.insert "private_network_uuid" (inputJson value) values)
+privateNetworkUuid value (Args values) = Args (insertInputField "private_network_uuid" (inputJson value) values)
 
 projectId :: Input String -> Args -> Args
-projectId value (Args values) = Args (Object.insert "project_id" (inputJson value) values)
+projectId value (Args values) = Args (insertInputField "project_id" (inputJson value) values)
 
 sqlMode :: Input String -> Args -> Args
-sqlMode value (Args values) = Args (Object.insert "sql_mode" (inputJson value) values)
+sqlMode value (Args values) = Args (insertInputField "sql_mode" (inputJson value) values)
 
-storageAutoscale :: Input (Array ({ enabled :: Boolean, incrementGib :: Number, thresholdPercent :: Number })) -> Args -> Args
-storageAutoscale value (Args values) = Args (Object.insert "storage_autoscale" (inputJson value) values)
+storageAutoscale :: Array StorageAutoscale -> Args -> Args
+storageAutoscale value (Args values) = Args (insertInputField "storage_autoscale" (arrayExprJson (map storageAutoscaleJson value)) values)
 
 storageSizeMib :: Input String -> Args -> Args
-storageSizeMib value (Args values) = Args (Object.insert "storage_size_mib" (inputJson value) values)
+storageSizeMib value (Args values) = Args (insertInputField "storage_size_mib" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
-timeouts :: Input ({ create :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 version :: Input String -> Args -> Args
-version value (Args values) = Args (Object.insert "version" (inputJson value) values)
+version value (Args values) = Args (insertInputField "version" (inputJson value) values)
 
 type DatabaseCluster =
   { resource :: Resource DatabaseClusterResource

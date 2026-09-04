@@ -12,11 +12,9 @@ module DigitalOcean.Resource.UptimeCheck
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data UptimeCheckResource
 
@@ -25,22 +23,22 @@ type Required =
   , target :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   , Tuple "target" (inputJson required.target)
   ])
 
 enabled :: Input Boolean -> Args -> Args
-enabled value (Args values) = Args (Object.insert "enabled" (inputJson value) values)
+enabled value (Args values) = Args (insertInputField "enabled" (inputJson value) values)
 
 regions :: Input (Array String) -> Args -> Args
-regions value (Args values) = Args (Object.insert "regions" (inputJson value) values)
+regions value (Args values) = Args (insertInputField "regions" (inputJson value) values)
 
 type_ :: Input String -> Args -> Args
-type_ value (Args values) = Args (Object.insert "type" (inputJson value) values)
+type_ value (Args values) = Args (insertInputField "type" (inputJson value) values)
 
 type UptimeCheck =
   { resource :: Resource UptimeCheckResource

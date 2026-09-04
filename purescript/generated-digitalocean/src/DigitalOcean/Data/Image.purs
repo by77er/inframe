@@ -13,10 +13,8 @@ module DigitalOcean.Data.Image
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, DataSource, dataSourceAttr)
 
 data ImageDataSource
 
@@ -24,24 +22,24 @@ type Required =
   {
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args _ = Args (Object.fromFoldable
+args _ = Args (inputObject
   [
   ])
 
 id :: Input Number -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 name :: Input String -> Args -> Args
-name value (Args values) = Args (Object.insert "name" (inputJson value) values)
+name value (Args values) = Args (insertInputField "name" (inputJson value) values)
 
 slug :: Input String -> Args -> Args
-slug value (Args values) = Args (Object.insert "slug" (inputJson value) values)
+slug value (Args values) = Args (insertInputField "slug" (inputJson value) values)
 
 source :: Input String -> Args -> Args
-source value (Args values) = Args (Object.insert "source" (inputJson value) values)
+source value (Args values) = Args (insertInputField "source" (inputJson value) values)
 
 type Image =
   { dataSource :: DataSource ImageDataSource

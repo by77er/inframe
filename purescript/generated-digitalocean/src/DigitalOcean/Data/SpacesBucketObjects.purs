@@ -14,11 +14,9 @@ module DigitalOcean.Data.SpacesBucketObjects
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, DataSource, dataSourceAttr)
 
 data SpacesBucketObjectsDataSource
 
@@ -27,28 +25,28 @@ type Required =
   , region :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "bucket" (inputJson required.bucket)
   , Tuple "region" (inputJson required.region)
   ])
 
 delimiter :: Input String -> Args -> Args
-delimiter value (Args values) = Args (Object.insert "delimiter" (inputJson value) values)
+delimiter value (Args values) = Args (insertInputField "delimiter" (inputJson value) values)
 
 encodingType :: Input String -> Args -> Args
-encodingType value (Args values) = Args (Object.insert "encoding_type" (inputJson value) values)
+encodingType value (Args values) = Args (insertInputField "encoding_type" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 maxKeys :: Input Number -> Args -> Args
-maxKeys value (Args values) = Args (Object.insert "max_keys" (inputJson value) values)
+maxKeys value (Args values) = Args (insertInputField "max_keys" (inputJson value) values)
 
 prefix :: Input String -> Args -> Args
-prefix value (Args values) = Args (Object.insert "prefix" (inputJson value) values)
+prefix value (Args values) = Args (insertInputField "prefix" (inputJson value) values)
 
 type SpacesBucketObjects =
   { dataSource :: DataSource SpacesBucketObjectsDataSource

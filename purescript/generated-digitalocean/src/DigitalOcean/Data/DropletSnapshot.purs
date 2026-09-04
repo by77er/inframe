@@ -14,10 +14,8 @@ module DigitalOcean.Data.DropletSnapshot
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, DataSource, dataSourceAttr)
 
 data DropletSnapshotDataSource
 
@@ -25,27 +23,27 @@ type Required =
   {
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args _ = Args (Object.fromFoldable
+args _ = Args (inputObject
   [
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 mostRecent :: Input Boolean -> Args -> Args
-mostRecent value (Args values) = Args (Object.insert "most_recent" (inputJson value) values)
+mostRecent value (Args values) = Args (insertInputField "most_recent" (inputJson value) values)
 
 name :: Input String -> Args -> Args
-name value (Args values) = Args (Object.insert "name" (inputJson value) values)
+name value (Args values) = Args (insertInputField "name" (inputJson value) values)
 
 nameRegex :: Input String -> Args -> Args
-nameRegex value (Args values) = Args (Object.insert "name_regex" (inputJson value) values)
+nameRegex value (Args values) = Args (insertInputField "name_regex" (inputJson value) values)
 
 region :: Input String -> Args -> Args
-region value (Args values) = Args (Object.insert "region" (inputJson value) values)
+region value (Args values) = Args (insertInputField "region" (inputJson value) values)
 
 type DropletSnapshot =
   { dataSource :: DataSource DropletSnapshotDataSource

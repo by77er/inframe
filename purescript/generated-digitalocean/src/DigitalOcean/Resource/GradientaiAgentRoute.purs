@@ -13,11 +13,9 @@ module DigitalOcean.Resource.GradientaiAgentRoute
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data GradientaiAgentRouteResource
 
@@ -26,25 +24,25 @@ type Required =
   , parentAgentUuid :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "child_agent_uuid" (inputJson required.childAgentUuid)
   , Tuple "parent_agent_uuid" (inputJson required.parentAgentUuid)
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 ifCase :: Input String -> Args -> Args
-ifCase value (Args values) = Args (Object.insert "if_case" (inputJson value) values)
+ifCase value (Args values) = Args (insertInputField "if_case" (inputJson value) values)
 
 rollback :: Input Boolean -> Args -> Args
-rollback value (Args values) = Args (Object.insert "rollback" (inputJson value) values)
+rollback value (Args values) = Args (insertInputField "rollback" (inputJson value) values)
 
 routeName :: Input String -> Args -> Args
-routeName value (Args values) = Args (Object.insert "route_name" (inputJson value) values)
+routeName value (Args values) = Args (insertInputField "route_name" (inputJson value) values)
 
 type GradientaiAgentRoute =
   { resource :: Resource GradientaiAgentRouteResource

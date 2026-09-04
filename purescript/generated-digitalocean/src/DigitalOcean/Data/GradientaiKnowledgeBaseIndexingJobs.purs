@@ -10,11 +10,9 @@ module DigitalOcean.Data.GradientaiKnowledgeBaseIndexingJobs
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, DataSource, dataSourceAttr)
 
 data GradientaiKnowledgeBaseIndexingJobsDataSource
 
@@ -22,15 +20,15 @@ type Required =
   { knowledgeBaseUuid :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "knowledge_base_uuid" (inputJson required.knowledgeBaseUuid)
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 type GradientaiKnowledgeBaseIndexingJobs =
   { dataSource :: DataSource GradientaiKnowledgeBaseIndexingJobsDataSource

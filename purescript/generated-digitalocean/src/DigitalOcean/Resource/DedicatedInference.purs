@@ -5,6 +5,20 @@ module DigitalOcean.Resource.DedicatedInference
   , DedicatedInferenceResource
   , args
   , create
+  , ModelDeployments
+  , ModelDeploymentsRequired
+  , modelDeploymentsArgs
+  , modelDeploymentsModelId
+  , modelDeploymentsProviderModelId
+  , ModelDeploymentsAccelerators
+  , ModelDeploymentsAcceleratorsRequired
+  , modelDeploymentsAcceleratorsArgs
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
+  , timeoutsDelete
+  , timeoutsUpdate
   , enablePublicEndpoint
   , huggingFaceToken
   , id
@@ -12,45 +26,109 @@ module DigitalOcean.Resource.DedicatedInference
   , vpcUuid
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data DedicatedInferenceResource
 
+newtype ModelDeployments = ModelDeployments InputObject
+
+type ModelDeploymentsRequired =
+  { accelerators :: Array ModelDeploymentsAccelerators
+  , modelProvider :: Input String
+  , modelSlug :: Input String
+  }
+
+modelDeploymentsArgs :: ModelDeploymentsRequired -> ModelDeployments
+modelDeploymentsArgs required = ModelDeployments (inputObject
+  [ Tuple "accelerators" (arrayExprJson (map modelDeploymentsAcceleratorsJson required.accelerators))
+  , Tuple "model_provider" (inputJson required.modelProvider)
+  , Tuple "model_slug" (inputJson required.modelSlug)
+  ])
+
+modelDeploymentsModelId :: Input String -> ModelDeployments -> ModelDeployments
+modelDeploymentsModelId value (ModelDeployments values) = ModelDeployments (insertInputField "model_id" (inputJson value) values)
+
+modelDeploymentsProviderModelId :: Input String -> ModelDeployments -> ModelDeployments
+modelDeploymentsProviderModelId value (ModelDeployments values) = ModelDeployments (insertInputField "provider_model_id" (inputJson value) values)
+
+modelDeploymentsJson :: ModelDeployments -> Json
+modelDeploymentsJson (ModelDeployments values) = inputObjectJson values
+
+newtype ModelDeploymentsAccelerators = ModelDeploymentsAccelerators InputObject
+
+type ModelDeploymentsAcceleratorsRequired =
+  { acceleratorSlug :: Input String
+  , scale :: Input Number
+  , type_ :: Input String
+  }
+
+modelDeploymentsAcceleratorsArgs :: ModelDeploymentsAcceleratorsRequired -> ModelDeploymentsAccelerators
+modelDeploymentsAcceleratorsArgs required = ModelDeploymentsAccelerators (inputObject
+  [ Tuple "accelerator_slug" (inputJson required.acceleratorSlug)
+  , Tuple "scale" (inputJson required.scale)
+  , Tuple "type" (inputJson required.type_)
+  ])
+
+modelDeploymentsAcceleratorsJson :: ModelDeploymentsAccelerators -> Json
+modelDeploymentsAcceleratorsJson (ModelDeploymentsAccelerators values) = inputObjectJson values
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsDelete :: Input String -> Timeouts -> Timeouts
+timeoutsDelete value (Timeouts values) = Timeouts (insertInputField "delete" (inputJson value) values)
+
+timeoutsUpdate :: Input String -> Timeouts -> Timeouts
+timeoutsUpdate value (Timeouts values) = Timeouts (insertInputField "update" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
+
 type Required =
-  { modelDeployments :: Input (Array ({ accelerators :: Array ({ acceleratorSlug :: String, scale :: Number, type_ :: String }), modelId :: String, modelProvider :: String, modelSlug :: String, providerModelId :: String }))
+  { modelDeployments :: Array ModelDeployments
   , name :: Input String
   , region :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
-  [ Tuple "model_deployments" (inputJson required.modelDeployments)
+args required = Args (inputObject
+  [ Tuple "model_deployments" (arrayExprJson (map modelDeploymentsJson required.modelDeployments))
   , Tuple "name" (inputJson required.name)
   , Tuple "region" (inputJson required.region)
   ])
 
 enablePublicEndpoint :: Input Boolean -> Args -> Args
-enablePublicEndpoint value (Args values) = Args (Object.insert "enable_public_endpoint" (inputJson value) values)
+enablePublicEndpoint value (Args values) = Args (insertInputField "enable_public_endpoint" (inputJson value) values)
 
 huggingFaceToken :: Input String -> Args -> Args
-huggingFaceToken value (Args values) = Args (Object.insert "hugging_face_token" (inputJson value) values)
+huggingFaceToken value (Args values) = Args (insertInputField "hugging_face_token" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
-timeouts :: Input ({ create :: String, delete :: String, update :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 vpcUuid :: Input String -> Args -> Args
-vpcUuid value (Args values) = Args (Object.insert "vpc_uuid" (inputJson value) values)
+vpcUuid value (Args values) = Args (insertInputField "vpc_uuid" (inputJson value) values)
 
 type DedicatedInference =
   { resource :: Resource DedicatedInferenceResource

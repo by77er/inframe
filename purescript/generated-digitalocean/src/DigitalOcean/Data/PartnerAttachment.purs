@@ -5,43 +5,71 @@ module DigitalOcean.Data.PartnerAttachment
   , PartnerAttachmentDataSource
   , args
   , read
+  , Bgp
+  , BgpRequired
+  , bgpArgs
+  , bgpLocalRouterIp
+  , bgpPeerRouterAsn
+  , bgpPeerRouterIp
   , bgp
   , id
   , name
   , redundancyZone
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, DataSource, dataSourceAttr)
 
 data PartnerAttachmentDataSource
+
+newtype Bgp = Bgp InputObject
+
+type BgpRequired =
+  {
+  }
+
+bgpArgs :: BgpRequired -> Bgp
+bgpArgs _ = Bgp (inputObject
+  [
+  ])
+
+bgpLocalRouterIp :: Input String -> Bgp -> Bgp
+bgpLocalRouterIp value (Bgp values) = Bgp (insertInputField "local_router_ip" (inputJson value) values)
+
+bgpPeerRouterAsn :: Input Number -> Bgp -> Bgp
+bgpPeerRouterAsn value (Bgp values) = Bgp (insertInputField "peer_router_asn" (inputJson value) values)
+
+bgpPeerRouterIp :: Input String -> Bgp -> Bgp
+bgpPeerRouterIp value (Bgp values) = Bgp (insertInputField "peer_router_ip" (inputJson value) values)
+
+bgpJson :: Bgp -> Json
+bgpJson (Bgp values) = inputObjectJson values
 
 type Required =
   {
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args _ = Args (Object.fromFoldable
+args _ = Args (inputObject
   [
   ])
 
-bgp :: Input (Array ({ localRouterIp :: String, peerRouterAsn :: Number, peerRouterIp :: String })) -> Args -> Args
-bgp value (Args values) = Args (Object.insert "bgp" (inputJson value) values)
+bgp :: Array Bgp -> Args -> Args
+bgp value (Args values) = Args (insertInputField "bgp" (arrayExprJson (map bgpJson value)) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 name :: Input String -> Args -> Args
-name value (Args values) = Args (Object.insert "name" (inputJson value) values)
+name value (Args values) = Args (insertInputField "name" (inputJson value) values)
 
 redundancyZone :: Input String -> Args -> Args
-redundancyZone value (Args values) = Args (Object.insert "redundancy_zone" (inputJson value) values)
+redundancyZone value (Args values) = Args (insertInputField "redundancy_zone" (inputJson value) values)
 
 type PartnerAttachment =
   { dataSource :: DataSource PartnerAttachmentDataSource

@@ -13,10 +13,8 @@ module DigitalOcean.Data.Droplet
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, DataSource, dataSourceAttr)
 
 data DropletDataSource
 
@@ -24,24 +22,24 @@ type Required =
   {
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args _ = Args (Object.fromFoldable
+args _ = Args (inputObject
   [
   ])
 
 gpu :: Input Boolean -> Args -> Args
-gpu value (Args values) = Args (Object.insert "gpu" (inputJson value) values)
+gpu value (Args values) = Args (insertInputField "gpu" (inputJson value) values)
 
 id :: Input Number -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 name :: Input String -> Args -> Args
-name value (Args values) = Args (Object.insert "name" (inputJson value) values)
+name value (Args values) = Args (insertInputField "name" (inputJson value) values)
 
 tag :: Input String -> Args -> Args
-tag value (Args values) = Args (Object.insert "tag" (inputJson value) values)
+tag value (Args values) = Args (insertInputField "tag" (inputJson value) values)
 
 type Droplet =
   { dataSource :: DataSource DropletDataSource

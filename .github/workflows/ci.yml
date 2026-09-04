@@ -32,10 +32,20 @@ jobs:
         working-directory: purescript
       - run: spago build -p generated-digitalocean
         working-directory: purescript
+      - name: Compile top-level platform example
+        working-directory: purescript
+        run: |
+          spago sources -p integration-digitalocean --quiet > /tmp/tofu-dag-sources
+          purs compile ../examples/digitalocean-platform/Main.purs \
+            --source-globs-file /tmp/tofu-dag-sources \
+            --exclude-files 'test/**/*.purs' \
+            --output output
       - name: PureScript to Graph IR to Rust
         run: |
           cd purescript
           spago run -p integration-digitalocean --main Infra.Main --quiet \
+            | cargo run -q -p tofu-dag-cli -- graph validate -
+          spago run -p integration-digitalocean --main Infra.Platform --quiet \
             | cargo run -q -p tofu-dag-cli -- graph validate -
 
   opentofu:

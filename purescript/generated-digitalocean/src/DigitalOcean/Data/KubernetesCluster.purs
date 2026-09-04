@@ -5,6 +5,42 @@ module DigitalOcean.Data.KubernetesCluster
   , KubernetesClusterDataSource
   , args
   , read
+  , AmdGpuDeviceMetricsExporterPlugin
+  , AmdGpuDeviceMetricsExporterPluginRequired
+  , amdGpuDeviceMetricsExporterPluginArgs
+  , AmdGpuDevicePlugin
+  , AmdGpuDevicePluginRequired
+  , amdGpuDevicePluginArgs
+  , AmdGpuDraDriver
+  , AmdGpuDraDriverRequired
+  , amdGpuDraDriverArgs
+  , ClusterAutoscalerConfiguration
+  , ClusterAutoscalerConfigurationRequired
+  , clusterAutoscalerConfigurationArgs
+  , clusterAutoscalerConfigurationExpanders
+  , clusterAutoscalerConfigurationScaleDownUnneededTime
+  , clusterAutoscalerConfigurationScaleDownUtilizationThreshold
+  , CorednsAutoscaler
+  , CorednsAutoscalerRequired
+  , corednsAutoscalerArgs
+  , NvidiaGpuDevicePlugin
+  , NvidiaGpuDevicePluginRequired
+  , nvidiaGpuDevicePluginArgs
+  , NvidiaGpuDraDriver
+  , NvidiaGpuDraDriverRequired
+  , nvidiaGpuDraDriverArgs
+  , P2pOciRegistryPlugin
+  , P2pOciRegistryPluginRequired
+  , p2pOciRegistryPluginArgs
+  , RdmaSharedDevicePlugin
+  , RdmaSharedDevicePluginRequired
+  , rdmaSharedDevicePluginArgs
+  , RoutingAgent
+  , RoutingAgentRequired
+  , routingAgentArgs
+  , Sso
+  , SsoRequired
+  , ssoArgs
   , amdGpuDeviceMetricsExporterPlugin
   , amdGpuDevicePlugin
   , amdGpuDraDriver
@@ -21,68 +57,230 @@ module DigitalOcean.Data.KubernetesCluster
   , tags
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, DataSource, dataSourceAttr)
 
 data KubernetesClusterDataSource
+
+newtype AmdGpuDeviceMetricsExporterPlugin = AmdGpuDeviceMetricsExporterPlugin InputObject
+
+type AmdGpuDeviceMetricsExporterPluginRequired =
+  {
+  }
+
+amdGpuDeviceMetricsExporterPluginArgs :: AmdGpuDeviceMetricsExporterPluginRequired -> AmdGpuDeviceMetricsExporterPlugin
+amdGpuDeviceMetricsExporterPluginArgs _ = AmdGpuDeviceMetricsExporterPlugin (inputObject
+  [
+  ])
+
+amdGpuDeviceMetricsExporterPluginJson :: AmdGpuDeviceMetricsExporterPlugin -> Json
+amdGpuDeviceMetricsExporterPluginJson (AmdGpuDeviceMetricsExporterPlugin values) = inputObjectJson values
+
+newtype AmdGpuDevicePlugin = AmdGpuDevicePlugin InputObject
+
+type AmdGpuDevicePluginRequired =
+  {
+  }
+
+amdGpuDevicePluginArgs :: AmdGpuDevicePluginRequired -> AmdGpuDevicePlugin
+amdGpuDevicePluginArgs _ = AmdGpuDevicePlugin (inputObject
+  [
+  ])
+
+amdGpuDevicePluginJson :: AmdGpuDevicePlugin -> Json
+amdGpuDevicePluginJson (AmdGpuDevicePlugin values) = inputObjectJson values
+
+newtype AmdGpuDraDriver = AmdGpuDraDriver InputObject
+
+type AmdGpuDraDriverRequired =
+  {
+  }
+
+amdGpuDraDriverArgs :: AmdGpuDraDriverRequired -> AmdGpuDraDriver
+amdGpuDraDriverArgs _ = AmdGpuDraDriver (inputObject
+  [
+  ])
+
+amdGpuDraDriverJson :: AmdGpuDraDriver -> Json
+amdGpuDraDriverJson (AmdGpuDraDriver values) = inputObjectJson values
+
+newtype ClusterAutoscalerConfiguration = ClusterAutoscalerConfiguration InputObject
+
+type ClusterAutoscalerConfigurationRequired =
+  {
+  }
+
+clusterAutoscalerConfigurationArgs :: ClusterAutoscalerConfigurationRequired -> ClusterAutoscalerConfiguration
+clusterAutoscalerConfigurationArgs _ = ClusterAutoscalerConfiguration (inputObject
+  [
+  ])
+
+clusterAutoscalerConfigurationExpanders :: Input (Array String) -> ClusterAutoscalerConfiguration -> ClusterAutoscalerConfiguration
+clusterAutoscalerConfigurationExpanders value (ClusterAutoscalerConfiguration values) = ClusterAutoscalerConfiguration (insertInputField "expanders" (inputJson value) values)
+
+clusterAutoscalerConfigurationScaleDownUnneededTime :: Input String -> ClusterAutoscalerConfiguration -> ClusterAutoscalerConfiguration
+clusterAutoscalerConfigurationScaleDownUnneededTime value (ClusterAutoscalerConfiguration values) = ClusterAutoscalerConfiguration (insertInputField "scale_down_unneeded_time" (inputJson value) values)
+
+clusterAutoscalerConfigurationScaleDownUtilizationThreshold :: Input Number -> ClusterAutoscalerConfiguration -> ClusterAutoscalerConfiguration
+clusterAutoscalerConfigurationScaleDownUtilizationThreshold value (ClusterAutoscalerConfiguration values) = ClusterAutoscalerConfiguration (insertInputField "scale_down_utilization_threshold" (inputJson value) values)
+
+clusterAutoscalerConfigurationJson :: ClusterAutoscalerConfiguration -> Json
+clusterAutoscalerConfigurationJson (ClusterAutoscalerConfiguration values) = inputObjectJson values
+
+newtype CorednsAutoscaler = CorednsAutoscaler InputObject
+
+type CorednsAutoscalerRequired =
+  {
+  }
+
+corednsAutoscalerArgs :: CorednsAutoscalerRequired -> CorednsAutoscaler
+corednsAutoscalerArgs _ = CorednsAutoscaler (inputObject
+  [
+  ])
+
+corednsAutoscalerJson :: CorednsAutoscaler -> Json
+corednsAutoscalerJson (CorednsAutoscaler values) = inputObjectJson values
+
+newtype NvidiaGpuDevicePlugin = NvidiaGpuDevicePlugin InputObject
+
+type NvidiaGpuDevicePluginRequired =
+  {
+  }
+
+nvidiaGpuDevicePluginArgs :: NvidiaGpuDevicePluginRequired -> NvidiaGpuDevicePlugin
+nvidiaGpuDevicePluginArgs _ = NvidiaGpuDevicePlugin (inputObject
+  [
+  ])
+
+nvidiaGpuDevicePluginJson :: NvidiaGpuDevicePlugin -> Json
+nvidiaGpuDevicePluginJson (NvidiaGpuDevicePlugin values) = inputObjectJson values
+
+newtype NvidiaGpuDraDriver = NvidiaGpuDraDriver InputObject
+
+type NvidiaGpuDraDriverRequired =
+  {
+  }
+
+nvidiaGpuDraDriverArgs :: NvidiaGpuDraDriverRequired -> NvidiaGpuDraDriver
+nvidiaGpuDraDriverArgs _ = NvidiaGpuDraDriver (inputObject
+  [
+  ])
+
+nvidiaGpuDraDriverJson :: NvidiaGpuDraDriver -> Json
+nvidiaGpuDraDriverJson (NvidiaGpuDraDriver values) = inputObjectJson values
+
+newtype P2pOciRegistryPlugin = P2pOciRegistryPlugin InputObject
+
+type P2pOciRegistryPluginRequired =
+  {
+  }
+
+p2pOciRegistryPluginArgs :: P2pOciRegistryPluginRequired -> P2pOciRegistryPlugin
+p2pOciRegistryPluginArgs _ = P2pOciRegistryPlugin (inputObject
+  [
+  ])
+
+p2pOciRegistryPluginJson :: P2pOciRegistryPlugin -> Json
+p2pOciRegistryPluginJson (P2pOciRegistryPlugin values) = inputObjectJson values
+
+newtype RdmaSharedDevicePlugin = RdmaSharedDevicePlugin InputObject
+
+type RdmaSharedDevicePluginRequired =
+  {
+  }
+
+rdmaSharedDevicePluginArgs :: RdmaSharedDevicePluginRequired -> RdmaSharedDevicePlugin
+rdmaSharedDevicePluginArgs _ = RdmaSharedDevicePlugin (inputObject
+  [
+  ])
+
+rdmaSharedDevicePluginJson :: RdmaSharedDevicePlugin -> Json
+rdmaSharedDevicePluginJson (RdmaSharedDevicePlugin values) = inputObjectJson values
+
+newtype RoutingAgent = RoutingAgent InputObject
+
+type RoutingAgentRequired =
+  {
+  }
+
+routingAgentArgs :: RoutingAgentRequired -> RoutingAgent
+routingAgentArgs _ = RoutingAgent (inputObject
+  [
+  ])
+
+routingAgentJson :: RoutingAgent -> Json
+routingAgentJson (RoutingAgent values) = inputObjectJson values
+
+newtype Sso = Sso InputObject
+
+type SsoRequired =
+  {
+  }
+
+ssoArgs :: SsoRequired -> Sso
+ssoArgs _ = Sso (inputObject
+  [
+  ])
+
+ssoJson :: Sso -> Json
+ssoJson (Sso values) = inputObjectJson values
 
 type Required =
   { name :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   ])
 
-amdGpuDeviceMetricsExporterPlugin :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-amdGpuDeviceMetricsExporterPlugin value (Args values) = Args (Object.insert "amd_gpu_device_metrics_exporter_plugin" (inputJson value) values)
+amdGpuDeviceMetricsExporterPlugin :: Array AmdGpuDeviceMetricsExporterPlugin -> Args -> Args
+amdGpuDeviceMetricsExporterPlugin value (Args values) = Args (insertInputField "amd_gpu_device_metrics_exporter_plugin" (arrayExprJson (map amdGpuDeviceMetricsExporterPluginJson value)) values)
 
-amdGpuDevicePlugin :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-amdGpuDevicePlugin value (Args values) = Args (Object.insert "amd_gpu_device_plugin" (inputJson value) values)
+amdGpuDevicePlugin :: Array AmdGpuDevicePlugin -> Args -> Args
+amdGpuDevicePlugin value (Args values) = Args (insertInputField "amd_gpu_device_plugin" (arrayExprJson (map amdGpuDevicePluginJson value)) values)
 
-amdGpuDraDriver :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-amdGpuDraDriver value (Args values) = Args (Object.insert "amd_gpu_dra_driver" (inputJson value) values)
+amdGpuDraDriver :: Array AmdGpuDraDriver -> Args -> Args
+amdGpuDraDriver value (Args values) = Args (insertInputField "amd_gpu_dra_driver" (arrayExprJson (map amdGpuDraDriverJson value)) values)
 
-clusterAutoscalerConfiguration :: Input (Array ({ expanders :: Array String, scaleDownUnneededTime :: String, scaleDownUtilizationThreshold :: Number })) -> Args -> Args
-clusterAutoscalerConfiguration value (Args values) = Args (Object.insert "cluster_autoscaler_configuration" (inputJson value) values)
+clusterAutoscalerConfiguration :: Array ClusterAutoscalerConfiguration -> Args -> Args
+clusterAutoscalerConfiguration value (Args values) = Args (insertInputField "cluster_autoscaler_configuration" (arrayExprJson (map clusterAutoscalerConfigurationJson value)) values)
 
-corednsAutoscaler :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-corednsAutoscaler value (Args values) = Args (Object.insert "coredns_autoscaler" (inputJson value) values)
+corednsAutoscaler :: Array CorednsAutoscaler -> Args -> Args
+corednsAutoscaler value (Args values) = Args (insertInputField "coredns_autoscaler" (arrayExprJson (map corednsAutoscalerJson value)) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 kubeconfigExpireSeconds :: Input Number -> Args -> Args
-kubeconfigExpireSeconds value (Args values) = Args (Object.insert "kubeconfig_expire_seconds" (inputJson value) values)
+kubeconfigExpireSeconds value (Args values) = Args (insertInputField "kubeconfig_expire_seconds" (inputJson value) values)
 
-nvidiaGpuDevicePlugin :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-nvidiaGpuDevicePlugin value (Args values) = Args (Object.insert "nvidia_gpu_device_plugin" (inputJson value) values)
+nvidiaGpuDevicePlugin :: Array NvidiaGpuDevicePlugin -> Args -> Args
+nvidiaGpuDevicePlugin value (Args values) = Args (insertInputField "nvidia_gpu_device_plugin" (arrayExprJson (map nvidiaGpuDevicePluginJson value)) values)
 
-nvidiaGpuDraDriver :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-nvidiaGpuDraDriver value (Args values) = Args (Object.insert "nvidia_gpu_dra_driver" (inputJson value) values)
+nvidiaGpuDraDriver :: Array NvidiaGpuDraDriver -> Args -> Args
+nvidiaGpuDraDriver value (Args values) = Args (insertInputField "nvidia_gpu_dra_driver" (arrayExprJson (map nvidiaGpuDraDriverJson value)) values)
 
-p2pOciRegistryPlugin :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-p2pOciRegistryPlugin value (Args values) = Args (Object.insert "p2p_oci_registry_plugin" (inputJson value) values)
+p2pOciRegistryPlugin :: Array P2pOciRegistryPlugin -> Args -> Args
+p2pOciRegistryPlugin value (Args values) = Args (insertInputField "p2p_oci_registry_plugin" (arrayExprJson (map p2pOciRegistryPluginJson value)) values)
 
-rdmaSharedDevicePlugin :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-rdmaSharedDevicePlugin value (Args values) = Args (Object.insert "rdma_shared_device_plugin" (inputJson value) values)
+rdmaSharedDevicePlugin :: Array RdmaSharedDevicePlugin -> Args -> Args
+rdmaSharedDevicePlugin value (Args values) = Args (insertInputField "rdma_shared_device_plugin" (arrayExprJson (map rdmaSharedDevicePluginJson value)) values)
 
-routingAgent :: Input (Array ({ enabled :: Boolean })) -> Args -> Args
-routingAgent value (Args values) = Args (Object.insert "routing_agent" (inputJson value) values)
+routingAgent :: Array RoutingAgent -> Args -> Args
+routingAgent value (Args values) = Args (insertInputField "routing_agent" (arrayExprJson (map routingAgentJson value)) values)
 
-sso :: Input (Array ({ clientId :: String, enabled :: Boolean, issuerUrl :: String, required :: Boolean })) -> Args -> Args
-sso value (Args values) = Args (Object.insert "sso" (inputJson value) values)
+sso :: Array Sso -> Args -> Args
+sso value (Args values) = Args (insertInputField "sso" (arrayExprJson (map ssoJson value)) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
 type KubernetesCluster =
   { dataSource :: DataSource KubernetesClusterDataSource

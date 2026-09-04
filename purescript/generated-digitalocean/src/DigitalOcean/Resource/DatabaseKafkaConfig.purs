@@ -27,11 +27,9 @@ module DigitalOcean.Resource.DatabaseKafkaConfig
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseKafkaConfigResource
 
@@ -39,66 +37,66 @@ type Required =
   { clusterId :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   ])
 
 autoCreateTopicsEnable :: Input Boolean -> Args -> Args
-autoCreateTopicsEnable value (Args values) = Args (Object.insert "auto_create_topics_enable" (inputJson value) values)
+autoCreateTopicsEnable value (Args values) = Args (insertInputField "auto_create_topics_enable" (inputJson value) values)
 
 groupInitialRebalanceDelayMs :: Input Number -> Args -> Args
-groupInitialRebalanceDelayMs value (Args values) = Args (Object.insert "group_initial_rebalance_delay_ms" (inputJson value) values)
+groupInitialRebalanceDelayMs value (Args values) = Args (insertInputField "group_initial_rebalance_delay_ms" (inputJson value) values)
 
 groupMaxSessionTimeoutMs :: Input Number -> Args -> Args
-groupMaxSessionTimeoutMs value (Args values) = Args (Object.insert "group_max_session_timeout_ms" (inputJson value) values)
+groupMaxSessionTimeoutMs value (Args values) = Args (insertInputField "group_max_session_timeout_ms" (inputJson value) values)
 
 groupMinSessionTimeoutMs :: Input Number -> Args -> Args
-groupMinSessionTimeoutMs value (Args values) = Args (Object.insert "group_min_session_timeout_ms" (inputJson value) values)
+groupMinSessionTimeoutMs value (Args values) = Args (insertInputField "group_min_session_timeout_ms" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 logCleanerDeleteRetentionMs :: Input Number -> Args -> Args
-logCleanerDeleteRetentionMs value (Args values) = Args (Object.insert "log_cleaner_delete_retention_ms" (inputJson value) values)
+logCleanerDeleteRetentionMs value (Args values) = Args (insertInputField "log_cleaner_delete_retention_ms" (inputJson value) values)
 
 logCleanerMinCompactionLagMs :: Input String -> Args -> Args
-logCleanerMinCompactionLagMs value (Args values) = Args (Object.insert "log_cleaner_min_compaction_lag_ms" (inputJson value) values)
+logCleanerMinCompactionLagMs value (Args values) = Args (insertInputField "log_cleaner_min_compaction_lag_ms" (inputJson value) values)
 
 logFlushIntervalMs :: Input String -> Args -> Args
-logFlushIntervalMs value (Args values) = Args (Object.insert "log_flush_interval_ms" (inputJson value) values)
+logFlushIntervalMs value (Args values) = Args (insertInputField "log_flush_interval_ms" (inputJson value) values)
 
 logIndexIntervalBytes :: Input Number -> Args -> Args
-logIndexIntervalBytes value (Args values) = Args (Object.insert "log_index_interval_bytes" (inputJson value) values)
+logIndexIntervalBytes value (Args values) = Args (insertInputField "log_index_interval_bytes" (inputJson value) values)
 
 logMessageDownconversionEnable :: Input Boolean -> Args -> Args
-logMessageDownconversionEnable value (Args values) = Args (Object.insert "log_message_downconversion_enable" (inputJson value) values)
+logMessageDownconversionEnable value (Args values) = Args (insertInputField "log_message_downconversion_enable" (inputJson value) values)
 
 logMessageTimestampDifferenceMaxMs :: Input String -> Args -> Args
-logMessageTimestampDifferenceMaxMs value (Args values) = Args (Object.insert "log_message_timestamp_difference_max_ms" (inputJson value) values)
+logMessageTimestampDifferenceMaxMs value (Args values) = Args (insertInputField "log_message_timestamp_difference_max_ms" (inputJson value) values)
 
 logPreallocate :: Input Boolean -> Args -> Args
-logPreallocate value (Args values) = Args (Object.insert "log_preallocate" (inputJson value) values)
+logPreallocate value (Args values) = Args (insertInputField "log_preallocate" (inputJson value) values)
 
 logRetentionBytes :: Input String -> Args -> Args
-logRetentionBytes value (Args values) = Args (Object.insert "log_retention_bytes" (inputJson value) values)
+logRetentionBytes value (Args values) = Args (insertInputField "log_retention_bytes" (inputJson value) values)
 
 logRetentionHours :: Input Number -> Args -> Args
-logRetentionHours value (Args values) = Args (Object.insert "log_retention_hours" (inputJson value) values)
+logRetentionHours value (Args values) = Args (insertInputField "log_retention_hours" (inputJson value) values)
 
 logRetentionMs :: Input String -> Args -> Args
-logRetentionMs value (Args values) = Args (Object.insert "log_retention_ms" (inputJson value) values)
+logRetentionMs value (Args values) = Args (insertInputField "log_retention_ms" (inputJson value) values)
 
 logRollJitterMs :: Input String -> Args -> Args
-logRollJitterMs value (Args values) = Args (Object.insert "log_roll_jitter_ms" (inputJson value) values)
+logRollJitterMs value (Args values) = Args (insertInputField "log_roll_jitter_ms" (inputJson value) values)
 
 logSegmentDeleteDelayMs :: Input Number -> Args -> Args
-logSegmentDeleteDelayMs value (Args values) = Args (Object.insert "log_segment_delete_delay_ms" (inputJson value) values)
+logSegmentDeleteDelayMs value (Args values) = Args (insertInputField "log_segment_delete_delay_ms" (inputJson value) values)
 
 messageMaxBytes :: Input Number -> Args -> Args
-messageMaxBytes value (Args values) = Args (Object.insert "message_max_bytes" (inputJson value) values)
+messageMaxBytes value (Args values) = Args (insertInputField "message_max_bytes" (inputJson value) values)
 
 type DatabaseKafkaConfig =
   { resource :: Resource DatabaseKafkaConfigResource

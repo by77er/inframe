@@ -5,6 +5,10 @@ module DigitalOcean.Resource.SshKey
   , SshKeyResource
   , args
   , create
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
   , id
   , timeouts
   ) where
@@ -13,30 +17,46 @@ import Prelude (bind, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data SshKeyResource
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { name :: Input String
   , publicKey :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   , Tuple "public_key" (inputJson required.publicKey)
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
-timeouts :: Input ({ create :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type SshKey =
   { resource :: Resource SshKeyResource

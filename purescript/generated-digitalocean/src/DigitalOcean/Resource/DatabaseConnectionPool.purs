@@ -11,11 +11,9 @@ module DigitalOcean.Resource.DatabaseConnectionPool
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseConnectionPoolResource
 
@@ -27,10 +25,10 @@ type Required =
   , size :: Input Number
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   , Tuple "db_name" (inputJson required.dbName)
   , Tuple "mode" (inputJson required.mode)
@@ -39,10 +37,10 @@ args required = Args (Object.fromFoldable
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 user :: Input String -> Args -> Args
-user value (Args values) = Args (Object.insert "user" (inputJson value) values)
+user value (Args values) = Args (insertInputField "user" (inputJson value) values)
 
 type DatabaseConnectionPool =
   { resource :: Resource DatabaseConnectionPoolResource

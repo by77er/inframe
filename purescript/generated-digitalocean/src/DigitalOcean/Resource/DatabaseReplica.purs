@@ -15,11 +15,9 @@ module DigitalOcean.Resource.DatabaseReplica
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseReplicaResource
 
@@ -28,31 +26,31 @@ type Required =
   , name :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   , Tuple "name" (inputJson required.name)
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 privateNetworkUuid :: Input String -> Args -> Args
-privateNetworkUuid value (Args values) = Args (Object.insert "private_network_uuid" (inputJson value) values)
+privateNetworkUuid value (Args values) = Args (insertInputField "private_network_uuid" (inputJson value) values)
 
 region :: Input String -> Args -> Args
-region value (Args values) = Args (Object.insert "region" (inputJson value) values)
+region value (Args values) = Args (insertInputField "region" (inputJson value) values)
 
 size :: Input String -> Args -> Args
-size value (Args values) = Args (Object.insert "size" (inputJson value) values)
+size value (Args values) = Args (insertInputField "size" (inputJson value) values)
 
 storageSizeMib :: Input String -> Args -> Args
-storageSizeMib value (Args values) = Args (Object.insert "storage_size_mib" (inputJson value) values)
+storageSizeMib value (Args values) = Args (insertInputField "storage_size_mib" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
 type DatabaseReplica =
   { resource :: Resource DatabaseReplicaResource

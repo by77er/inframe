@@ -5,34 +5,52 @@ module DigitalOcean.Resource.DatabaseFirewall
   , DatabaseFirewallResource
   , args
   , create
+  , Rule
+  , RuleRequired
+  , ruleArgs
   , id
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data DatabaseFirewallResource
 
-type Required =
-  { clusterId :: Input String
-  , rule :: Input (Array ({ createdAt :: String, type_ :: String, uuid :: String, value :: String }))
+newtype Rule = Rule InputObject
+
+type RuleRequired =
+  { type_ :: Input String
+  , value :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+ruleArgs :: RuleRequired -> Rule
+ruleArgs required = Rule (inputObject
+  [ Tuple "type" (inputJson required.type_)
+  , Tuple "value" (inputJson required.value)
+  ])
+
+ruleJson :: Rule -> Json
+ruleJson (Rule values) = inputObjectJson values
+
+type Required =
+  { clusterId :: Input String
+  , rule :: Array Rule
+  }
+
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
-  , Tuple "rule" (inputJson required.rule)
+  , Tuple "rule" (arrayExprJson (map ruleJson required.rule))
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 type DatabaseFirewall =
   { resource :: Resource DatabaseFirewallResource

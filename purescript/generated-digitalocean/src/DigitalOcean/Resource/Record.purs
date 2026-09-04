@@ -16,11 +16,9 @@ module DigitalOcean.Resource.Record
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data RecordResource
 
@@ -31,10 +29,10 @@ type Required =
   , value :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "domain" (inputJson required.domain)
   , Tuple "name" (inputJson required.name)
   , Tuple "type" (inputJson required.type_)
@@ -42,25 +40,25 @@ args required = Args (Object.fromFoldable
   ])
 
 flags :: Input Number -> Args -> Args
-flags value (Args values) = Args (Object.insert "flags" (inputJson value) values)
+flags value (Args values) = Args (insertInputField "flags" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 port :: Input Number -> Args -> Args
-port value (Args values) = Args (Object.insert "port" (inputJson value) values)
+port value (Args values) = Args (insertInputField "port" (inputJson value) values)
 
 priority :: Input Number -> Args -> Args
-priority value (Args values) = Args (Object.insert "priority" (inputJson value) values)
+priority value (Args values) = Args (insertInputField "priority" (inputJson value) values)
 
 tag :: Input String -> Args -> Args
-tag value (Args values) = Args (Object.insert "tag" (inputJson value) values)
+tag value (Args values) = Args (insertInputField "tag" (inputJson value) values)
 
 ttl :: Input Number -> Args -> Args
-ttl value (Args values) = Args (Object.insert "ttl" (inputJson value) values)
+ttl value (Args values) = Args (insertInputField "ttl" (inputJson value) values)
 
 weight :: Input Number -> Args -> Args
-weight value (Args values) = Args (Object.insert "weight" (inputJson value) values)
+weight value (Args values) = Args (insertInputField "weight" (inputJson value) values)
 
 type RecordHandle =
   { resource :: Resource RecordResource

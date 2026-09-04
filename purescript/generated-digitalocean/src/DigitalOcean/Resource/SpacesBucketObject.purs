@@ -25,9 +25,8 @@ import Prelude (bind, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data SpacesBucketObjectResource
 
@@ -37,56 +36,56 @@ type Required =
   , region :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "bucket" (inputJson required.bucket)
   , Tuple "key" (inputJson required.key)
   , Tuple "region" (inputJson required.region)
   ])
 
 acl :: Input String -> Args -> Args
-acl value (Args values) = Args (Object.insert "acl" (inputJson value) values)
+acl value (Args values) = Args (insertInputField "acl" (inputJson value) values)
 
 cacheControl :: Input String -> Args -> Args
-cacheControl value (Args values) = Args (Object.insert "cache_control" (inputJson value) values)
+cacheControl value (Args values) = Args (insertInputField "cache_control" (inputJson value) values)
 
 content :: Input String -> Args -> Args
-content value (Args values) = Args (Object.insert "content" (inputJson value) values)
+content value (Args values) = Args (insertInputField "content" (inputJson value) values)
 
 contentBase64 :: Input String -> Args -> Args
-contentBase64 value (Args values) = Args (Object.insert "content_base64" (inputJson value) values)
+contentBase64 value (Args values) = Args (insertInputField "content_base64" (inputJson value) values)
 
 contentDisposition :: Input String -> Args -> Args
-contentDisposition value (Args values) = Args (Object.insert "content_disposition" (inputJson value) values)
+contentDisposition value (Args values) = Args (insertInputField "content_disposition" (inputJson value) values)
 
 contentEncoding :: Input String -> Args -> Args
-contentEncoding value (Args values) = Args (Object.insert "content_encoding" (inputJson value) values)
+contentEncoding value (Args values) = Args (insertInputField "content_encoding" (inputJson value) values)
 
 contentLanguage :: Input String -> Args -> Args
-contentLanguage value (Args values) = Args (Object.insert "content_language" (inputJson value) values)
+contentLanguage value (Args values) = Args (insertInputField "content_language" (inputJson value) values)
 
 contentType :: Input String -> Args -> Args
-contentType value (Args values) = Args (Object.insert "content_type" (inputJson value) values)
+contentType value (Args values) = Args (insertInputField "content_type" (inputJson value) values)
 
 etag :: Input String -> Args -> Args
-etag value (Args values) = Args (Object.insert "etag" (inputJson value) values)
+etag value (Args values) = Args (insertInputField "etag" (inputJson value) values)
 
 forceDestroy :: Input Boolean -> Args -> Args
-forceDestroy value (Args values) = Args (Object.insert "force_destroy" (inputJson value) values)
+forceDestroy value (Args values) = Args (insertInputField "force_destroy" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 metadata :: Input Json -> Args -> Args
-metadata value (Args values) = Args (Object.insert "metadata" (inputJson value) values)
+metadata value (Args values) = Args (insertInputField "metadata" (inputJson value) values)
 
 source :: Input String -> Args -> Args
-source value (Args values) = Args (Object.insert "source" (inputJson value) values)
+source value (Args values) = Args (insertInputField "source" (inputJson value) values)
 
 websiteRedirect :: Input String -> Args -> Args
-websiteRedirect value (Args values) = Args (Object.insert "website_redirect" (inputJson value) values)
+websiteRedirect value (Args values) = Args (insertInputField "website_redirect" (inputJson value) values)
 
 type SpacesBucketObject =
   { resource :: Resource SpacesBucketObjectResource

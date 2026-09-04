@@ -21,11 +21,9 @@ module DigitalOcean.Resource.DatabaseRedisConfig
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseRedisConfigResource
 
@@ -33,48 +31,48 @@ type Required =
   { clusterId :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   ])
 
 aclChannelsDefault :: Input String -> Args -> Args
-aclChannelsDefault value (Args values) = Args (Object.insert "acl_channels_default" (inputJson value) values)
+aclChannelsDefault value (Args values) = Args (insertInputField "acl_channels_default" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 ioThreads :: Input Number -> Args -> Args
-ioThreads value (Args values) = Args (Object.insert "io_threads" (inputJson value) values)
+ioThreads value (Args values) = Args (insertInputField "io_threads" (inputJson value) values)
 
 lfuDecayTime :: Input Number -> Args -> Args
-lfuDecayTime value (Args values) = Args (Object.insert "lfu_decay_time" (inputJson value) values)
+lfuDecayTime value (Args values) = Args (insertInputField "lfu_decay_time" (inputJson value) values)
 
 lfuLogFactor :: Input Number -> Args -> Args
-lfuLogFactor value (Args values) = Args (Object.insert "lfu_log_factor" (inputJson value) values)
+lfuLogFactor value (Args values) = Args (insertInputField "lfu_log_factor" (inputJson value) values)
 
 maxmemoryPolicy :: Input String -> Args -> Args
-maxmemoryPolicy value (Args values) = Args (Object.insert "maxmemory_policy" (inputJson value) values)
+maxmemoryPolicy value (Args values) = Args (insertInputField "maxmemory_policy" (inputJson value) values)
 
 notifyKeyspaceEvents :: Input String -> Args -> Args
-notifyKeyspaceEvents value (Args values) = Args (Object.insert "notify_keyspace_events" (inputJson value) values)
+notifyKeyspaceEvents value (Args values) = Args (insertInputField "notify_keyspace_events" (inputJson value) values)
 
 numberOfDatabases :: Input Number -> Args -> Args
-numberOfDatabases value (Args values) = Args (Object.insert "number_of_databases" (inputJson value) values)
+numberOfDatabases value (Args values) = Args (insertInputField "number_of_databases" (inputJson value) values)
 
 persistence :: Input String -> Args -> Args
-persistence value (Args values) = Args (Object.insert "persistence" (inputJson value) values)
+persistence value (Args values) = Args (insertInputField "persistence" (inputJson value) values)
 
 pubsubClientOutputBufferLimit :: Input Number -> Args -> Args
-pubsubClientOutputBufferLimit value (Args values) = Args (Object.insert "pubsub_client_output_buffer_limit" (inputJson value) values)
+pubsubClientOutputBufferLimit value (Args values) = Args (insertInputField "pubsub_client_output_buffer_limit" (inputJson value) values)
 
 ssl :: Input Boolean -> Args -> Args
-ssl value (Args values) = Args (Object.insert "ssl" (inputJson value) values)
+ssl value (Args values) = Args (insertInputField "ssl" (inputJson value) values)
 
 timeout :: Input Number -> Args -> Args
-timeout value (Args values) = Args (Object.insert "timeout" (inputJson value) values)
+timeout value (Args values) = Args (insertInputField "timeout" (inputJson value) values)
 
 type DatabaseRedisConfig =
   { resource :: Resource DatabaseRedisConfigResource

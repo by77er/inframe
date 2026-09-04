@@ -13,9 +13,8 @@ import Prelude (bind, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data DatabaseAdvancedPostgresqlConfigResource
 
@@ -23,18 +22,18 @@ type Required =
   { clusterId :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
   ])
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 pgParameters :: Input Json -> Args -> Args
-pgParameters value (Args values) = Args (Object.insert "pg_parameters" (inputJson value) values)
+pgParameters value (Args values) = Args (insertInputField "pg_parameters" (inputJson value) values)
 
 type DatabaseAdvancedPostgresqlConfig =
   { resource :: Resource DatabaseAdvancedPostgresqlConfigResource

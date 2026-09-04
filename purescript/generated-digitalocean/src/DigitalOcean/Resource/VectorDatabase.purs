@@ -5,6 +5,16 @@ module DigitalOcean.Resource.VectorDatabase
   , VectorDatabaseResource
   , args
   , create
+  , Config
+  , ConfigRequired
+  , configArgs
+  , configDefaultQuantization
+  , configEnableAutoSchema
+  , configWeaviateVersion
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
   , config
   , id
   , projectId
@@ -12,15 +22,54 @@ module DigitalOcean.Resource.VectorDatabase
   , timeouts
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data VectorDatabaseResource
+
+newtype Config = Config InputObject
+
+type ConfigRequired =
+  {
+  }
+
+configArgs :: ConfigRequired -> Config
+configArgs _ = Config (inputObject
+  [
+  ])
+
+configDefaultQuantization :: Input String -> Config -> Config
+configDefaultQuantization value (Config values) = Config (insertInputField "default_quantization" (inputJson value) values)
+
+configEnableAutoSchema :: Input Boolean -> Config -> Config
+configEnableAutoSchema value (Config values) = Config (insertInputField "enable_auto_schema" (inputJson value) values)
+
+configWeaviateVersion :: Input String -> Config -> Config
+configWeaviateVersion value (Config values) = Config (insertInputField "weaviate_version" (inputJson value) values)
+
+configJson :: Config -> Json
+configJson (Config values) = inputObjectJson values
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { name :: Input String
@@ -28,29 +77,29 @@ type Required =
   , size :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   , Tuple "region" (inputJson required.region)
   , Tuple "size" (inputJson required.size)
   ])
 
-config :: Input (Array ({ defaultQuantization :: String, enableAutoSchema :: Boolean, weaviateVersion :: String })) -> Args -> Args
-config value (Args values) = Args (Object.insert "config" (inputJson value) values)
+config :: Array Config -> Args -> Args
+config value (Args values) = Args (insertInputField "config" (arrayExprJson (map configJson value)) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 projectId :: Input String -> Args -> Args
-projectId value (Args values) = Args (Object.insert "project_id" (inputJson value) values)
+projectId value (Args values) = Args (insertInputField "project_id" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
-timeouts :: Input ({ create :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type VectorDatabase =
   { resource :: Resource VectorDatabaseResource

@@ -5,21 +5,78 @@ module DigitalOcean.Resource.PartnerAttachment
   , PartnerAttachmentResource
   , args
   , create
+  , Bgp
+  , BgpRequired
+  , bgpArgs
+  , bgpAuthKey
+  , bgpLocalRouterIp
+  , bgpPeerRouterAsn
+  , bgpPeerRouterIp
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
+  , timeoutsDelete
   , bgp
   , parentUuid
   , redundancyZone
   , timeouts
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data PartnerAttachmentResource
+
+newtype Bgp = Bgp InputObject
+
+type BgpRequired =
+  {
+  }
+
+bgpArgs :: BgpRequired -> Bgp
+bgpArgs _ = Bgp (inputObject
+  [
+  ])
+
+bgpAuthKey :: Input String -> Bgp -> Bgp
+bgpAuthKey value (Bgp values) = Bgp (insertInputField "auth_key" (inputJson value) values)
+
+bgpLocalRouterIp :: Input String -> Bgp -> Bgp
+bgpLocalRouterIp value (Bgp values) = Bgp (insertInputField "local_router_ip" (inputJson value) values)
+
+bgpPeerRouterAsn :: Input Number -> Bgp -> Bgp
+bgpPeerRouterAsn value (Bgp values) = Bgp (insertInputField "peer_router_asn" (inputJson value) values)
+
+bgpPeerRouterIp :: Input String -> Bgp -> Bgp
+bgpPeerRouterIp value (Bgp values) = Bgp (insertInputField "peer_router_ip" (inputJson value) values)
+
+bgpJson :: Bgp -> Json
+bgpJson (Bgp values) = inputObjectJson values
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsDelete :: Input String -> Timeouts -> Timeouts
+timeoutsDelete value (Timeouts values) = Timeouts (insertInputField "delete" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { connectionBandwidthInMbps :: Input Number
@@ -29,10 +86,10 @@ type Required =
   , vpcIds :: Input (Array String)
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "connection_bandwidth_in_mbps" (inputJson required.connectionBandwidthInMbps)
   , Tuple "naas_provider" (inputJson required.naasProvider)
   , Tuple "name" (inputJson required.name)
@@ -40,17 +97,17 @@ args required = Args (Object.fromFoldable
   , Tuple "vpc_ids" (inputJson required.vpcIds)
   ])
 
-bgp :: Input (Array ({ authKey :: String, localRouterIp :: String, peerRouterAsn :: Number, peerRouterIp :: String })) -> Args -> Args
-bgp value (Args values) = Args (Object.insert "bgp" (inputJson value) values)
+bgp :: Array Bgp -> Args -> Args
+bgp value (Args values) = Args (insertInputField "bgp" (arrayExprJson (map bgpJson value)) values)
 
 parentUuid :: Input String -> Args -> Args
-parentUuid value (Args values) = Args (Object.insert "parent_uuid" (inputJson value) values)
+parentUuid value (Args values) = Args (insertInputField "parent_uuid" (inputJson value) values)
 
 redundancyZone :: Input String -> Args -> Args
-redundancyZone value (Args values) = Args (Object.insert "redundancy_zone" (inputJson value) values)
+redundancyZone value (Args values) = Args (insertInputField "redundancy_zone" (inputJson value) values)
 
-timeouts :: Input ({ create :: String, delete :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type PartnerAttachment =
   { resource :: Resource PartnerAttachmentResource

@@ -12,11 +12,9 @@ module DigitalOcean.Resource.GradientaiFunction
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data GradientaiFunctionResource
 
@@ -28,10 +26,10 @@ type Required =
   , inputSchema :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "agent_id" (inputJson required.agentId)
   , Tuple "description" (inputJson required.description)
   , Tuple "faas_namespace" (inputJson required.faasNamespace)
@@ -40,13 +38,13 @@ args required = Args (Object.fromFoldable
   ])
 
 faasName :: Input String -> Args -> Args
-faasName value (Args values) = Args (Object.insert "faas_name" (inputJson value) values)
+faasName value (Args values) = Args (insertInputField "faas_name" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 outputSchema :: Input String -> Args -> Args
-outputSchema value (Args values) = Args (Object.insert "output_schema" (inputJson value) values)
+outputSchema value (Args values) = Args (insertInputField "output_schema" (inputJson value) values)
 
 type GradientaiFunction =
   { resource :: Resource GradientaiFunctionResource

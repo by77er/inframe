@@ -97,7 +97,7 @@ pub enum SchemaType {
     List(Box<Self>),
     Set(Box<Self>),
     Map(Box<Self>),
-    Object(BTreeMap<String, Self>),
+    Object(BTreeMap<String, AttributeSchema>),
     Tuple(Vec<Self>),
     Dynamic,
 }
@@ -260,7 +260,7 @@ fn normalize_attribute(raw: RawAttribute, path: &str) -> Result<AttributeSchema,
                 .into_iter()
                 .map(|(name, attribute)| {
                     let field_path = format!("{path}.{name}");
-                    Ok((name, normalize_attribute(attribute, &field_path)?.r#type))
+                    Ok((name, normalize_attribute(attribute, &field_path)?))
                 })
                 .collect::<Result<_, NormalizeError>>()?;
             let object = SchemaType::Object(fields);
@@ -319,7 +319,17 @@ fn parse_type(value: &Value, path: &str) -> Result<SchemaType, NormalizeError> {
                 object
                     .iter()
                     .map(|(name, value)| {
-                        Ok((name.clone(), parse_type(value, &format!("{path}.{name}"))?))
+                        Ok((
+                            name.clone(),
+                            AttributeSchema {
+                                r#type: parse_type(value, &format!("{path}.{name}"))?,
+                                required: true,
+                                optional: false,
+                                computed: false,
+                                sensitive: false,
+                                description: None,
+                            },
+                        ))
                     })
                     .collect::<Result<_, NormalizeError>>()?,
             ))
@@ -468,7 +478,18 @@ mod tests {
           "resource_schemas": {
             "digitalocean_tag": { "block": { "attributes": {
               "id": { "type": "string", "computed": true },
-              "name": { "type": "string", "required": true }
+              "name": { "type": "string", "required": true },
+              "node_pool": {
+                "nested_type": {
+                  "nesting_mode": "list",
+                  "attributes": {
+                    "actual_node_count": { "type": "number", "computed": true },
+                    "auto_scale": { "type": "bool", "optional": true },
+                    "name": { "type": "string", "required": true }
+                  }
+                },
+                "required": true
+              }
             } } }
           },
           "data_source_schemas": {}
@@ -490,6 +511,15 @@ mod tests {
         assert!(tag.attributes["name"].required);
         assert!(tag.attributes["id"].computed);
         assert_eq!(tag.attributes["name"].r#type, SchemaType::String);
+        let SchemaType::List(node_pool) = &tag.attributes["node_pool"].r#type else {
+            panic!("node_pool should be a list");
+        };
+        let SchemaType::Object(fields) = node_pool.as_ref() else {
+            panic!("node_pool entries should be objects");
+        };
+        assert!(fields["name"].required);
+        assert!(fields["auto_scale"].optional);
+        assert!(fields["actual_node_count"].computed);
     }
 
     #[test]

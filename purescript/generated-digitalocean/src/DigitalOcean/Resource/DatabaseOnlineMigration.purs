@@ -5,38 +5,62 @@ module DigitalOcean.Resource.DatabaseOnlineMigration
   , DatabaseOnlineMigrationResource
   , args
   , create
+  , Source
+  , SourceRequired
+  , sourceArgs
   , disableSsl
   , ignoreDbs
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data DatabaseOnlineMigrationResource
 
-type Required =
-  { clusterId :: Input String
-  , source :: Input (Array ({ dbName :: String, host :: String, password :: String, port :: Number, username :: String }))
+newtype Source = Source InputObject
+
+type SourceRequired =
+  { dbName :: Input String
+  , host :: Input String
+  , password :: Input String
+  , port :: Input Number
+  , username :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+sourceArgs :: SourceRequired -> Source
+sourceArgs required = Source (inputObject
+  [ Tuple "db_name" (inputJson required.dbName)
+  , Tuple "host" (inputJson required.host)
+  , Tuple "password" (inputJson required.password)
+  , Tuple "port" (inputJson required.port)
+  , Tuple "username" (inputJson required.username)
+  ])
+
+sourceJson :: Source -> Json
+sourceJson (Source values) = inputObjectJson values
+
+type Required =
+  { clusterId :: Input String
+  , source :: Array Source
+  }
+
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "cluster_id" (inputJson required.clusterId)
-  , Tuple "source" (inputJson required.source)
+  , Tuple "source" (arrayExprJson (map sourceJson required.source))
   ])
 
 disableSsl :: Input Boolean -> Args -> Args
-disableSsl value (Args values) = Args (Object.insert "disable_ssl" (inputJson value) values)
+disableSsl value (Args values) = Args (insertInputField "disable_ssl" (inputJson value) values)
 
 ignoreDbs :: Input (Array String) -> Args -> Args
-ignoreDbs value (Args values) = Args (Object.insert "ignore_dbs" (inputJson value) values)
+ignoreDbs value (Args values) = Args (insertInputField "ignore_dbs" (inputJson value) values)
 
 type DatabaseOnlineMigration =
   { resource :: Resource DatabaseOnlineMigrationResource

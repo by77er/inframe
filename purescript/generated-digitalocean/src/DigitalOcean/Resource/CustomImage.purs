@@ -5,6 +5,10 @@ module DigitalOcean.Resource.CustomImage
   , CustomImageResource
   , args
   , create
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
   , description
   , distribution
   , id
@@ -16,11 +20,27 @@ import Prelude (bind, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data CustomImageResource
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { name :: Input String
@@ -28,29 +48,29 @@ type Required =
   , url :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   , Tuple "regions" (inputJson required.regions)
   , Tuple "url" (inputJson required.url)
   ])
 
 description :: Input String -> Args -> Args
-description value (Args values) = Args (Object.insert "description" (inputJson value) values)
+description value (Args values) = Args (insertInputField "description" (inputJson value) values)
 
 distribution :: Input String -> Args -> Args
-distribution value (Args values) = Args (Object.insert "distribution" (inputJson value) values)
+distribution value (Args values) = Args (insertInputField "distribution" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
-timeouts :: Input ({ create :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type CustomImage =
   { resource :: Resource CustomImageResource

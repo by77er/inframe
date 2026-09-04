@@ -5,6 +5,10 @@ module DigitalOcean.Resource.Project
   , ProjectResource
   , args
   , create
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsDelete
   , description
   , environment
   , id
@@ -18,43 +22,59 @@ import Prelude (bind, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data ProjectResource
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsDelete :: Input String -> Timeouts -> Timeouts
+timeoutsDelete value (Timeouts values) = Timeouts (insertInputField "delete" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { name :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   ])
 
 description :: Input String -> Args -> Args
-description value (Args values) = Args (Object.insert "description" (inputJson value) values)
+description value (Args values) = Args (insertInputField "description" (inputJson value) values)
 
 environment :: Input String -> Args -> Args
-environment value (Args values) = Args (Object.insert "environment" (inputJson value) values)
+environment value (Args values) = Args (insertInputField "environment" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 isDefault :: Input Boolean -> Args -> Args
-isDefault value (Args values) = Args (Object.insert "is_default" (inputJson value) values)
+isDefault value (Args values) = Args (insertInputField "is_default" (inputJson value) values)
 
 purpose :: Input String -> Args -> Args
-purpose value (Args values) = Args (Object.insert "purpose" (inputJson value) values)
+purpose value (Args values) = Args (insertInputField "purpose" (inputJson value) values)
 
 resources :: Input (Array String) -> Args -> Args
-resources value (Args values) = Args (Object.insert "resources" (inputJson value) values)
+resources value (Args values) = Args (insertInputField "resources" (inputJson value) values)
 
-timeouts :: Input ({ delete :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type Project =
   { resource :: Resource ProjectResource

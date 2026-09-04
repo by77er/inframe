@@ -14,11 +14,9 @@ module DigitalOcean.Resource.Cdn
 
 import Prelude (bind, pure)
 
-import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data CdnResource
 
@@ -26,27 +24,27 @@ type Required =
   { origin :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "origin" (inputJson required.origin)
   ])
 
 certificateId :: Input String -> Args -> Args
-certificateId value (Args values) = Args (Object.insert "certificate_id" (inputJson value) values)
+certificateId value (Args values) = Args (insertInputField "certificate_id" (inputJson value) values)
 
 certificateName :: Input String -> Args -> Args
-certificateName value (Args values) = Args (Object.insert "certificate_name" (inputJson value) values)
+certificateName value (Args values) = Args (insertInputField "certificate_name" (inputJson value) values)
 
 customDomain :: Input String -> Args -> Args
-customDomain value (Args values) = Args (Object.insert "custom_domain" (inputJson value) values)
+customDomain value (Args values) = Args (insertInputField "custom_domain" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 ttl :: Input Number -> Args -> Args
-ttl value (Args values) = Args (Object.insert "ttl" (inputJson value) values)
+ttl value (Args values) = Args (insertInputField "ttl" (inputJson value) values)
 
 type Cdn =
   { resource :: Resource CdnResource

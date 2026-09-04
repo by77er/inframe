@@ -5,36 +5,64 @@ module DigitalOcean.Data.App
   , AppDataSource
   , args
   , read
+  , DedicatedIps
+  , DedicatedIpsRequired
+  , dedicatedIpsArgs
+  , dedicatedIpsId
+  , dedicatedIpsIp
+  , dedicatedIpsStatus
   , dedicatedIps
   , id
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, DataSource, dataSourceAttr)
 
 data AppDataSource
+
+newtype DedicatedIps = DedicatedIps InputObject
+
+type DedicatedIpsRequired =
+  {
+  }
+
+dedicatedIpsArgs :: DedicatedIpsRequired -> DedicatedIps
+dedicatedIpsArgs _ = DedicatedIps (inputObject
+  [
+  ])
+
+dedicatedIpsId :: Input String -> DedicatedIps -> DedicatedIps
+dedicatedIpsId value (DedicatedIps values) = DedicatedIps (insertInputField "id" (inputJson value) values)
+
+dedicatedIpsIp :: Input String -> DedicatedIps -> DedicatedIps
+dedicatedIpsIp value (DedicatedIps values) = DedicatedIps (insertInputField "ip" (inputJson value) values)
+
+dedicatedIpsStatus :: Input String -> DedicatedIps -> DedicatedIps
+dedicatedIpsStatus value (DedicatedIps values) = DedicatedIps (insertInputField "status" (inputJson value) values)
+
+dedicatedIpsJson :: DedicatedIps -> Json
+dedicatedIpsJson (DedicatedIps values) = inputObjectJson values
 
 type Required =
   { appId :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "app_id" (inputJson required.appId)
   ])
 
-dedicatedIps :: Input (Array ({ id :: String, ip :: String, status :: String })) -> Args -> Args
-dedicatedIps value (Args values) = Args (Object.insert "dedicated_ips" (inputJson value) values)
+dedicatedIps :: Array DedicatedIps -> Args -> Args
+dedicatedIps value (Args values) = Args (insertInputField "dedicated_ips" (arrayExprJson (map dedicatedIpsJson value)) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 type App =
   { dataSource :: DataSource AppDataSource

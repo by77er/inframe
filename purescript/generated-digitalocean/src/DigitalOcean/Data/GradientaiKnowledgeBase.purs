@@ -5,6 +5,15 @@ module DigitalOcean.Data.GradientaiKnowledgeBase
   , GradientaiKnowledgeBaseDataSource
   , args
   , read
+  , LastIndexingJob
+  , LastIndexingJobRequired
+  , lastIndexingJobArgs
+  , lastIndexingJobCompletedDatasources
+  , lastIndexingJobDataSourceUuids
+  , lastIndexingJobPhase
+  , lastIndexingJobTokens
+  , lastIndexingJobTotalDatasources
+  , lastIndexingJobUuid
   , addedToAgentAt
   , databaseId
   , embeddingModelUuid
@@ -19,61 +28,92 @@ module DigitalOcean.Data.GradientaiKnowledgeBase
   , uuid
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addDataSource)
-import TofuDag.Core (Expr, Input, DataSource, inputJson, dataSourceAttr)
+import TofuDag.Builder (Infra, addDataSource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, DataSource, dataSourceAttr)
 
 data GradientaiKnowledgeBaseDataSource
+
+newtype LastIndexingJob = LastIndexingJob InputObject
+
+type LastIndexingJobRequired =
+  {
+  }
+
+lastIndexingJobArgs :: LastIndexingJobRequired -> LastIndexingJob
+lastIndexingJobArgs _ = LastIndexingJob (inputObject
+  [
+  ])
+
+lastIndexingJobCompletedDatasources :: Input Number -> LastIndexingJob -> LastIndexingJob
+lastIndexingJobCompletedDatasources value (LastIndexingJob values) = LastIndexingJob (insertInputField "completed_datasources" (inputJson value) values)
+
+lastIndexingJobDataSourceUuids :: Input (Array String) -> LastIndexingJob -> LastIndexingJob
+lastIndexingJobDataSourceUuids value (LastIndexingJob values) = LastIndexingJob (insertInputField "data_source_uuids" (inputJson value) values)
+
+lastIndexingJobPhase :: Input String -> LastIndexingJob -> LastIndexingJob
+lastIndexingJobPhase value (LastIndexingJob values) = LastIndexingJob (insertInputField "phase" (inputJson value) values)
+
+lastIndexingJobTokens :: Input Number -> LastIndexingJob -> LastIndexingJob
+lastIndexingJobTokens value (LastIndexingJob values) = LastIndexingJob (insertInputField "tokens" (inputJson value) values)
+
+lastIndexingJobTotalDatasources :: Input Number -> LastIndexingJob -> LastIndexingJob
+lastIndexingJobTotalDatasources value (LastIndexingJob values) = LastIndexingJob (insertInputField "total_datasources" (inputJson value) values)
+
+lastIndexingJobUuid :: Input String -> LastIndexingJob -> LastIndexingJob
+lastIndexingJobUuid value (LastIndexingJob values) = LastIndexingJob (insertInputField "uuid" (inputJson value) values)
+
+lastIndexingJobJson :: LastIndexingJob -> Json
+lastIndexingJobJson (LastIndexingJob values) = inputObjectJson values
 
 type Required =
   {
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args _ = Args (Object.fromFoldable
+args _ = Args (inputObject
   [
   ])
 
 addedToAgentAt :: Input String -> Args -> Args
-addedToAgentAt value (Args values) = Args (Object.insert "added_to_agent_at" (inputJson value) values)
+addedToAgentAt value (Args values) = Args (insertInputField "added_to_agent_at" (inputJson value) values)
 
 databaseId :: Input String -> Args -> Args
-databaseId value (Args values) = Args (Object.insert "database_id" (inputJson value) values)
+databaseId value (Args values) = Args (insertInputField "database_id" (inputJson value) values)
 
 embeddingModelUuid :: Input String -> Args -> Args
-embeddingModelUuid value (Args values) = Args (Object.insert "embedding_model_uuid" (inputJson value) values)
+embeddingModelUuid value (Args values) = Args (insertInputField "embedding_model_uuid" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 isPublic :: Input Boolean -> Args -> Args
-isPublic value (Args values) = Args (Object.insert "is_public" (inputJson value) values)
+isPublic value (Args values) = Args (insertInputField "is_public" (inputJson value) values)
 
-lastIndexingJob :: Input (Array ({ completedDatasources :: Number, createdAt :: String, dataSourceUuids :: Array String, finishedAt :: String, knowledgeBaseUuid :: String, phase :: String, startedAt :: String, tokens :: Number, totalDatasources :: Number, updatedAt :: String, uuid :: String })) -> Args -> Args
-lastIndexingJob value (Args values) = Args (Object.insert "last_indexing_job" (inputJson value) values)
+lastIndexingJob :: Array LastIndexingJob -> Args -> Args
+lastIndexingJob value (Args values) = Args (insertInputField "last_indexing_job" (arrayExprJson (map lastIndexingJobJson value)) values)
 
 name :: Input String -> Args -> Args
-name value (Args values) = Args (Object.insert "name" (inputJson value) values)
+name value (Args values) = Args (insertInputField "name" (inputJson value) values)
 
 projectId :: Input String -> Args -> Args
-projectId value (Args values) = Args (Object.insert "project_id" (inputJson value) values)
+projectId value (Args values) = Args (insertInputField "project_id" (inputJson value) values)
 
 region :: Input String -> Args -> Args
-region value (Args values) = Args (Object.insert "region" (inputJson value) values)
+region value (Args values) = Args (insertInputField "region" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
 userId :: Input String -> Args -> Args
-userId value (Args values) = Args (Object.insert "user_id" (inputJson value) values)
+userId value (Args values) = Args (insertInputField "user_id" (inputJson value) values)
 
 uuid :: Input String -> Args -> Args
-uuid value (Args values) = Args (Object.insert "uuid" (inputJson value) values)
+uuid value (Args values) = Args (insertInputField "uuid" (inputJson value) values)
 
 type GradientaiKnowledgeBase =
   { dataSource :: DataSource GradientaiKnowledgeBaseDataSource

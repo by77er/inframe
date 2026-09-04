@@ -5,24 +5,67 @@ module DigitalOcean.Resource.MonitorAlert
   , MonitorAlertResource
   , args
   , create
+  , Alerts
+  , AlertsRequired
+  , alertsArgs
+  , alertsEmail
+  , alertsSlack
+  , AlertsSlack
+  , AlertsSlackRequired
+  , alertsSlackArgs
   , enabled
   , entities
   , id
   , tags
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data MonitorAlertResource
 
+newtype Alerts = Alerts InputObject
+
+type AlertsRequired =
+  {
+  }
+
+alertsArgs :: AlertsRequired -> Alerts
+alertsArgs _ = Alerts (inputObject
+  [
+  ])
+
+alertsEmail :: Input (Array String) -> Alerts -> Alerts
+alertsEmail value (Alerts values) = Alerts (insertInputField "email" (inputJson value) values)
+
+alertsSlack :: Array AlertsSlack -> Alerts -> Alerts
+alertsSlack value (Alerts values) = Alerts (insertInputField "slack" (arrayExprJson (map alertsSlackJson value)) values)
+
+alertsJson :: Alerts -> Json
+alertsJson (Alerts values) = inputObjectJson values
+
+newtype AlertsSlack = AlertsSlack InputObject
+
+type AlertsSlackRequired =
+  { channel :: Input String
+  , url :: Input String
+  }
+
+alertsSlackArgs :: AlertsSlackRequired -> AlertsSlack
+alertsSlackArgs required = AlertsSlack (inputObject
+  [ Tuple "channel" (inputJson required.channel)
+  , Tuple "url" (inputJson required.url)
+  ])
+
+alertsSlackJson :: AlertsSlack -> Json
+alertsSlackJson (AlertsSlack values) = inputObjectJson values
+
 type Required =
-  { alerts :: Input (Array ({ email :: Array String, slack :: Array ({ channel :: String, url :: String }) }))
+  { alerts :: Array Alerts
   , compare :: Input String
   , description :: Input String
   , type_ :: Input String
@@ -30,11 +73,11 @@ type Required =
   , window :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
-  [ Tuple "alerts" (inputJson required.alerts)
+args required = Args (inputObject
+  [ Tuple "alerts" (arrayExprJson (map alertsJson required.alerts))
   , Tuple "compare" (inputJson required.compare)
   , Tuple "description" (inputJson required.description)
   , Tuple "type" (inputJson required.type_)
@@ -43,16 +86,16 @@ args required = Args (Object.fromFoldable
   ])
 
 enabled :: Input Boolean -> Args -> Args
-enabled value (Args values) = Args (Object.insert "enabled" (inputJson value) values)
+enabled value (Args values) = Args (insertInputField "enabled" (inputJson value) values)
 
 entities :: Input (Array String) -> Args -> Args
-entities value (Args values) = Args (Object.insert "entities" (inputJson value) values)
+entities value (Args values) = Args (insertInputField "entities" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 tags :: Input (Array String) -> Args -> Args
-tags value (Args values) = Args (Object.insert "tags" (inputJson value) values)
+tags value (Args values) = Args (insertInputField "tags" (inputJson value) values)
 
 type MonitorAlert =
   { resource :: Resource MonitorAlertResource

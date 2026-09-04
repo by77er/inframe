@@ -1,6 +1,10 @@
 module TofuDag.Builder
   ( Infra
   , Graph
+  , InputObject
+  , inputObject
+  , insertInputField
+  , inputObjectJson
   , addProvider
   , requireProvider
   , addResource
@@ -17,7 +21,20 @@ import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
-import TofuDag.Core (DataSource, Expr, Resource, dataSourceHandle, exprJson, resourceHandle)
+import TofuDag.Core (DataSource, Expr, Resource, dataSourceHandle, exprJson, objectExprJson, resourceHandle)
+
+-- | Opaque arguments accumulated by generated provider builders.
+newtype InputObject = InputObject (Object Json)
+
+inputObject :: Array (Tuple String Json) -> InputObject
+inputObject = InputObject <<< Object.fromFoldable
+
+insertInputField :: String -> Json -> InputObject -> InputObject
+insertInputField name value (InputObject fields) =
+  InputObject (Object.insert name value fields)
+
+inputObjectJson :: InputObject -> Json
+inputObjectJson (InputObject fields) = objectExprJson fields
 
 type Graph =
   { requiredProviders :: Object Json
@@ -75,8 +92,8 @@ requireProvider localName source version =
     , Tuple "version" (fromString version)
     ]
 
-addProvider :: String -> Maybe String -> Object Json -> Infra Unit
-addProvider provider alias arguments =
+addProvider :: String -> Maybe String -> InputObject -> Infra Unit
+addProvider provider alias (InputObject arguments) =
   modify \graph -> graph { providerConfigs = snoc graph.providerConfigs config }
   where
   base = Object.fromFoldable
@@ -87,8 +104,8 @@ addProvider provider alias arguments =
     Nothing -> base
     Just name -> Object.insert "alias" (fromString name) base
 
-addResource :: forall r. String -> String -> Object Json -> Infra (Resource r)
-addResource resourceType name arguments = Infra \graph ->
+addResource :: forall r. String -> String -> InputObject -> Infra (Resource r)
+addResource resourceType name (InputObject arguments) = Infra \graph ->
   let
     address = resourceType <> "." <> name
     spec = fromObject $ Object.fromFoldable
@@ -100,8 +117,8 @@ addResource resourceType name arguments = Infra \graph ->
   in
     Tuple (resourceHandle address) (graph { resources = snoc graph.resources spec })
 
-addDataSource :: forall r. String -> String -> Object Json -> Infra (DataSource r)
-addDataSource dataSourceType name arguments = Infra \graph ->
+addDataSource :: forall r. String -> String -> InputObject -> Infra (DataSource r)
+addDataSource dataSourceType name (InputObject arguments) = Infra \graph ->
   let
     address = "data." <> dataSourceType <> "." <> name
     spec = fromObject $ Object.fromFoldable

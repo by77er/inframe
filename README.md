@@ -18,6 +18,9 @@ PureScript program -> Graph IR JSON -> Rust validation/lowering -> OpenTofu
 - Provider schemas are acquired with `tofu providers schema -json` and
   normalized deterministically.
 - A language-neutral binding model drives generated PureScript bindings.
+- Nested provider objects have opaque typed builders: constructors accept only
+  required fields, setters expose optional fields, and computed-only fields are
+  excluded from inputs.
 - The checked-in DigitalOcean package contains 79 resources and 77 data sources.
 - The PureScript `Infra` builder is pure: resource creation only appends to a
   graph value.
@@ -112,6 +115,13 @@ infrastructure = do
 `Tag.create` performs no I/O. `main` is the small outer effect that renders the
 resulting graph to stdout.
 
+The [DigitalOcean platform example](examples/digitalocean-platform/Main.purs)
+provisions an autoscaling managed Kubernetes cluster, a versioned Spaces bucket,
+and an autoscaling PostgreSQL database on a shared VPC. Its nested configuration
+uses generated builders such as `nodePoolArgs`, `nodePoolAutoScale`, and
+`storageAutoscaleThresholdPercent`. The equivalent `Infra.Platform` integration
+module is compiled and its emitted Graph IR is validated in CI.
+
 ## CLI examples
 
 ```bash
@@ -133,9 +143,7 @@ checked-in graph literals.
 ## MVP boundaries
 
 The generated API models provider types faithfully enough to compile the entire
-pinned DigitalOcean schema. Nested attributes and blocks are accepted as typed
-whole values; dedicated nested builder modules are a post-MVP ergonomic
-improvement. Tuple, map, and dynamic provider values currently use `Json` as the
-safe lossless fallback. Unsafe raw expressions exist in Graph IR but are
-deliberately not exposed by the PureScript core.
-
+pinned DigitalOcean schema, including recursively generated builders for nested
+attributes and blocks. Tuple, non-object map, and dynamic provider values
+currently use `Json` as the safe lossless fallback. Unsafe raw expressions exist
+in Graph IR but are deliberately not exposed by the PureScript core.

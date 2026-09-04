@@ -5,6 +5,11 @@ module DigitalOcean.Resource.Certificate
   , CertificateResource
   , args
   , create
+  , Timeouts
+  , TimeoutsRequired
+  , timeoutsArgs
+  , timeoutsCreate
+  , timeoutsDelete
   , certificateChain
   , domains
   , id
@@ -18,43 +23,62 @@ import Prelude (bind, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, Resource, resourceAttr)
 
 data CertificateResource
+
+newtype Timeouts = Timeouts InputObject
+
+type TimeoutsRequired =
+  {
+  }
+
+timeoutsArgs :: TimeoutsRequired -> Timeouts
+timeoutsArgs _ = Timeouts (inputObject
+  [
+  ])
+
+timeoutsCreate :: Input String -> Timeouts -> Timeouts
+timeoutsCreate value (Timeouts values) = Timeouts (insertInputField "create" (inputJson value) values)
+
+timeoutsDelete :: Input String -> Timeouts -> Timeouts
+timeoutsDelete value (Timeouts values) = Timeouts (insertInputField "delete" (inputJson value) values)
+
+timeoutsJson :: Timeouts -> Json
+timeoutsJson (Timeouts values) = inputObjectJson values
 
 type Required =
   { name :: Input String
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   ])
 
 certificateChain :: Input String -> Args -> Args
-certificateChain value (Args values) = Args (Object.insert "certificate_chain" (inputJson value) values)
+certificateChain value (Args values) = Args (insertInputField "certificate_chain" (inputJson value) values)
 
 domains :: Input (Array String) -> Args -> Args
-domains value (Args values) = Args (Object.insert "domains" (inputJson value) values)
+domains value (Args values) = Args (insertInputField "domains" (inputJson value) values)
 
 id :: Input String -> Args -> Args
-id value (Args values) = Args (Object.insert "id" (inputJson value) values)
+id value (Args values) = Args (insertInputField "id" (inputJson value) values)
 
 leafCertificate :: Input String -> Args -> Args
-leafCertificate value (Args values) = Args (Object.insert "leaf_certificate" (inputJson value) values)
+leafCertificate value (Args values) = Args (insertInputField "leaf_certificate" (inputJson value) values)
 
 privateKey :: Input String -> Args -> Args
-privateKey value (Args values) = Args (Object.insert "private_key" (inputJson value) values)
+privateKey value (Args values) = Args (insertInputField "private_key" (inputJson value) values)
 
-timeouts :: Input ({ create :: String, delete :: String }) -> Args -> Args
-timeouts value (Args values) = Args (Object.insert "timeouts" (inputJson value) values)
+timeouts :: Timeouts -> Args -> Args
+timeouts value (Args values) = Args (insertInputField "timeouts" (timeoutsJson value) values)
 
 type_ :: Input String -> Args -> Args
-type_ value (Args values) = Args (Object.insert "type" (inputJson value) values)
+type_ value (Args values) = Args (insertInputField "type" (inputJson value) values)
 
 type Certificate =
   { resource :: Resource CertificateResource

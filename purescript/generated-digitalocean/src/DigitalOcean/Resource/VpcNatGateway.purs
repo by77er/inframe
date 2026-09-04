@@ -5,6 +5,19 @@ module DigitalOcean.Resource.VpcNatGateway
   , VpcNatGatewayResource
   , args
   , create
+  , Egresses
+  , EgressesRequired
+  , egressesArgs
+  , egressesPublicGateways
+  , EgressesPublicGateways
+  , EgressesPublicGatewaysRequired
+  , egressesPublicGatewaysArgs
+  , egressesPublicGatewaysIpv4
+  , Vpcs
+  , VpcsRequired
+  , vpcsArgs
+  , vpcsDefaultGateway
+  , vpcsSubnetUuid
   , egresses
   , icmpTimeoutSeconds
   , projectId
@@ -12,49 +25,102 @@ module DigitalOcean.Resource.VpcNatGateway
   , udpTimeoutSeconds
   ) where
 
-import Prelude (bind, pure)
+import Prelude (bind, map, pure)
 
 import Data.Argonaut.Core (Json)
 import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
-import TofuDag.Builder (Infra, addResource)
-import TofuDag.Core (Expr, Input, Resource, inputJson, resourceAttr)
+import TofuDag.Builder (Infra, addResource, InputObject, inputObject, insertInputField, inputObjectJson)
+import TofuDag.Core (Expr, Input, inputJson, arrayExprJson, Resource, resourceAttr)
 
 data VpcNatGatewayResource
+
+newtype Egresses = Egresses InputObject
+
+type EgressesRequired =
+  {
+  }
+
+egressesArgs :: EgressesRequired -> Egresses
+egressesArgs _ = Egresses (inputObject
+  [
+  ])
+
+egressesPublicGateways :: Array EgressesPublicGateways -> Egresses -> Egresses
+egressesPublicGateways value (Egresses values) = Egresses (insertInputField "public_gateways" (arrayExprJson (map egressesPublicGatewaysJson value)) values)
+
+egressesJson :: Egresses -> Json
+egressesJson (Egresses values) = inputObjectJson values
+
+newtype EgressesPublicGateways = EgressesPublicGateways InputObject
+
+type EgressesPublicGatewaysRequired =
+  {
+  }
+
+egressesPublicGatewaysArgs :: EgressesPublicGatewaysRequired -> EgressesPublicGateways
+egressesPublicGatewaysArgs _ = EgressesPublicGateways (inputObject
+  [
+  ])
+
+egressesPublicGatewaysIpv4 :: Input String -> EgressesPublicGateways -> EgressesPublicGateways
+egressesPublicGatewaysIpv4 value (EgressesPublicGateways values) = EgressesPublicGateways (insertInputField "ipv4" (inputJson value) values)
+
+egressesPublicGatewaysJson :: EgressesPublicGateways -> Json
+egressesPublicGatewaysJson (EgressesPublicGateways values) = inputObjectJson values
+
+newtype Vpcs = Vpcs InputObject
+
+type VpcsRequired =
+  { vpcUuid :: Input String
+  }
+
+vpcsArgs :: VpcsRequired -> Vpcs
+vpcsArgs required = Vpcs (inputObject
+  [ Tuple "vpc_uuid" (inputJson required.vpcUuid)
+  ])
+
+vpcsDefaultGateway :: Input Boolean -> Vpcs -> Vpcs
+vpcsDefaultGateway value (Vpcs values) = Vpcs (insertInputField "default_gateway" (inputJson value) values)
+
+vpcsSubnetUuid :: Input String -> Vpcs -> Vpcs
+vpcsSubnetUuid value (Vpcs values) = Vpcs (insertInputField "subnet_uuid" (inputJson value) values)
+
+vpcsJson :: Vpcs -> Json
+vpcsJson (Vpcs values) = inputObjectJson values
 
 type Required =
   { name :: Input String
   , region :: Input String
   , size :: Input Number
   , type_ :: Input String
-  , vpcs :: Input (Array ({ defaultGateway :: Boolean, gatewayIp :: String, subnetUuid :: String, vpcUuid :: String }))
+  , vpcs :: Array Vpcs
   }
 
-newtype Args = Args (Object.Object Json)
+newtype Args = Args InputObject
 
 args :: Required -> Args
-args required = Args (Object.fromFoldable
+args required = Args (inputObject
   [ Tuple "name" (inputJson required.name)
   , Tuple "region" (inputJson required.region)
   , Tuple "size" (inputJson required.size)
   , Tuple "type" (inputJson required.type_)
-  , Tuple "vpcs" (inputJson required.vpcs)
+  , Tuple "vpcs" (arrayExprJson (map vpcsJson required.vpcs))
   ])
 
-egresses :: Input (Array ({ publicGateways :: Array ({ ipv4 :: String }) })) -> Args -> Args
-egresses value (Args values) = Args (Object.insert "egresses" (inputJson value) values)
+egresses :: Array Egresses -> Args -> Args
+egresses value (Args values) = Args (insertInputField "egresses" (arrayExprJson (map egressesJson value)) values)
 
 icmpTimeoutSeconds :: Input Number -> Args -> Args
-icmpTimeoutSeconds value (Args values) = Args (Object.insert "icmp_timeout_seconds" (inputJson value) values)
+icmpTimeoutSeconds value (Args values) = Args (insertInputField "icmp_timeout_seconds" (inputJson value) values)
 
 projectId :: Input String -> Args -> Args
-projectId value (Args values) = Args (Object.insert "project_id" (inputJson value) values)
+projectId value (Args values) = Args (insertInputField "project_id" (inputJson value) values)
 
 tcpTimeoutSeconds :: Input Number -> Args -> Args
-tcpTimeoutSeconds value (Args values) = Args (Object.insert "tcp_timeout_seconds" (inputJson value) values)
+tcpTimeoutSeconds value (Args values) = Args (insertInputField "tcp_timeout_seconds" (inputJson value) values)
 
 udpTimeoutSeconds :: Input Number -> Args -> Args
-udpTimeoutSeconds value (Args values) = Args (Object.insert "udp_timeout_seconds" (inputJson value) values)
+udpTimeoutSeconds value (Args values) = Args (insertInputField "udp_timeout_seconds" (inputJson value) values)
 
 type VpcNatGateway =
   { resource :: Resource VpcNatGatewayResource
