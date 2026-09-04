@@ -42,6 +42,8 @@ enum Command {
     },
     /// Compile a configured PureScript stack to Graph IR without running `OpenTofu`.
     Build(BuildArgs),
+    /// Compile and run a configured PureScript infrastructure test entry point.
+    Test(TestArgs),
     /// Acquire and generate provider bindings.
     Provider {
         #[command(subcommand)]
@@ -83,6 +85,12 @@ struct BuildArgs {
     /// Override the configured generated-graph path.
     #[arg(long)]
     output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct TestArgs {
+    #[arg(long)]
+    stack: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -193,6 +201,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Project { command } => project_command(&command, &cli.project),
         Command::Build(arguments) => build_project(&arguments, &cli.project),
+        Command::Test(arguments) => test_project(&arguments, &cli.project),
         Command::Provider { command } => provider_command(command, &cli.project, &cli.tofu_binary),
         Command::Graph { command } => graph_command(command, &cli.project),
         Command::Render(arguments) => render(&arguments),
@@ -229,6 +238,21 @@ fn build_project(arguments: &BuildArgs, project_path: &Path) -> Result<()> {
     let (_, path) = project.build(&arguments.stack, arguments.output.as_deref())?;
     println!("built stack `{}` to {}", arguments.stack, path.display());
     Ok(())
+}
+
+fn test_project(arguments: &TestArgs, project_path: &Path) -> Result<()> {
+    let project = Project::load(project_path)?;
+    let status = project.test(&arguments.stack)?;
+    if status.success() {
+        return Ok(());
+    }
+    match status.code() {
+        Some(code) => std::process::exit(code),
+        None => bail!(
+            "PureScript tests for stack `{}` terminated by signal",
+            arguments.stack
+        ),
+    }
 }
 
 fn provider_command(

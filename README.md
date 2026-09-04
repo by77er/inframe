@@ -91,6 +91,25 @@ infrastructure = do
   output "database_host" database.host
 ```
 
+The graph is an ordinary PureScript value before it is serialized, so tests can
+enforce policies across every resource. This test fails if any DigitalOcean
+database in the stack is not connected to the managed VPC:
+
+```purescript
+main :: Effect Unit
+main = do
+  let graph = buildGraph infrastructure
+  assert $ all databaseUsesManagedVpc graph.resources
+
+databaseUsesManagedVpc :: ResourceSpec -> Boolean
+databaseUsesManagedVpc resource
+  | resource.resourceType /= "digitalocean_database_cluster" = true
+  | otherwise = case Object.lookup "private_network_uuid" resource.arguments of
+      Just (ResourceAttribute address path) ->
+        address == "digitalocean_vpc.platform" && path == [ "id" ]
+      _ -> false
+```
+
 ## How to use it
 
 ### 1. Install and build
@@ -166,19 +185,22 @@ type = "local"
 
 [stacks.platform]
 main = "Infra.Platform"
+test = "Infra.PlatformTest"
 
 [stacks.platform.backend]
 type = "local"
 ```
 
-Each entry point prints one Graph IR document with `renderGraph`. Reusable
-infrastructure is just ordinary pure functions called while constructing its
-`Infra` value.
+Each stack main prints one Graph IR document with `renderGraph`; its optional
+test entry point runs assertions over the same pure infrastructure value.
+Reusable infrastructure is just ordinary pure functions called while
+constructing its `Infra` value.
 
-### 4. Build and inspect the graph
+### 4. Build, test, and inspect the graph
 
 ```bash
 inframe build --stack platform
+inframe test --stack platform
 inframe graph inspect --stack platform
 inframe graph validate --stack platform
 ```
@@ -187,7 +209,9 @@ The graph commands resolve the last built artifact from `inframe.toml`.
 `inspect` prints a tree of provider pins, configured arguments, resources, data
 sources, symbolic outputs, moves, and dependency edges. An explicit JSON path
 or `-` for stdin remains available for debugging. `build` does not invoke
-OpenTofu or contact the cloud.
+OpenTofu or contact the cloud. `test` runs the stack's configured PureScript
+test entry point and preserves its exit status; the test library and structure
+remain the project's choice.
 
 ### 5. Initialize, validate, and apply
 
@@ -238,19 +262,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 cd purescript
 spago test
-```
-
-Because a built graph is ordinary data, CI can also enforce cross-cutting
-policies without contacting the cloud. For example, this test fails if any
-DigitalOcean database is not connected to a managed VPC:
-
-```bash
-inframe build --stack platform
-jq -e '
-  all(
-    .resources[] | select(.type == "digitalocean_database_cluster");
-    .arguments.private_network_uuid.kind == "resource_attr"
-      and (.arguments.private_network_uuid.address | startswith("digitalocean_vpc."))
-  )
-' .inframe/graphs/platform.json
 ```

@@ -17,6 +17,7 @@ type = "local"
 
 [stacks.example]
 main = "Infra.Platform"
+test = "Infra.PlatformTest"
 
 [stacks.example.backend]
 type = "local"

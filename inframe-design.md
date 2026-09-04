@@ -940,9 +940,15 @@ Recommended PureScript package split:
 Inframe.Core
 Inframe.Builder
 Inframe.Json
+Inframe.Internal.Core
+Inframe.Internal.Builder
 ```
 
-Generated provider libraries import only stable public APIs from these modules.
+Infrastructure programs use the small public surface in `Inframe.Core` and
+`Inframe.Builder`. Generated provider libraries use the `Inframe.Internal.*`
+construction primitives as a generator ABI; those primitives are not presented
+as an application-authoring API. `Inframe.Json` is the single Graph IR encoding
+boundary.
 
 ---
 
@@ -957,11 +963,16 @@ newtype DataSource r = DataSource DataSourceAddress
 newtype Expr a = Expr ExprNode
 
 data Input a
-  = Known a
+  = Known Json
   | Computed (Expr a)
 ```
 
-Constructors for low-level address/reference values should generally be hidden from provider users.
+`ExprNode` is a native PureScript ADT. It is not raw Graph IR JSON; one encoder
+in `Inframe.Json` assigns wire-format tags such as `resource_attr`,
+`conditional`, and `function`. Low-level handle, attribute-reference, and
+expression constructors are hidden from the public modules so application code
+cannot choose an arbitrary phantom result type. Generated adapters import them
+from `Inframe.Internal.Core`.
 
 Generated resources may define phantom resource tags:
 
@@ -1032,10 +1043,14 @@ Despite the `do` notation:
 The computation only creates a graph value.
 
 ```purescript
-buildGraph :: Infra a -> Either BuildError Graph
+buildGraph :: Infra a -> Graph
 ```
 
 is pure.
+
+The returned `Graph` is native typed data. Infrastructure tests can inspect it
+directly; JSON exists only when `encodeGraph` or `renderGraph` crosses the Graph
+IR boundary.
 
 ---
 
@@ -1188,12 +1203,8 @@ The PureScript API wraps these with typed functions such as:
 
 ```purescript
 index
-conditional
-concat
-join
-format
-length
 lookup
+ifThenElse
 interpolate
 ```
 
@@ -1203,17 +1214,18 @@ Only operations that the lowerer knows how to serialize are allowed on unresolve
 
 ## 9.3 Unsafe escape hatch
 
-Eventually a raw expression may be necessary.
-
-Make it explicit:
+Some OpenTofu functions may be needed before a typed combinator exists. Keep
+that loss of type safety visible at the call site:
 
 ```purescript
-unsafeRawTofuExpr :: String -> Expr a
+unsafeArgument :: Input a -> UnsafeArgument
+unsafeCall :: String -> Array UnsafeArgument -> Input a
 ```
 
-It must not be the ordinary path.
-
-The Graph IR node should preserve the fact that this expression was unsafe so validators/policy can flag it.
+`unsafeCall` necessarily lets its caller choose the result type. It must not be
+the ordinary path; common functions should gain typed combinators instead.
+There is no public `resourceAttr`, `dataSourceAttr`, or unmarked polymorphic
+`call`.
 
 ---
 
@@ -1272,6 +1284,9 @@ web <-
 ```
 
 Nested blocks should receive generated typed builders rather than raw JSON.
+They must also be present on generated output handles. OpenTofu expressions can
+traverse configured resource blocks, and dropping those fields would discard
+provider-schema information and prevent valid references.
 
 ---
 
@@ -2165,13 +2180,21 @@ graph, reports every violating address, and does not contact a provider.
 
 For example, a repository can build its production graph and assert that every
 DigitalOcean database's `private_network_uuid` is a symbolic reference to a
-managed `digitalocean_vpc` resource. The README contains a runnable version of
-that test using today's Graph IR. A native policy API should eventually make
-the same rule reusable and provide structured diagnostics.
+managed `digitalocean_vpc` resource. The README contains a runnable PureScript
+version that pattern-matches on the native `Graph` and `ExprNode` values. The
+`inframe test --stack <name>` command simply runs the configured PureScript test
+entry point and preserves its exit status, leaving assertion libraries,
+frameworks, reporting, and policy organization to the project.
 
 Policies over symbolic expressions need three outcomes: pass, violation, and
 unknown. Unknown rules can be evaluated against machine-readable OpenTofu plan
 JSON once provider defaults and computed values are available.
+
+Cross-language conformance should be checked at the serialization boundary.
+The current CI pipes PureScript-produced documents through the Rust validator,
+and checks that the committed JSON Schema still matches the Rust model. Future
+frontends should run the same shared Graph IR fixtures rather than maintaining
+independent expectations for wire tags.
 
 ---
 
@@ -2561,14 +2584,24 @@ OpenTofu-computed collection would make graph cardinality unknown during graph
 construction. Adding either requires an explicit revision of the finite-graph
 boundary in section 5.1, not just a lowering shortcut.
 
-## 26.5 Module support
+## 26.5 Sensitive expression types
+
+The normalized schema and binding model preserve provider-marked sensitivity,
+but generated handles currently expose those fields as ordinary `Expr a` and
+output sensitivity is selected by the caller. A future frontend revision should
+test a type such as `Expr (Sensitive a)` or a separate sensitivity phantom so a
+provider-marked secret cannot be passed to a public output accidentally. This
+needs an ergonomic declassification story and consistent propagation through
+the expression algebra; it is deliberately not implied by the current V1 type.
+
+## 26.6 Module support
 
 OpenTofu modules are deliberately unsupported; host-language functions and
 packages are Inframe's composition mechanism. Any future module-introspection
 feature would require a separately designed schema source and compatibility
 contract. It must not be mixed into provider-schema normalization.
 
-## 26.6 Graph IR format
+## 26.7 Graph IR format
 
 JSON is correct for V1.
 

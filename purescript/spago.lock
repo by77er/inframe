@@ -33,7 +33,12 @@
           ]
         },
         "test": {
-          "dependencies": []
+          "dependencies": [
+            "arrays",
+            "assert",
+            "foreign-object",
+            "maybe"
+          ]
         }
       }
     },

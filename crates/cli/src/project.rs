@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
 use inframe_graph_ir::GraphDocument;
@@ -47,6 +47,7 @@ pub struct PureScriptConfig {
     pub package: String,
     #[serde(default = "default_main")]
     pub main: String,
+    pub test: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +72,7 @@ impl Default for WorkspaceConfig {
 #[serde(deny_unknown_fields)]
 pub struct StackConfig {
     pub main: Option<String>,
+    pub test: Option<String>,
     #[serde(default)]
     pub backend: BackendConfig,
 }
@@ -111,6 +113,9 @@ impl Project {
         if config.purescript.main.trim().is_empty() {
             bail!("purescript.main cannot be empty");
         }
+        if config.purescript.test.as_deref().is_some_and(str::is_empty) {
+            bail!("purescript.test cannot be empty");
+        }
         for (name, provider) in &config.providers {
             if !valid_component_name(name) {
                 bail!("invalid provider name `{name}` in project config");
@@ -137,6 +142,9 @@ impl Project {
             }
             if stack.main.as_deref().is_some_and(str::is_empty) {
                 bail!("purescript main for stack `{name}` cannot be empty");
+            }
+            if stack.test.as_deref().is_some_and(str::is_empty) {
+                bail!("purescript test for stack `{name}` cannot be empty");
             }
             validate_backend_config(name, &stack.backend.config)?;
         }
@@ -259,6 +267,35 @@ impl Project {
         let path = output_override.map_or_else(|| self.graph_path(stack), Path::to_path_buf);
         write_graph(&path, &graph)?;
         Ok((graph, path))
+    }
+
+    pub fn test(&self, stack: &str) -> Result<ExitStatus> {
+        let stack_config = self.stack(stack)?;
+        let test = stack_config
+            .test
+            .as_deref()
+            .or(self.config.purescript.test.as_deref())
+            .with_context(|| {
+                format!(
+                    "stack `{stack}` has no PureScript test entry point; set `stacks.{stack}.test` or `purescript.test`"
+                )
+            })?;
+        let directory = self.root.join(&self.config.purescript.directory);
+        Command::new("spago")
+            .arg("test")
+            .arg("-p")
+            .arg(&self.config.purescript.package)
+            .arg("--main")
+            .arg(test)
+            .arg("--quiet")
+            .current_dir(&directory)
+            .status()
+            .with_context(|| {
+                format!(
+                    "failed to start spago in {}; install it or add it to PATH",
+                    directory.display()
+                )
+            })
     }
 }
 

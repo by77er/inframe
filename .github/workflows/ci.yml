@@ -18,6 +18,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Graph IR schema is current
+        run: cargo run -q -p inframe-cli -- graph schema --output - | diff -u schemas/graph-ir-v1.schema.json -
 
   integration:
     runs-on: ubuntu-latest
@@ -55,6 +57,7 @@ jobs:
         run: |
           cargo run -q -p inframe-cli -- build --stack example
           cargo run -q -p inframe-cli -- graph validate --stack example
+          cargo run -q -p inframe-cli -- test --stack example
 
   opentofu:
     runs-on: ubuntu-latest

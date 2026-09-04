@@ -6,4 +6,10 @@ package:
     - generated-digitalocean
     - prelude
     - inframe-graph-core
-
+  test:
+    main: Infra.PlatformTest
+    dependencies:
+      - arrays
+      - assert
+      - foreign-object
+      - maybe

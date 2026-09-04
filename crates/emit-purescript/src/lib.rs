@@ -476,28 +476,32 @@ fn requires_json_import(fields: &[BindingField]) -> bool {
         }
     }
 
-    !collect_nested_builders(fields).is_empty()
-        || fields.iter().any(|field| type_uses_json(&field.r#type))
+    fields.iter().any(|field| type_uses_json(&field.r#type))
 }
 
 fn render_builder_import(operation: &str, fields: &[BindingField]) -> String {
-    let mut imports = vec!["Infra", operation, "InputObject", "inputObject"];
+    let mut public_imports = vec!["Infra"];
+    let mut internal_imports = vec![operation, "InputObject", "inputObject"];
     if operation == "addResource" {
-        imports.push("requireProvider");
-        imports.push("ResourceOptions");
-        imports.push("resourceOptions");
+        internal_imports.push("requireProvider");
+        public_imports.push("ResourceOptions");
+        public_imports.push("resourceOptions");
     } else if operation == "addDataSource" {
-        imports.push("requireProvider");
-        imports.push("DataSourceOptions");
-        imports.push("dataSourceOptions");
+        internal_imports.push("requireProvider");
+        public_imports.push("DataSourceOptions");
+        public_imports.push("dataSourceOptions");
     }
     if fields.iter().any(|field| field.optional) || has_optional_nested_fields(fields) {
-        imports.push("insertInputField");
+        internal_imports.push("insertInputField");
     }
     if !collect_nested_builders(fields).is_empty() {
-        imports.push("inputObjectJson");
+        internal_imports.push("inputObjectNode");
     }
-    format!("import Inframe.Builder ({})\n", imports.join(", "))
+    format!(
+        "import Inframe.Builder ({})\nimport Inframe.Internal.Builder ({})\n",
+        public_imports.join(", "),
+        internal_imports.join(", ")
+    )
 }
 
 fn provider_local_name_from_source(source: &str) -> &str {
@@ -505,36 +509,40 @@ fn provider_local_name_from_source(source: &str) -> &str {
 }
 
 fn render_core_import(item_kind: Option<bool>, fields: &[BindingField]) -> String {
-    let mut imports = vec!["Input", "inputJson"];
+    let mut public_imports = vec!["Input"];
+    let mut internal_imports = vec!["inputNode"];
     if item_kind.is_none() {
-        imports.insert(0, "Provider");
+        public_imports.insert(0, "Provider");
     }
     if item_kind.is_some() {
-        imports.insert(0, "Expr");
+        public_imports.insert(0, "Expr");
     }
-    if collect_nested_builders(fields).is_empty() {
-        // No nested expression constructors are needed.
-    } else {
+    if !collect_nested_builders(fields).is_empty() {
+        internal_imports.push("ExprNode");
         if uses_array_expressions(fields) {
-            imports.push("arrayExprJson");
+            internal_imports.push("arrayExprNode");
         }
         if uses_map_expressions(fields) {
-            imports.push("objectExprJson");
+            internal_imports.push("objectExprNode");
         }
     }
     if let Some(data_source) = item_kind {
-        imports.push(if data_source {
+        public_imports.push(if data_source {
             "DataSource"
         } else {
             "Resource"
         });
-        imports.push(if data_source {
+        internal_imports.push(if data_source {
             "dataSourceAttr"
         } else {
             "resourceAttr"
         });
     }
-    format!("import Inframe.Core ({})\n", imports.join(", "))
+    format!(
+        "import Inframe.Core ({})\nimport Inframe.Internal.Core ({})\n",
+        public_imports.join(", "),
+        internal_imports.join(", ")
+    )
 }
 
 fn provider_marker(module_root: &str) -> String {
@@ -580,11 +588,11 @@ fn render_nested_builder(builder: &NestedBuilder<'_>) -> String {
     for field in builder.fields.iter().filter(|field| field.optional) {
         output.push_str(&render_nested_setter(builder, field));
     }
-    let json_name = format!("{}Json", builder_prefix(&builder.path));
+    let node_name = format!("{}Node", builder_prefix(&builder.path));
     let _ = write!(
         output,
-        "{json_name} :: {type_name} -> Json\n\
-         {json_name} ({type_name} values) = inputObjectJson values\n\n"
+        "{node_name} :: {type_name} -> ExprNode\n\
+         {node_name} ({type_name} values) = inputObjectNode values\n\n"
     );
     output
 }
@@ -623,7 +631,7 @@ fn render_required_values(output: &mut String, required: &[&BindingField], paren
         let field_name = safe_field_name(field);
         let value = format!("required.{field_name}");
         let path = child_path(parent_path, field);
-        let encoded = render_input_json(&value, &field.r#type, &path);
+        let encoded = render_input_node(&value, &field.r#type, &path);
         let _ = write!(
             output,
             "{separator}Tuple \"{}\" ({encoded})",
@@ -636,7 +644,7 @@ fn render_setter(field: &BindingField, parent_path: &[String]) -> String {
     let name = safe_field_name(field);
     let path = child_path(parent_path, field);
     let input_type = render_input_type(&field.r#type, &path);
-    let encoded = render_input_json("value", &field.r#type, &path);
+    let encoded = render_input_node("value", &field.r#type, &path);
     format!(
         "{name} :: {input_type} -> Args -> Args\n\
          {name} value (Args values) = Args (insertInputField \"{}\" ({encoded}) values)\n\n",
@@ -648,7 +656,7 @@ fn render_nested_setter(builder: &NestedBuilder<'_>, field: &BindingField) -> St
     let name = nested_setter_name(&builder.path, field);
     let path = child_path(&builder.path, field);
     let input_type = render_input_type(&field.r#type, &path);
-    let encoded = render_input_json("value", &field.r#type, &path);
+    let encoded = render_input_node("value", &field.r#type, &path);
     let type_name = builder_type_name(&builder.path);
     format!(
         "{name} :: {input_type} -> {type_name} -> {type_name}\n\
@@ -668,17 +676,17 @@ fn render_input_type(r#type: &BindingType, path: &[String]) -> String {
     }
 }
 
-fn render_input_json(value: &str, r#type: &BindingType, path: &[String]) -> String {
-    let json_function = format!("{}Json", builder_prefix(path));
+fn render_input_node(value: &str, r#type: &BindingType, path: &[String]) -> String {
+    let node_function = format!("{}Node", builder_prefix(path));
     match nested_container(r#type) {
-        Some(NestedContainer::Single(_)) => format!("{json_function} {value}"),
+        Some(NestedContainer::Single(_)) => format!("{node_function} {value}"),
         Some(NestedContainer::Array(_)) => {
-            format!("arrayExprJson (map {json_function} {value})")
+            format!("arrayExprNode (map {node_function} {value})")
         }
         Some(NestedContainer::Map(_)) => {
-            format!("objectExprJson (map {json_function} {value})")
+            format!("objectExprNode (map {node_function} {value})")
         }
-        None => format!("inputJson {value}"),
+        None => format!("inputNode {value}"),
     }
 }
 
@@ -828,7 +836,7 @@ mod tests {
             target_reserved: false,
             description: None,
         };
-        let node_pool = nested_field(
+        let mut node_pool = nested_field(
             "node_pool",
             "nodePool",
             BindingType::List(Box::new(BindingType::Object(vec![
@@ -854,6 +862,7 @@ mod tests {
             false,
             false,
         );
+        node_pool.block = true;
         BindingPackage {
             provider: BindingProvider {
                 source: "digitalocean/digitalocean".into(),
@@ -882,6 +891,9 @@ mod tests {
             )
         );
         let source = &generated.files[Path::new("src/DigitalOcean/Resource/Tag.purs")];
+        assert!(source.contains("import Inframe.Core (Expr, Input, Resource)"));
+        assert!(source.contains("import Inframe.Internal.Core ("));
+        assert!(source.contains("resourceAttr"));
         assert!(source.contains("create :: String -> Args -> Infra Tag"));
         assert!(source.contains(
             "requireProvider \"digitalocean\" \"digitalocean/digitalocean\" \"= 2.100.0\""
@@ -896,9 +908,10 @@ mod tests {
         assert!(source.contains("nodePoolAutoScale :: Input Boolean -> NodePool -> NodePool"));
         assert!(!source.contains("nodePoolActualNodeCount ::"));
         assert!(source.contains("nodePool :: Array NodePool"));
+        assert!(source.contains("nodePool: resourceAttr handle [ \"node_pool\" ]"));
         assert!(
             source.contains(
-                "Tuple \"node_pool\" (arrayExprJson (map nodePoolJson required.nodePool))"
+                "Tuple \"node_pool\" (arrayExprNode (map nodePoolNode required.nodePool))"
             )
         );
     }

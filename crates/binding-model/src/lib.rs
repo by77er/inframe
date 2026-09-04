@@ -40,8 +40,9 @@ impl BindingItem {
     }
 
     pub fn outputs(&self) -> impl Iterator<Item = &BindingField> {
-        // Configured values are referenceable too, so handles expose every attribute.
-        self.fields.iter().filter(|field| !field.block)
+        // Configured values and nested blocks are referenceable too, so handles
+        // expose the complete provider schema rather than only scalar attributes.
+        self.fields.iter()
     }
 }
 
@@ -278,7 +279,7 @@ fn reserved_words() -> BTreeSet<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use inframe_provider_schema::{BlockSchema, ProviderSchema, ResourceSchema};
+    use inframe_provider_schema::{BlockSchema, NestedBlockSchema, ProviderSchema, ResourceSchema};
 
     use super::*;
 
@@ -384,6 +385,45 @@ mod tests {
             children
                 .iter()
                 .any(|field| field.public_name == "actualNodeCount" && field.computed)
+        );
+    }
+
+    #[test]
+    fn exposes_nested_blocks_as_traversable_outputs() {
+        let fields = derive_fields(&BlockSchema {
+            attributes: BTreeMap::new(),
+            blocks: BTreeMap::from([(
+                "node_pool".into(),
+                NestedBlockSchema {
+                    nesting_mode: NestingMode::List,
+                    min_items: Some(1),
+                    max_items: Some(1),
+                    block: BlockSchema {
+                        attributes: BTreeMap::from([(
+                            "name".into(),
+                            AttributeSchema {
+                                r#type: SchemaType::String,
+                                required: true,
+                                optional: false,
+                                computed: false,
+                                sensitive: false,
+                                description: None,
+                            },
+                        )]),
+                        blocks: BTreeMap::new(),
+                    },
+                },
+            )]),
+        });
+        let item = BindingItem {
+            provider_type: "digitalocean_kubernetes_cluster".into(),
+            public_name: "KubernetesCluster".into(),
+            fields,
+        };
+
+        assert!(
+            item.outputs()
+                .any(|field| { field.provider_name == "node_pool" && field.block })
         );
     }
 }

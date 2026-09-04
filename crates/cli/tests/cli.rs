@@ -235,6 +235,88 @@ type = "local"
 }
 
 #[test]
+fn reports_a_missing_purescript_test_entry_point() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::write(
+        &project,
+        r#"[purescript]
+directory = "."
+package = "infra"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["test", "--stack", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "set `stacks.dev.test` or `purescript.test`",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+fn runs_the_configured_purescript_test_and_preserves_its_exit_code() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let bin = directory.path().join("bin");
+    let spago = bin.join("spago");
+    let invocation = directory.path().join("spago-args");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        &project,
+        r#"[purescript]
+directory = "."
+package = "infra"
+
+[stacks.dev]
+test = "Infra.PolicyTest"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &spago,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$INFRAME_TEST_ARGS\"\nexit 23\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&spago).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&spago, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["test", "--stack", "dev"])
+        .env("PATH", path)
+        .env("INFRAME_TEST_ARGS", &invocation)
+        .assert()
+        .code(23);
+
+    assert_eq!(
+        fs::read_to_string(invocation).unwrap(),
+        "test\n-p\ninfra\n--main\nInfra.PolicyTest\n--quiet\n"
+    );
+}
+
+#[test]
 fn requires_secrets_only_at_plan_execution_and_never_writes_their_values() {
     let directory = tempdir().unwrap();
     let graph = directory.path().join("graph.json");
