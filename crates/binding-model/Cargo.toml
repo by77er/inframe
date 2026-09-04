@@ -1,5 +1,5 @@
 [package]
-name = "tofu-dag-binding-model"
+name = "inframe-binding-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
-tofu-dag-provider-schema = { path = "../provider-schema" }
+inframe-provider-schema = { path = "../provider-schema" }
 
 [lints]
 workspace = true

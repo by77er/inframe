@@ -1,5 +1,7 @@
 /target/
-/.tofu-dag/
+/.inframe/
+/.digitalocean-test/
+/purescript/.generated/
 **/.terraform/
 **/.spago/
 **/output/

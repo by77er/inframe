@@ -6,14 +6,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
+use inframe_graph_ir::{Expr, GraphDocument, TemplatePart};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
-use tofu_dag_graph_ir::{Expr, GraphDocument, TemplatePart};
 
 #[derive(Debug, Error)]
 pub enum LowerError {
     #[error(transparent)]
-    InvalidGraph(#[from] tofu_dag_graph_ir::ValidationError),
+    InvalidGraph(#[from] inframe_graph_ir::ValidationError),
     #[error("unsafe raw expression is empty")]
     EmptyRawExpression,
 }
@@ -40,6 +40,24 @@ pub fn lower(graph: &GraphDocument) -> Result<Value, LowerError> {
     }
     if !terraform.is_empty() {
         document.insert("terraform".into(), Value::Object(terraform));
+    }
+
+    let secret_names = graph.secret_environment_names();
+    if !secret_names.is_empty() {
+        let variables = secret_names
+            .iter()
+            .map(|name| {
+                (
+                    secret_variable_name(name),
+                    json!({
+                        "type": "string",
+                        "sensitive": true,
+                        "nullable": false,
+                    }),
+                )
+            })
+            .collect();
+        document.insert("variable".into(), Value::Object(variables));
     }
 
     if !graph.provider_configs.is_empty() {
@@ -277,6 +295,7 @@ fn render_expression(expression: &Expr) -> Result<String, LowerError> {
             }
             Ok(quote(&template))
         }
+        Expr::SecretEnv { name } => Ok(format!("var.{}", secret_variable_name(name))),
         Expr::UnsafeRaw { expression } => {
             if expression.trim().is_empty() {
                 Err(LowerError::EmptyRawExpression)
@@ -285,6 +304,11 @@ fn render_expression(expression: &Expr) -> Result<String, LowerError> {
             }
         }
     }
+}
+
+#[must_use]
+pub fn secret_variable_name(environment_name: &str) -> String {
+    format!("inframe_secret_{environment_name}")
 }
 
 fn render_list<'a>(items: impl Iterator<Item = &'a Expr>) -> Result<Vec<String>, LowerError> {
@@ -347,11 +371,35 @@ impl Workspace {
     }
 
     pub fn write_graph(&self, graph: &GraphDocument) -> Result<PathBuf, WorkspaceError> {
-        fs::create_dir_all(&self.root)?;
-        let path = self.root.join("main.tofu.json");
         let rendered = to_pretty_json(graph).map_err(WorkspaceError::Lower)?;
+        self.write_atomic("main.tofu.json", &rendered)
+    }
+
+    pub fn write_backend(
+        &self,
+        kind: &str,
+        config: &Map<String, Value>,
+    ) -> Result<PathBuf, WorkspaceError> {
+        if !valid_backend_kind(kind) {
+            return Err(WorkspaceError::InvalidBackendKind(kind.to_owned()));
+        }
+        let value = json!({
+            "terraform": {
+                "backend": {
+                    (kind): config,
+                },
+            },
+        });
+        let mut rendered = serde_json::to_string_pretty(&value).expect("backend JSON serializes");
+        rendered.push('\n');
+        self.write_atomic("backend.tofu.json", &rendered)
+    }
+
+    fn write_atomic(&self, name: &str, contents: &str) -> Result<PathBuf, WorkspaceError> {
+        fs::create_dir_all(&self.root)?;
+        let path = self.root.join(name);
         let temporary = tempfile::NamedTempFile::new_in(&self.root)?;
-        fs::write(temporary.path(), rendered)?;
+        fs::write(temporary.path(), contents)?;
         temporary.persist(&path).map_err(|error| error.error)?;
         Ok(path)
     }
@@ -366,10 +414,18 @@ fn valid_stack_name(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
+fn valid_backend_kind(value: &str) -> bool {
+    let mut characters = value.chars();
+    matches!(characters.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
     #[error("invalid stack name `{0}`")]
     InvalidStackName(String),
+    #[error("invalid OpenTofu backend kind `{0}`")]
+    InvalidBackendKind(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -400,18 +456,29 @@ impl OpenTofu {
         command: &str,
         args: &[OsString],
     ) -> Result<ExitStatus, ProcessError> {
-        let status = Command::new(&self.binary)
+        self.run_with_env(workspace, command, args, &BTreeMap::new())
+    }
+
+    pub fn run_with_env(
+        &self,
+        workspace: &Workspace,
+        command: &str,
+        args: &[OsString],
+        environment: &BTreeMap<OsString, OsString>,
+    ) -> Result<ExitStatus, ProcessError> {
+        let mut process = Command::new(&self.binary);
+        process
             .arg(command)
             .args(args)
             .current_dir(workspace.root())
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-            .map_err(|source| ProcessError::Spawn {
-                binary: self.binary.clone(),
-                source,
-            })?;
+            .stderr(Stdio::inherit());
+        process.envs(environment);
+        let status = process.status().map_err(|source| ProcessError::Spawn {
+            binary: self.binary.clone(),
+            source,
+        })?;
         if status.success() {
             Ok(status)
         } else {
@@ -466,10 +533,10 @@ pub enum ProcessError {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tempfile::tempdir;
-    use tofu_dag_graph_ir::{
+    use inframe_graph_ir::{
         Address, DataSourceSpec, OutputSpec, ProviderRequirement, ResourceSpec,
     };
+    use tempfile::tempdir;
 
     use super::*;
 
@@ -554,6 +621,47 @@ mod tests {
         assert_eq!(
             lower_expr(&Expr::literal("literal ${not_a_reference} %{also_literal}")).unwrap(),
             "literal $${not_a_reference} %%{also_literal}"
+        );
+    }
+
+    #[test]
+    fn lowers_secrets_to_sensitive_variables_without_the_value() {
+        let mut graph = graph();
+        graph.resources[0].arguments.insert(
+            "token".into(),
+            Expr::SecretEnv {
+                name: "DIGITALOCEAN_TOKEN".into(),
+            },
+        );
+        let value = lower(&graph).unwrap();
+        assert_eq!(
+            value["resource"]["digitalocean_tag"]["app"]["token"],
+            "${var.inframe_secret_DIGITALOCEAN_TOKEN}"
+        );
+        assert_eq!(
+            value["variable"]["inframe_secret_DIGITALOCEAN_TOKEN"]["sensitive"],
+            true
+        );
+        assert!(!value.to_string().contains("actual-secret-value"));
+    }
+
+    #[test]
+    fn writes_backend_configuration_separately() {
+        let directory = tempdir().unwrap();
+        let workspace = Workspace::new(directory.path(), "dev").unwrap();
+        let path = workspace
+            .write_backend(
+                "http",
+                &Map::from_iter([(
+                    "address".to_owned(),
+                    Value::String("https://state.example.test/dev".to_owned()),
+                )]),
+            )
+            .unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            value["terraform"]["backend"]["http"]["address"],
+            "https://state.example.test/dev"
         );
     }
 }

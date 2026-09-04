@@ -10,16 +10,18 @@ import DigitalOcean.Resource.SpacesBucket as Spaces
 import DigitalOcean.Resource.Vpc as Vpc
 import Effect (Effect)
 import Effect.Console (log)
-import TofuDag.Builder (Infra, output, requireProvider)
-import TofuDag.Core (computed, lit)
-import TofuDag.Json (renderGraph)
+import Inframe.Builder (Infra, createBeforeDestroy, dataSourceOptions, output, resourceOptions, withProvider)
+import Inframe.Core (computed, lit, secretEnv)
+import Inframe.Json (renderGraph)
 
 infrastructure :: Infra Unit
 infrastructure = do
-  requireProvider "digitalocean" "digitalocean/digitalocean" "= 2.100.0"
-  DigitalOcean.configure (DigitalOcean.args {})
+  provider <- DigitalOcean.configure $
+    DigitalOcean.args {}
+      # DigitalOcean.token (secretEnv "DIGITALOCEAN_TOKEN")
 
-  versions <- KubernetesVersions.read "available" (KubernetesVersions.args {})
+  versions <- KubernetesVersions.readWith "available" (KubernetesVersions.args {})
+    (dataSourceOptions # withProvider provider)
   network <- Vpc.create "platform" $ Vpc.args
     { name: lit "platform"
     , region: lit "nyc3"
@@ -37,8 +39,8 @@ infrastructure = do
         # Kubernetes.nodePoolMaxNodes (lit 6.0)
         # Kubernetes.nodePoolTags (lit [ "platform", "workers" ])
 
-  cluster <- Kubernetes.create "platform" $
-    Kubernetes.args
+  cluster <- Kubernetes.createWith "platform"
+    (Kubernetes.args
       { name: lit "platform"
       , nodePool: [ workerPool ]
       , region: lit "nyc3"
@@ -47,7 +49,11 @@ infrastructure = do
       # Kubernetes.autoUpgrade (lit true)
       # Kubernetes.ha (lit true)
       # Kubernetes.surgeUpgrade (lit true)
-      # Kubernetes.vpcUuid (computed network.id)
+      # Kubernetes.vpcUuid (computed network.id))
+    ( resourceOptions
+        # withProvider provider
+        # createBeforeDestroy true
+    )
 
   let
     versioning =
@@ -75,6 +81,7 @@ infrastructure = do
       }
       # Database.privateNetworkUuid (computed network.id)
       # Database.storageAutoscale [ storageAutoscale ]
+      # Database.version (lit "15")
 
   output "cluster_endpoint" cluster.endpoint
   output "bucket_endpoint" bucket.endpoint

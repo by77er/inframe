@@ -1,5 +1,5 @@
 [package]
-name = "tofu-dag-graph-ir"
+name = "inframe-graph-ir"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

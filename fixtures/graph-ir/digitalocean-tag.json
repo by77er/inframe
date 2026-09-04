@@ -15,11 +15,11 @@
   "resources": [
     {
       "type": "digitalocean_tag",
-      "name": "mvp",
+      "name": "smoke",
       "arguments": {
         "name": {
           "kind": "literal",
-          "value": "tofu-dag-mvp"
+          "value": "inframe-smoke"
         }
       },
       "depends_on": []
@@ -30,11 +30,10 @@
     "tag_id": {
       "value": {
         "kind": "resource_attr",
-        "address": "digitalocean_tag.mvp",
+        "address": "digitalocean_tag.smoke",
         "path": ["id"]
       }
     }
   },
   "moves": []
 }
-

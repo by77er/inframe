@@ -1,7 +1,7 @@
 {
   "output": {
     "tag_id": {
-      "value": "${digitalocean_tag.mvp.id}"
+      "value": "${digitalocean_tag.smoke.id}"
     }
   },
   "provider": {
@@ -11,8 +11,8 @@
   },
   "resource": {
     "digitalocean_tag": {
-      "mvp": {
-        "name": "tofu-dag-mvp"
+      "smoke": {
+        "name": "inframe-smoke"
       }
     }
   },

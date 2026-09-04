@@ -1,0 +1,22 @@
+[purescript]
+directory = "purescript"
+package = "integration-digitalocean"
+main = "Infra.Main"
+
+[providers.digitalocean]
+source = "digitalocean/digitalocean"
+version = "2.100.0"
+module_root = "DigitalOcean"
+
+[workspace]
+directory = ".inframe"
+graph_directory = ".inframe/graphs"
+
+[stacks.smoke.backend]
+type = "local"
+
+[stacks.example]
+main = "Infra.Platform"
+
+[stacks.example.backend]
+type = "local"

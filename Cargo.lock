@@ -288,6 +288,76 @@ dependencies = [
 ]
 
 [[package]]
+name = "inframe-binding-model"
+version = "0.1.0"
+dependencies = [
+ "inframe-provider-schema",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "inframe-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "inframe-binding-model",
+ "inframe-emit-purescript",
+ "inframe-graph-ir",
+ "inframe-opentofu",
+ "inframe-provider-schema",
+ "predicates",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "inframe-emit-purescript"
+version = "0.1.0"
+dependencies = [
+ "inframe-binding-model",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "inframe-graph-ir"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "inframe-opentofu"
+version = "0.1.0"
+dependencies = [
+ "inframe-graph-ir",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "inframe-provider-schema"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -541,6 +611,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -608,72 +687,45 @@ dependencies = [
 ]
 
 [[package]]
-name = "tofu-dag-binding-model"
-version = "0.1.0"
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
- "thiserror",
- "tofu-dag-provider-schema",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_edit",
 ]
 
 [[package]]
-name = "tofu-dag-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "predicates",
- "serde_json",
- "tempfile",
- "tofu-dag-binding-model",
- "tofu-dag-emit-purescript",
- "tofu-dag-graph-ir",
- "tofu-dag-opentofu",
- "tofu-dag-provider-schema",
-]
-
-[[package]]
-name = "tofu-dag-emit-purescript"
-version = "0.1.0"
+name = "toml_datetime"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
 dependencies = [
  "serde",
- "serde_json",
- "thiserror",
- "tofu-dag-binding-model",
 ]
 
 [[package]]
-name = "tofu-dag-graph-ir"
-version = "0.1.0"
+name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
- "schemars",
+ "indexmap",
  "serde",
- "serde_json",
- "thiserror",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_write",
+ "winnow",
 ]
 
 [[package]]
-name = "tofu-dag-opentofu"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tempfile",
- "thiserror",
- "tofu-dag-graph-ir",
-]
-
-[[package]]
-name = "tofu-dag-provider-schema"
-version = "0.1.0"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
-]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "typenum"
@@ -721,6 +773,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

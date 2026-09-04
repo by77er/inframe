@@ -1,8 +1,0 @@
-{
-  "provider_source": "digitalocean/digitalocean",
-  "provider_version": "2.100.0",
-  "schema_sha256": "68d3e90e25236614456f2ffbe18719830f746935540d0c0f5c5ec642f772876c",
-  "generator_version": "0.1.0",
-  "binding_model_version": "1.0",
-  "graph_ir_version": "1.0"
-}

@@ -27,26 +27,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Generate pinned DigitalOcean bindings
+        run: |
+          cargo run -q -p inframe-cli -- provider generate \
+            --schema-json fixtures/provider-schema/digitalocean-2.100.0.normalized.json
       - run: npm install --global purescript@0.15.16 spago@1.0.4
-      - run: spago test -p tofu-dag-graph-core
+      - run: spago test -p inframe-graph-core
         working-directory: purescript
-      - run: spago build -p generated-digitalocean
+      - run: spago build -p integration-digitalocean
         working-directory: purescript
       - name: Compile top-level platform example
         working-directory: purescript
         run: |
-          spago sources -p integration-digitalocean --quiet > /tmp/tofu-dag-sources
+          spago sources -p integration-digitalocean --quiet > /tmp/inframe-sources
           purs compile ../examples/digitalocean-platform/Main.purs \
-            --source-globs-file /tmp/tofu-dag-sources \
+            --source-globs-file /tmp/inframe-sources \
             --exclude-files 'test/**/*.purs' \
             --output output
       - name: PureScript to Graph IR to Rust
         run: |
           cd purescript
           spago run -p integration-digitalocean --main Infra.Main --quiet \
-            | cargo run -q -p tofu-dag-cli -- graph validate -
+            | cargo run -q -p inframe-cli -- graph validate -
           spago run -p integration-digitalocean --main Infra.Platform --quiet \
-            | cargo run -q -p tofu-dag-cli -- graph validate -
+            | cargo run -q -p inframe-cli -- graph validate -
+      - name: Configured project build
+        run: |
+          cargo run -q -p inframe-cli -- build --stack example
+          cargo run -q -p inframe-cli -- graph validate --stack example
 
   opentofu:
     runs-on: ubuntu-latest
@@ -56,5 +64,5 @@ jobs:
       - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: 1.12.6
-      - run: cargo run -q -p tofu-dag-cli -- init --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json -- -backend=false -input=false
-      - run: cargo run -q -p tofu-dag-cli -- validate --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json
+      - run: cargo run -q -p inframe-cli -- init --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json -- -backend=false -input=false
+      - run: cargo run -q -p inframe-cli -- validate --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json

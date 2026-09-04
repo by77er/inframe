@@ -1,5 +1,5 @@
 package:
-  name: tofu-dag-graph-core
+  name: inframe-graph-core
   dependencies:
     - argonaut-codecs
     - argonaut-core
@@ -16,5 +16,6 @@ package:
 workspace:
   packageSet:
     registry: 80.8.1
-  extraPackages: {}
-
+  extraPackages:
+    generated-digitalocean:
+      path: .generated/digitalocean

@@ -1,37 +1,7 @@
 {
   "workspace": {
     "packages": {
-      "generated-digitalocean": {
-        "path": "generated-digitalocean",
-        "core": {
-          "dependencies": [
-            "argonaut-core",
-            "foreign-object",
-            "prelude",
-            "tofu-dag-graph-core",
-            "tuples"
-          ]
-        },
-        "test": {
-          "dependencies": []
-        }
-      },
-      "integration-digitalocean": {
-        "path": "integration-digitalocean",
-        "core": {
-          "dependencies": [
-            "console",
-            "effect",
-            "generated-digitalocean",
-            "prelude",
-            "tofu-dag-graph-core"
-          ]
-        },
-        "test": {
-          "dependencies": []
-        }
-      },
-      "tofu-dag-graph-core": {
+      "inframe-graph-core": {
         "path": "./",
         "core": {
           "dependencies": [
@@ -49,6 +19,21 @@
             "assert",
             "effect"
           ]
+        }
+      },
+      "integration-digitalocean": {
+        "path": "integration-digitalocean",
+        "core": {
+          "dependencies": [
+            "console",
+            "effect",
+            "generated-digitalocean",
+            "inframe-graph-core",
+            "prelude"
+          ]
+        },
+        "test": {
+          "dependencies": []
         }
       }
     },
@@ -708,7 +693,11 @@
         "zipperarray": "2.0.0"
       }
     },
-    "extra_packages": {}
+    "extra_packages": {
+      "generated-digitalocean": {
+        "path": ".generated/digitalocean"
+      }
+    }
   },
   "packages": {
     "argonaut-codecs": {
@@ -972,6 +961,17 @@
         "tailrec",
         "tuples",
         "unfoldable"
+      ]
+    },
+    "generated-digitalocean": {
+      "type": "local",
+      "path": ".generated/digitalocean",
+      "dependencies": [
+        "argonaut-core",
+        "foreign-object",
+        "inframe-graph-core",
+        "prelude",
+        "tuples"
       ]
     },
     "identity": {

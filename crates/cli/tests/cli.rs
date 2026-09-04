@@ -19,13 +19,28 @@ const GRAPH: &str = r#"{
   "moves": []
 }"#;
 
+const SECRET_GRAPH: &str = r#"{
+  "format_version": "1.0",
+  "required_providers": {},
+  "provider_configs": [],
+  "resources": [],
+  "data_sources": [],
+  "outputs": {
+    "secret": {
+      "value": { "kind": "secret_env", "name": "INFRAME_TEST_SECRET" },
+      "sensitive": true
+    }
+  },
+  "moves": []
+}"#;
+
 #[test]
 fn validates_a_graph() {
     let directory = tempdir().unwrap();
     let graph = directory.path().join("graph.json");
     fs::write(&graph, GRAPH).unwrap();
 
-    Command::cargo_bin("tofu-dag")
+    Command::cargo_bin("inframe")
         .unwrap()
         .args(["graph", "validate"])
         .arg(graph)
@@ -35,12 +50,40 @@ fn validates_a_graph() {
 }
 
 #[test]
+fn inspects_the_configured_stack_graph_without_a_path() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let graph_directory = directory.path().join(".inframe/graphs");
+    fs::create_dir_all(&graph_directory).unwrap();
+    fs::write(graph_directory.join("dev.json"), GRAPH).unwrap();
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "example"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["graph", "inspect", "--stack", "dev"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("outputs: 1"));
+}
+
+#[test]
 fn renders_open_tofu_json() {
     let directory = tempdir().unwrap();
     let graph = directory.path().join("graph.json");
     fs::write(&graph, GRAPH).unwrap();
 
-    Command::cargo_bin("tofu-dag")
+    Command::cargo_bin("inframe")
         .unwrap()
         .args(["render", "--graph"])
         .arg(graph)
@@ -57,7 +100,7 @@ fn digitalocean_fixture_matches_golden_output() {
     let golden =
         fs::read_to_string(workspace.join("fixtures/tofu-json/digitalocean-tag.json")).unwrap();
 
-    Command::cargo_bin("tofu-dag")
+    Command::cargo_bin("inframe")
         .unwrap()
         .args(["render", "--graph"])
         .arg(graph)
@@ -65,4 +108,120 @@ fn digitalocean_fixture_matches_golden_output() {
         .assert()
         .success()
         .stdout(golden);
+}
+
+#[test]
+fn initializes_a_project_without_overwriting_it() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["project", "init"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(&project)
+            .unwrap()
+            .contains("[stacks.dev.backend]")
+    );
+    assert!(
+        fs::read_to_string(&project)
+            .unwrap()
+            .contains("[providers.digitalocean]")
+    );
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["project", "init"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("refusing to overwrite"));
+}
+
+#[test]
+fn generates_configured_providers_to_the_conventional_directory() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::write(
+        &project,
+        r#"[purescript]
+directory = "src"
+package = "example"
+
+[providers.digitalocean]
+source = "digitalocean/digitalocean"
+version = "2.100.0"
+module_root = "DigitalOcean"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/provider-schema/digitalocean-2.100.0.normalized.json");
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["provider", "generate", "--schema-json"])
+        .arg(fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "generated 79 resources and 77 data sources",
+        ));
+
+    let resource = fs::read_to_string(
+        directory
+            .path()
+            .join("src/.generated/digitalocean/src/DigitalOcean/Resource/Tag.purs"),
+    )
+    .unwrap();
+    assert!(
+        resource.contains(
+            "requireProvider \"digitalocean\" \"digitalocean/digitalocean\" \"= 2.100.0\""
+        )
+    );
+}
+
+#[test]
+fn requires_secrets_only_at_plan_execution_and_never_writes_their_values() {
+    let directory = tempdir().unwrap();
+    let graph = directory.path().join("graph.json");
+    let workspace = directory.path().join("workspace");
+    fs::write(&graph, SECRET_GRAPH).unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["--tofu-binary", "true", "plan", "--stack", "dev", "--graph"])
+        .arg(&graph)
+        .arg("--workspace")
+        .arg(&workspace)
+        .env_remove("INFRAME_TEST_SECRET")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "required secret environment variable `INFRAME_TEST_SECRET` is not set",
+        ));
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["--tofu-binary", "true", "plan", "--stack", "dev", "--graph"])
+        .arg(&graph)
+        .arg("--workspace")
+        .arg(&workspace)
+        .env("INFRAME_TEST_SECRET", "actual-secret-value")
+        .assert()
+        .success();
+
+    let rendered = fs::read_to_string(workspace.join("stacks/dev/main.tofu.json")).unwrap();
+    assert!(rendered.contains("inframe_secret_INFRAME_TEST_SECRET"));
+    assert!(!rendered.contains("actual-secret-value"));
 }

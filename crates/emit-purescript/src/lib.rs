@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use inframe_binding_model::{BindingField, BindingItem, BindingPackage, BindingType};
 use serde::Serialize;
 use thiserror::Error;
-use tofu_dag_binding_model::{BindingField, BindingItem, BindingPackage, BindingType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedPackage {
@@ -62,13 +62,16 @@ pub fn render_package(
     );
     for resource in &package.resources {
         let module = format!("{module_root}.Resource.{}", resource.public_name);
-        files.insert(module_path(&module), render_item(resource, &module, false));
+        files.insert(
+            module_path(&module),
+            render_item(resource, &module, module_root, &package.provider, false),
+        );
     }
     for data_source in &package.data_sources {
         let module = format!("{module_root}.Data.{}", data_source.public_name);
         files.insert(
             module_path(&module),
-            render_item(data_source, &module, true),
+            render_item(data_source, &module, module_root, &package.provider, true),
         );
     }
     let manifest = Manifest {
@@ -92,7 +95,7 @@ pub fn render_package(
     files.insert(
         PathBuf::from("spago.yaml"),
         format!(
-            "package:\n  name: generated-{}\n  dependencies:\n    - argonaut-core\n    - foreign-object\n    - prelude\n    - tofu-dag-graph-core\n    - tuples\n",
+            "package:\n  name: generated-{}\n  dependencies:\n    - argonaut-core\n    - foreign-object\n    - prelude\n    - inframe-graph-core\n    - tuples\n",
             package.provider.public_name.to_ascii_lowercase()
         ),
     );
@@ -121,6 +124,7 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
     let builders = collect_nested_builders(fields);
     let setters: Vec<_> = fields.iter().filter(|field| field.optional).collect();
     let mut exports = vec![
+        provider_marker(module_root),
         "Args".to_owned(),
         "Required".to_owned(),
         "args".to_owned(),
@@ -130,11 +134,9 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
     extend_nested_exports(&mut exports, &builders);
     exports.extend(setters.iter().map(|field| safe_field_name(field)));
     let mut output = module_header(&format!("{module_root}.Provider"), &exports);
-    output.push_str("import Prelude (Unit");
     if uses_nested_mapping(fields) {
-        output.push_str(", map");
+        output.push_str("import Prelude (map)\n\n");
     }
-    output.push_str(")\n\n");
     if requires_json_import(fields) {
         output.push_str("import Data.Argonaut.Core (Json)\n");
     }
@@ -148,41 +150,49 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
     output.push_str(&render_builder_import("addProvider", fields));
     output.push_str(&render_core_import(None, fields));
     output.push('\n');
+    let marker = provider_marker(module_root);
+    let _ = write!(output, "data {marker}\n\n");
     output.push_str(&render_nested_builders(&builders));
     output.push_str(&render_args(fields));
     for field in setters {
         output.push_str(&render_setter(field, &[]));
     }
-    output.push_str("configure :: Args -> Infra Unit\n");
+    let _ = writeln!(output, "configure :: Args -> Infra (Provider {marker})");
+    let local_name = provider_local_name_from_source(&package.provider.source);
+    let version = format!("= {}", package.provider.version);
     let _ = write!(
         output,
-        "configure (Args values) = addProvider \"{}\" Nothing values\n\n",
-        package
-            .provider
-            .source
-            .rsplit('/')
-            .next()
-            .unwrap_or(&package.provider.source)
+        "configure (Args values) = addProvider \"{local_name}\" \"{}\" \"{version}\" Nothing values\n\n",
+        package.provider.source
     );
-    output.push_str("configureAs :: String -> Args -> Infra Unit\n");
     let _ = writeln!(
         output,
-        "configureAs alias (Args values) = addProvider \"{}\" (Just alias) values",
-        package
-            .provider
-            .source
-            .rsplit('/')
-            .next()
-            .unwrap_or(&package.provider.source)
+        "configureAs :: String -> Args -> Infra (Provider {marker})"
+    );
+    let _ = writeln!(
+        output,
+        "configureAs alias (Args values) = addProvider \"{local_name}\" \"{}\" \"{version}\" (Just alias) values",
+        package.provider.source
     );
     output
 }
 
 #[allow(clippy::too_many_lines)]
-fn render_item(item: &BindingItem, module: &str, data_source: bool) -> String {
+fn render_item(
+    item: &BindingItem,
+    module: &str,
+    module_root: &str,
+    provider: &inframe_binding_model::BindingProvider,
+    data_source: bool,
+) -> String {
     let builders = collect_nested_builders(&item.fields);
     let setters: Vec<_> = item.fields.iter().filter(|field| field.optional).collect();
     let operation = if data_source { "read" } else { "create" };
+    let operation_with = if data_source {
+        "readWith"
+    } else {
+        "createWith"
+    };
     let handle_name = safe_type_name(&item.public_name);
     let node = format!(
         "{}{}",
@@ -200,6 +210,7 @@ fn render_item(item: &BindingItem, module: &str, data_source: bool) -> String {
         node.clone(),
         "args".to_owned(),
         operation.to_owned(),
+        operation_with.to_owned(),
     ];
     extend_nested_exports(&mut exports, &builders);
     exports.extend(setters.iter().map(|field| safe_field_name(field)));
@@ -227,6 +238,11 @@ fn render_item(item: &BindingItem, module: &str, data_source: bool) -> String {
         &item.fields,
     ));
     output.push_str(&render_core_import(Some(data_source), &item.fields));
+    let _ = writeln!(
+        output,
+        "import {module_root}.Provider ({})",
+        provider_marker(module_root)
+    );
     output.push('\n');
     let _ = write!(output, "data {node}\n\n");
     output.push_str(&render_nested_builders(&builders));
@@ -251,9 +267,22 @@ fn render_item(item: &BindingItem, module: &str, data_source: bool) -> String {
         );
     }
     output.push_str("\n  }\n\n");
-    let _ = writeln!(
+    let options_type = if data_source {
+        "DataSourceOptions"
+    } else {
+        "ResourceOptions"
+    };
+    let default_options = if data_source {
+        "dataSourceOptions"
+    } else {
+        "resourceOptions"
+    };
+    let marker = provider_marker(module_root);
+    let _ = write!(
         output,
-        "{operation} :: String -> Args -> Infra {handle_name}"
+        "{operation} :: String -> Args -> Infra {handle_name}\n\
+         {operation} logicalName values = {operation_with} logicalName values {default_options}\n\n\
+         {operation_with} :: String -> Args -> {options_type} {marker} -> Infra {handle_name}\n"
     );
     let add = if data_source {
         "addDataSource"
@@ -272,7 +301,10 @@ fn render_item(item: &BindingItem, module: &str, data_source: bool) -> String {
     };
     let _ = write!(
         output,
-        "{operation} logicalName (Args values) = do\n  handle <- {add} \"{}\" logicalName values\n  pure\n    {{ {handle_key}: handle",
+        "{operation_with} logicalName (Args values) options = do\n  _ <- requireProvider \"{}\" \"{}\" \"= {}\"\n  handle <- {add} options \"{}\" logicalName values\n  pure\n    {{ {handle_key}: handle",
+        provider_local_name_from_source(&provider.source),
+        provider.source,
+        provider.version,
         item.provider_type
     );
     for field in &handle_fields {
@@ -450,17 +482,33 @@ fn requires_json_import(fields: &[BindingField]) -> bool {
 
 fn render_builder_import(operation: &str, fields: &[BindingField]) -> String {
     let mut imports = vec!["Infra", operation, "InputObject", "inputObject"];
+    if operation == "addResource" {
+        imports.push("requireProvider");
+        imports.push("ResourceOptions");
+        imports.push("resourceOptions");
+    } else if operation == "addDataSource" {
+        imports.push("requireProvider");
+        imports.push("DataSourceOptions");
+        imports.push("dataSourceOptions");
+    }
     if fields.iter().any(|field| field.optional) || has_optional_nested_fields(fields) {
         imports.push("insertInputField");
     }
     if !collect_nested_builders(fields).is_empty() {
         imports.push("inputObjectJson");
     }
-    format!("import TofuDag.Builder ({})\n", imports.join(", "))
+    format!("import Inframe.Builder ({})\n", imports.join(", "))
+}
+
+fn provider_local_name_from_source(source: &str) -> &str {
+    source.rsplit('/').next().unwrap_or(source)
 }
 
 fn render_core_import(item_kind: Option<bool>, fields: &[BindingField]) -> String {
     let mut imports = vec!["Input", "inputJson"];
+    if item_kind.is_none() {
+        imports.insert(0, "Provider");
+    }
     if item_kind.is_some() {
         imports.insert(0, "Expr");
     }
@@ -486,7 +534,14 @@ fn render_core_import(item_kind: Option<bool>, fields: &[BindingField]) -> Strin
             "resourceAttr"
         });
     }
-    format!("import TofuDag.Core ({})\n", imports.join(", "))
+    format!("import Inframe.Core ({})\n", imports.join(", "))
+}
+
+fn provider_marker(module_root: &str) -> String {
+    format!(
+        "{}Provider",
+        module_root.rsplit('.').next().unwrap_or(module_root)
+    )
 }
 
 fn render_nested_builders(builders: &[NestedBuilder<'_>]) -> String {
@@ -727,7 +782,7 @@ fn render_type_argument(r#type: &BindingType) -> String {
 
 #[cfg(test)]
 mod tests {
-    use tofu_dag_binding_model::{BindingProvider, BindingType};
+    use inframe_binding_model::{BindingProvider, BindingType};
 
     use super::*;
 
@@ -818,8 +873,22 @@ mod tests {
     #[test]
     fn emits_a_typed_resource_constructor() {
         let generated = render_package(&package(), "DigitalOcean", "abc").unwrap();
+        let provider = &generated.files[Path::new("src/DigitalOcean/Provider.purs")];
+        assert!(provider.contains("data DigitalOceanProvider"));
+        assert!(provider.contains("configure :: Args -> Infra (Provider DigitalOceanProvider)"));
+        assert!(
+            provider.contains(
+                "addProvider \"digitalocean\" \"digitalocean/digitalocean\" \"= 2.100.0\""
+            )
+        );
         let source = &generated.files[Path::new("src/DigitalOcean/Resource/Tag.purs")];
         assert!(source.contains("create :: String -> Args -> Infra Tag"));
+        assert!(source.contains(
+            "requireProvider \"digitalocean\" \"digitalocean/digitalocean\" \"= 2.100.0\""
+        ));
+        assert!(source.contains(
+            "createWith :: String -> Args -> ResourceOptions DigitalOceanProvider -> Infra Tag"
+        ));
         assert!(source.contains("name :: Expr String"));
         assert!(source.contains("id: resourceAttr handle [ \"id\" ]"));
         assert!(source.contains("newtype NodePool = NodePool InputObject"));

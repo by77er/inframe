@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use tofu_dag_provider_schema::{
+use inframe_provider_schema::{
     AttributeSchema, BlockSchema, NestingMode, ProviderSchema, SchemaType,
 };
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingPackage {
@@ -113,7 +113,7 @@ pub fn derive_bindings(schema: &ProviderSchema) -> Result<BindingPackage, Derive
 }
 
 fn derive_items(
-    schemas: &BTreeMap<String, tofu_dag_provider_schema::ResourceSchema>,
+    schemas: &BTreeMap<String, inframe_provider_schema::ResourceSchema>,
     provider_prefix: &str,
 ) -> Result<Vec<BindingItem>, DeriveError> {
     let mut seen = BTreeMap::<String, String>::new();
@@ -278,7 +278,7 @@ fn reserved_words() -> BTreeSet<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use tofu_dag_provider_schema::{BlockSchema, ProviderSchema, ResourceSchema};
+    use inframe_provider_schema::{BlockSchema, ProviderSchema, ResourceSchema};
 
     use super::*;
 

@@ -267,6 +267,9 @@ pub enum Expr {
     Template {
         parts: Vec<TemplatePart>,
     },
+    SecretEnv {
+        name: String,
+    },
     UnsafeRaw {
         expression: String,
     },
@@ -320,7 +323,54 @@ impl Expr {
                     }
                 }
             }
-            Self::Literal { .. } | Self::UnsafeRaw { .. } => {}
+            Self::Literal { .. } | Self::SecretEnv { .. } | Self::UnsafeRaw { .. } => {}
+        }
+    }
+
+    fn collect_secret_environment_names(&self, names: &mut BTreeSet<String>) {
+        match self {
+            Self::SecretEnv { name } => {
+                names.insert(name.clone());
+            }
+            Self::Array { items } => {
+                for item in items {
+                    item.collect_secret_environment_names(names);
+                }
+            }
+            Self::Object { fields } => {
+                for value in fields.values() {
+                    value.collect_secret_environment_names(names);
+                }
+            }
+            Self::Index { collection, key } => {
+                collection.collect_secret_environment_names(names);
+                key.collect_secret_environment_names(names);
+            }
+            Self::Conditional {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                condition.collect_secret_environment_names(names);
+                when_true.collect_secret_environment_names(names);
+                when_false.collect_secret_environment_names(names);
+            }
+            Self::Function { args, .. } => {
+                for argument in args {
+                    argument.collect_secret_environment_names(names);
+                }
+            }
+            Self::Template { parts } => {
+                for part in parts {
+                    if let TemplatePart::Interpolation { expression } = part {
+                        expression.collect_secret_environment_names(names);
+                    }
+                }
+            }
+            Self::Literal { .. }
+            | Self::ResourceAttr { .. }
+            | Self::DataSourceAttr { .. }
+            | Self::UnsafeRaw { .. } => {}
         }
     }
 }
@@ -347,6 +397,12 @@ pub enum ValidationError {
     InvalidIdentifier { path: String, value: String },
     #[error("duplicate graph address `{0}`")]
     DuplicateAddress(Address),
+    #[error("duplicate provider configuration `{0}`")]
+    DuplicateProviderConfig(String),
+    #[error("{owner} selects provider configuration `{provider}`, but it is not configured")]
+    MissingProviderConfig { owner: String, provider: String },
+    #[error("invalid secret environment variable `{value}` at {path}")]
+    InvalidSecretEnvironment { path: String, value: String },
     #[error("{owner} references missing graph address `{target}`")]
     MissingReference { owner: String, target: Address },
     #[error(
@@ -376,6 +432,7 @@ impl GraphDocument {
         for name in self.required_providers.keys() {
             validate_identifier("required_providers", name)?;
         }
+        let mut configured_providers = BTreeSet::new();
         for (index, provider) in self.provider_configs.iter().enumerate() {
             validate_identifier(
                 &format!("provider_configs[{index}].provider"),
@@ -383,6 +440,10 @@ impl GraphDocument {
             )?;
             if let Some(alias) = &provider.alias {
                 validate_identifier(&format!("provider_configs[{index}].alias"), alias)?;
+            }
+            let address = provider_address(provider);
+            if !configured_providers.insert(address.clone()) {
+                return Err(ValidationError::DuplicateProviderConfig(address));
             }
         }
 
@@ -411,6 +472,11 @@ impl GraphDocument {
                 &resource.depends_on,
                 &addresses,
             )?;
+            validate_selected_provider(
+                &resource.address().to_string(),
+                resource.provider.as_deref(),
+                &configured_providers,
+            )?;
             if let Some(lifecycle) = &resource.lifecycle {
                 for target in &lifecycle.replace_triggered_by {
                     if !addresses.contains(target) {
@@ -428,6 +494,11 @@ impl GraphDocument {
                 data_source.arguments.values(),
                 &data_source.depends_on,
                 &addresses,
+            )?;
+            validate_selected_provider(
+                &data_source.address().to_string(),
+                data_source.provider.as_deref(),
+                &configured_providers,
             )?;
         }
         for (name, output) in &self.outputs {
@@ -477,6 +548,24 @@ impl GraphDocument {
         Ok(dependencies)
     }
 
+    #[must_use]
+    pub fn secret_environment_names(&self) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        for provider in &self.provider_configs {
+            collect_secret_names(provider.arguments.values(), &mut names);
+        }
+        for resource in &self.resources {
+            collect_secret_names(resource.arguments.values(), &mut names);
+        }
+        for data_source in &self.data_sources {
+            collect_secret_names(data_source.arguments.values(), &mut names);
+        }
+        for output in self.outputs.values() {
+            output.value.collect_secret_environment_names(&mut names);
+        }
+        names
+    }
+
     pub fn to_canonical_json(&self) -> Result<String, serde_json::Error> {
         let mut value = serde_json::to_value(self)?;
         sort_json(&mut value);
@@ -521,6 +610,21 @@ fn validate_expr(
     expression: &Expr,
     addresses: &BTreeSet<Address>,
 ) -> Result<(), ValidationError> {
+    validate_expr_structure(owner, expression)?;
+    let mut references = BTreeSet::new();
+    expression.references(&mut references);
+    for target in references {
+        if !addresses.contains(&target) {
+            return Err(ValidationError::MissingReference {
+                owner: owner.to_owned(),
+                target,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_expr_structure(owner: &str, expression: &Expr) -> Result<(), ValidationError> {
     match expression {
         Expr::ResourceAttr { address, path } => {
             if !address.is_resource() {
@@ -540,18 +644,94 @@ fn validate_expr(
             }
             validate_path(owner, path)?;
         }
-        Expr::Function { name, .. } => validate_identifier(owner, name)?,
-        _ => {}
-    }
-    let mut references = BTreeSet::new();
-    expression.references(&mut references);
-    for target in references {
-        if !addresses.contains(&target) {
-            return Err(ValidationError::MissingReference {
-                owner: owner.to_owned(),
-                target,
-            });
+        Expr::Array { items } => {
+            for item in items {
+                validate_expr_structure(owner, item)?;
+            }
         }
+        Expr::Object { fields } => {
+            for value in fields.values() {
+                validate_expr_structure(owner, value)?;
+            }
+        }
+        Expr::Index { collection, key } => {
+            validate_expr_structure(owner, collection)?;
+            validate_expr_structure(owner, key)?;
+        }
+        Expr::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            validate_expr_structure(owner, condition)?;
+            validate_expr_structure(owner, when_true)?;
+            validate_expr_structure(owner, when_false)?;
+        }
+        Expr::Function { name, args } => {
+            validate_identifier(owner, name)?;
+            for argument in args {
+                validate_expr_structure(owner, argument)?;
+            }
+        }
+        Expr::Template { parts } => {
+            for part in parts {
+                if let TemplatePart::Interpolation { expression } = part {
+                    validate_expr_structure(owner, expression)?;
+                }
+            }
+        }
+        Expr::SecretEnv { name } => {
+            if !valid_environment_name(name) {
+                return Err(ValidationError::InvalidSecretEnvironment {
+                    path: owner.to_owned(),
+                    value: name.clone(),
+                });
+            }
+        }
+        Expr::Literal { .. } | Expr::UnsafeRaw { .. } => {}
+    }
+    Ok(())
+}
+
+fn collect_secret_names<'a>(
+    expressions: impl Iterator<Item = &'a Expr>,
+    names: &mut BTreeSet<String>,
+) {
+    for expression in expressions {
+        expression.collect_secret_environment_names(names);
+    }
+}
+
+fn provider_address(provider: &ProviderConfig) -> String {
+    match &provider.alias {
+        Some(alias) => format!("{}.{alias}", provider.provider),
+        None => provider.provider.clone(),
+    }
+}
+
+fn validate_selected_provider(
+    owner: &str,
+    provider: Option<&str>,
+    configured: &BTreeSet<String>,
+) -> Result<(), ValidationError> {
+    let Some(provider) = provider else {
+        return Ok(());
+    };
+    let valid = match provider.split_once('.') {
+        Some((local_name, alias)) => valid_identifier(local_name) && valid_identifier(alias),
+        None => valid_identifier(provider),
+    };
+    if !valid || provider.matches('.').count() > 1 {
+        return Err(ValidationError::InvalidIdentifier {
+            path: format!("{owner}.provider"),
+            value: provider.to_owned(),
+        });
+    }
+    if !configured.contains(provider) {
+        return Err(ValidationError::MissingProviderConfig {
+            owner: owner.to_owned(),
+            provider: provider.to_owned(),
+        });
     }
     Ok(())
 }
@@ -606,6 +786,12 @@ fn valid_identifier(value: &str) -> bool {
         && characters.all(|character| {
             character == '_' || character == '-' || character.is_ascii_alphanumeric()
         })
+}
+
+fn valid_environment_name(value: &str) -> bool {
+    let mut characters = value.chars();
+    matches!(characters.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn sort_json(value: &mut Value) {
@@ -715,6 +901,46 @@ mod tests {
         assert!(matches!(
             graph.validate(),
             Err(ValidationError::DuplicateAddress(_))
+        ));
+    }
+
+    #[test]
+    fn discovers_and_validates_nested_secret_environment_names() {
+        let mut graph = tag_graph();
+        graph.resources[0].arguments.insert(
+            "description".into(),
+            Expr::Function {
+                name: "lower".into(),
+                args: vec![Expr::SecretEnv {
+                    name: "DIGITALOCEAN_TOKEN".into(),
+                }],
+            },
+        );
+        graph.validate().unwrap();
+        assert_eq!(
+            graph.secret_environment_names(),
+            BTreeSet::from(["DIGITALOCEAN_TOKEN".to_owned()])
+        );
+
+        graph.resources[0].arguments.insert(
+            "invalid".into(),
+            Expr::SecretEnv {
+                name: "not-valid".into(),
+            },
+        );
+        assert!(matches!(
+            graph.validate(),
+            Err(ValidationError::InvalidSecretEnvironment { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unconfigured_provider_selection() {
+        let mut graph = tag_graph();
+        graph.resources[0].provider = Some("digitalocean.west".into());
+        assert!(matches!(
+            graph.validate(),
+            Err(ValidationError::MissingProviderConfig { .. })
         ));
     }
 }

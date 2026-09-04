@@ -5,5 +5,5 @@ package:
     - effect
     - generated-digitalocean
     - prelude
-    - tofu-dag-graph-core
+    - inframe-graph-core
 
