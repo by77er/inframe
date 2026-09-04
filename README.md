@@ -169,10 +169,11 @@ def infrastructureFor (env : Environment) (databases : List Identifier) : Infra 
   outputDatabaseHost clusters
 ```
 
-The policy from the PureScript test becomes a theorem. For the deployed
-instantiation, Lean's kernel evaluates the policy over the concrete graph while
-the module compiles, so `lake build` (and therefore `inframe test`) fails when
-the stack violates it:
+The policy from the PureScript test becomes a theorem about every stack this
+program can produce, not about one graph. The stack is a function of its
+database list, so the proof is an induction over that list; the core's `run`
+lemmas compute what each builder step adds to the graph. `lake build` (and
+therefore `inframe test`) fails if the stack stops satisfying it:
 
 ```lean
 def databaseRule (database : ResourceSpec) : Option String :=
@@ -183,19 +184,6 @@ def databaseRule (database : ResourceSpec) : Option String :=
 def databaseUsesManagedVpc : Policy :=
   Policy.resourcesOfType "database-uses-managed-vpc" "digitalocean_database_cluster" databaseRule
 
-theorem platform_valid : (buildGraph infrastructure).Valid := by decide
-
-theorem platform_policies (env : Environment) :
-    policies.Holds (buildGraph (infrastructureFor env [Identifier.mk "postgres"])) := by
-  cases env <;> decide
-```
-
-That still only checks graphs that exist. The stack is a function of its
-database list, and the same policy holds for *every* list, which no test can
-check. The proof is an induction over the list; the core's `run` lemmas compute
-what each builder step adds to the graph without evaluating anything symbolic:
-
-```lean
 theorem databases_use_managed_vpc (env : Environment) (databases : List Identifier) :
     databaseUsesManagedVpc.Holds (buildGraph (infrastructureFor env databases)) := by
   rw [databaseUsesManagedVpc, Policy.resourcesOfType_holds_iff]
