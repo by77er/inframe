@@ -202,60 +202,22 @@ theorem database_depends_on_vpc :
 
 ### What Lean adds over PureScript
 
-- **Identifiers are checked at compile time.** `Tag.create "smoke" …` carries a
-  proof that `"smoke"` is a valid OpenTofu identifier, discharged by `decide`
-  from the string literal. The same applies to provider aliases, output names,
-  `secretEnv` variable names, and function names in `unsafeCall`. In PureScript
-  these are runtime strings that `inframe graph validate` rejects later.
-- **The reference validator is a theorem.** `Graph.validate` is a Lean port of
-  the Rust validator (duplicate addresses, dangling references, self
-  dependencies, provider selection, replacement triggers, moves). `Graph.Valid g`
-  is decidable, so `by decide` proves a concrete graph valid before the CLI
-  ever sees it.
-- **Policies are propositions, not assertions.** A `Policy` is a function from
-  `Graph` to violations; `Policy.Holds policy graph` is decidable and proved by
-  the kernel. The same value prints a human-readable report at run time.
-- **Proofs quantify over parameters.** A stack that is a function of an
-  environment, a region list, or any other finite type is proved for all inputs
-  with `cases … <;> decide`; a test only ever checks one instantiation.
-- **Structural facts are theorems too.** Dependency edges (`Graph.dependsOn`),
-  the set of secrets a stack needs (`Graph.secretEnvironmentNames`), and
-  expression equality are all decidable, so refactors cannot silently reroute a
-  reference.
-- **Exact numbers.** Provider numbers are decimal `Number` literals rather than
-  IEEE doubles, so `lit 2` serializes as `2` and compares exactly.
-- **Ergonomics.** `Expr α` coerces to `Input α` (no `computed` wrapper), setters
-  are namespaced (`|>.nodeCount (lit 2)` instead of `nodePoolNodeCount`), and
-  handle fields carry provider documentation as hover text.
+- **Policies are checked by the compiler, for every input.** A policy is a
+  decidable proposition over the graph, so `theorem … := by decide` makes
+  `lake build` (and `inframe test`) fail on a violating stack, and a stack that
+  is a function of an environment or region is proved for all of them at once
+  with `cases … <;> decide`. A test only ever samples one instantiation.
+- **The graph is valid before the CLI sees it.** Logical names, aliases,
+  outputs, and secret variable names carry validity proofs discharged from
+  their literals, and the reference validator (duplicate addresses, dangling
+  references, provider selection, replacement triggers, moves) is a theorem
+  about the concrete graph rather than a later error from `inframe graph
+  validate`.
 
-Everything is checked by kernel `decide`; the Lean frontend never uses
-`native_decide`, so the trusted base is the Lean kernel plus the Rust validator
-that still runs on the emitted document.
-
-### Stress test
-
-The Lean emitter was exercised against three provider schemas by generating a
-package and running `lake build` on every module:
-
-| Provider | Modules | Generate | Package | `lake build`, clean (wall, 20 cores) |
-| --- | --- | --- | --- | --- |
-| `digitalocean/digitalocean` 2.100.0 | 156 | < 1 s | 2 MB | 7 s |
-| `hashicorp/google` 8.1.0 | 1,797 | 1.6 s | 23 MB | 2 min 13 s (10 threads, 4.1 GB peak) |
-| `hashicorp/aws` 6.63.0 | 2,394 | 13 s | 24 MB | 2 min 27 s (10 threads, 4.1 GB peak) |
-
-Every module of all three providers compiles. The runs found six reserved
-words that the emitter now escapes (`continue`, `from`, `prefix`, `public`,
-`meta`, `matches`) and one scaling problem that changed the emitter's design.
-Six AWS resources (the WAF rule, rule group, and web ACL resources and the
-QuickSight dashboard, template, and analysis resources) unroll recursive nested
-blocks to 8,000 to 21,000 block paths each. Emitted one type per path, they
-were 19 to 59 MB of Lean apiece, the AWS package was 213 MB, and the smallest of
-them could not be elaborated within 15 GB; building the package with Lake's
-default parallelism exhausted a 23 GB machine. Those paths have only 49 to 424
-structurally distinct shapes, so the emitter now declares each shape once and
-reuses it: the worst module is 244 KB and compiles in two seconds, and the
-package fits in 24 MB. Lake has no jobs flag; if you ever need to bound its
-parallelism, set `LEAN_NUM_THREADS=N`.
+Everything goes through kernel `decide`, never `native_decide`, so the trusted
+base is the Lean kernel plus the Rust validator that still runs on the emitted
+document. The emitter has been run against the DigitalOcean, Google, and AWS
+providers; see [lean-stress-test.md](lean-stress-test.md).
 
 ## How to use it
 
