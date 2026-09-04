@@ -1,0 +1,9 @@
+package:
+  name: integration-digitalocean
+  dependencies:
+    - console
+    - effect
+    - generated-digitalocean
+    - prelude
+    - tofu-dag-graph-core
+

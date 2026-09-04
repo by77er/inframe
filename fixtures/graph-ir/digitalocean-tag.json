@@ -1,0 +1,40 @@
+{
+  "format_version": "1.0",
+  "required_providers": {
+    "digitalocean": {
+      "source": "digitalocean/digitalocean",
+      "version": "= 2.100.0"
+    }
+  },
+  "provider_configs": [
+    {
+      "provider": "digitalocean",
+      "arguments": {}
+    }
+  ],
+  "resources": [
+    {
+      "type": "digitalocean_tag",
+      "name": "mvp",
+      "arguments": {
+        "name": {
+          "kind": "literal",
+          "value": "tofu-dag-mvp"
+        }
+      },
+      "depends_on": []
+    }
+  ],
+  "data_sources": [],
+  "outputs": {
+    "tag_id": {
+      "value": {
+        "kind": "resource_attr",
+        "address": "digitalocean_tag.mvp",
+        "path": ["id"]
+      }
+    }
+  },
+  "moves": []
+}
+

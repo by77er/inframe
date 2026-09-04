@@ -1,0 +1,20 @@
+package:
+  name: tofu-dag-graph-core
+  dependencies:
+    - argonaut-codecs
+    - argonaut-core
+    - arrays
+    - foreign-object
+    - maybe
+    - prelude
+    - tuples
+  test:
+    main: Test.Main
+    dependencies:
+      - assert
+      - effect
+workspace:
+  packageSet:
+    registry: 80.8.1
+  extraPackages: {}
+

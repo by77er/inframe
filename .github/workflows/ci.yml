@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global purescript@0.15.16 spago@1.0.4
+      - run: spago test -p tofu-dag-graph-core
+        working-directory: purescript
+      - run: spago build -p generated-digitalocean
+        working-directory: purescript
+      - name: PureScript to Graph IR to Rust
+        run: |
+          cd purescript
+          spago run -p integration-digitalocean --main Infra.Main --quiet \
+            | cargo run -q -p tofu-dag-cli -- graph validate -
+
+  opentofu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.6
+      - run: cargo run -q -p tofu-dag-cli -- init --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json -- -backend=false -input=false
+      - run: cargo run -q -p tofu-dag-cli -- validate --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json

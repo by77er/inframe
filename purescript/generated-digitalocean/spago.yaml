@@ -1,0 +1,8 @@
+package:
+  name: generated-digitalocean
+  dependencies:
+    - argonaut-core
+    - foreign-object
+    - prelude
+    - tofu-dag-graph-core
+    - tuples

@@ -1,0 +1,27 @@
+{
+  "output": {
+    "tag_id": {
+      "value": "${digitalocean_tag.mvp.id}"
+    }
+  },
+  "provider": {
+    "digitalocean": [
+      {}
+    ]
+  },
+  "resource": {
+    "digitalocean_tag": {
+      "mvp": {
+        "name": "tofu-dag-mvp"
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "digitalocean": {
+        "source": "digitalocean/digitalocean",
+        "version": "= 2.100.0"
+      }
+    }
+  }
+}

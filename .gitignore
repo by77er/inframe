@@ -1,0 +1,10 @@
+/target/
+/.tofu-dag/
+**/.terraform/
+**/.spago/
+**/output/
+**/node_modules/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.env
