@@ -6,7 +6,7 @@
 //! typed symbolic handles. Logical names are validated at compile time through the core
 //! library's `Identifier` proofs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -265,10 +265,14 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
         "/-- Phantom type tagging handles to configured `{}` providers. -/\ninductive {marker}\n\n",
         provider.source
     );
-    output.push_str(&render_nested_types(fields, &[&marker]));
+    let module = format!("{module_root}.Provider");
+    let shapes = Shapes::collect(fields, &[&marker]);
+    output.push_str(&render_shapes(&shapes, &module));
     output.push_str(&render_args(
         fields,
         &format!("the `{}` provider", provider.source),
+        &module,
+        &shapes,
     ));
     let local_name = provider_local_name_from_source(&provider.source);
     let version = format!("= {}", provider.version);
@@ -322,10 +326,13 @@ fn render_item(
         "/-- Phantom type tagging handles to `{}` {kind}s. -/\ninductive {node}\n\n",
         item.provider_type
     );
-    output.push_str(&render_nested_types(&item.fields, &[&handle_name, &node]));
+    let shapes = Shapes::collect(&item.fields, &[&handle_name, &node]);
+    output.push_str(&render_shapes(&shapes, module));
     output.push_str(&render_args(
         &item.fields,
         &format!("`{}`", item.provider_type),
+        module,
+        &shapes,
     ));
     let handle_fields: Vec<_> = item.outputs().collect();
     let handle_reserved: &[&str] = if data_source {
@@ -349,7 +356,11 @@ fn render_item(
             output,
             "  {} : Expr {}",
             safe_field_name(field, handle_reserved),
-            render_type_argument(&field.r#type, std::slice::from_ref(&field.public_name))
+            render_type_argument(
+                &field.r#type,
+                std::slice::from_ref(&field.public_name),
+                &shapes
+            )
         );
     }
     output.push('\n');
@@ -410,29 +421,39 @@ fn render_item(
     output
 }
 
-fn render_args(fields: &[BindingField], subject: &str) -> String {
+fn render_args(
+    fields: &[BindingField],
+    subject: &str,
+    module: &str,
+    shapes: &Shapes<'_>,
+) -> String {
     let required: Vec<_> = fields.iter().filter(|field| field.required).collect();
     let mut output =
         format!("/-- Required arguments for {subject}. -/\nstructure Required where\n");
-    render_required_fields(&mut output, &required, &[]);
+    render_required_fields(&mut output, &required, &[], shapes);
     let _ = write!(
         output,
-        "\n/-- Arguments for {subject}. Build with `args` and refine with `Args.*` setters, for example\n`args {{ .. }} |>.someField (lit value)`. -/\nstructure Args where\n  values : InputObject\n\n"
+        "\n/-- Arguments for {subject}. Build with `args` and refine with `Args.*` setters, for example\n`args {{ .. }} |>.someField (lit value)`. -/\nabbrev Args := Block \"{module}.Args\"\n\n"
     );
     let argument = if required.is_empty() { "_" } else { "required" };
     let _ = write!(
         output,
         "def args ({argument} : Required) : Args :=\n  ⟨InputObject.ofList\n    ["
     );
-    render_required_values(&mut output, &required, &[]);
+    render_required_values(&mut output, &required, &[], shapes);
     output.push_str("]⟩\n\n");
     for field in fields.iter().filter(|field| field.optional) {
-        output.push_str(&render_setter("Args", "a", field, &[]));
+        output.push_str(&render_setter("Args", "a", field, &[], shapes));
     }
     output
 }
 
-fn render_required_fields(output: &mut String, required: &[&BindingField], parent_path: &[String]) {
+fn render_required_fields(
+    output: &mut String,
+    required: &[&BindingField],
+    parent_path: &[String],
+    shapes: &Shapes<'_>,
+) {
     for field in required {
         let path = child_path(parent_path, field);
         output.push_str(&indent_doc(&field_documentation(field), "  "));
@@ -440,12 +461,17 @@ fn render_required_fields(output: &mut String, required: &[&BindingField], paren
             output,
             "  {} : {}",
             safe_field_name(field, &[]),
-            render_input_type(&field.r#type, &path)
+            render_input_type(&field.r#type, &path, shapes)
         );
     }
 }
 
-fn render_required_values(output: &mut String, required: &[&BindingField], parent_path: &[String]) {
+fn render_required_values(
+    output: &mut String,
+    required: &[&BindingField],
+    parent_path: &[String],
+    shapes: &Shapes<'_>,
+) {
     for (index, field) in required.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n    , " };
         let value = format!("required.{}", safe_field_name(field, &[]));
@@ -454,7 +480,7 @@ fn render_required_values(output: &mut String, required: &[&BindingField], paren
             output,
             "{separator}(\"{}\", {})",
             escape_string(&field.provider_name),
-            render_input_node(&value, &field.r#type, &path)
+            render_input_node(&value, &field.r#type, &path, shapes)
         );
     }
     if !required.is_empty() {
@@ -467,11 +493,12 @@ fn render_setter(
     receiver: &str,
     field: &BindingField,
     parent_path: &[String],
+    shapes: &Shapes<'_>,
 ) -> String {
     let name = safe_field_name(field, SETTER_RESERVED);
     let path = child_path(parent_path, field);
-    let input_type = render_input_type(&field.r#type, &path);
-    let encoded = render_input_node("value", &field.r#type, &path);
+    let input_type = render_input_type(&field.r#type, &path, shapes);
+    let encoded = render_input_node("value", &field.r#type, &path, shapes);
     let mut output = field_documentation(field);
     let _ = write!(
         output,
@@ -482,14 +509,107 @@ fn render_setter(
     output
 }
 
-/// Nested object types reachable from a top-level field: builders for input blocks and
-/// phantom markers for computed-only shapes. Children are emitted before their parents so
-/// that setters can refer to the child's `toExprNode`.
+/// A nested object type that gets its own Lean declaration: a builder for an input block or
+/// a phantom marker for a computed-only shape.
 #[derive(Debug)]
 struct NestedType<'a> {
+    /// The first path at which this shape occurs; it names the type.
     path: Vec<String>,
+    name: String,
     fields: &'a [BindingField],
     builder: bool,
+    /// How many paths share this shape.
+    occurrences: usize,
+}
+
+/// The nested types of one module with structural sharing. Provider schemas unroll recursive
+/// blocks to a fixed depth, so a resource can contain thousands of nested paths but only a few
+/// dozen distinct shapes (`aws_wafv2_web_acl_rule`: 21,025 paths, 73 shapes). Every path maps
+/// to the type of the first path with the same field list, so the generated module declares
+/// each shape once. Children are emitted before their parents so that a parent's setters can
+/// refer to the child's `toExprNode`.
+#[derive(Debug)]
+struct Shapes<'a> {
+    entries: Vec<NestedType<'a>>,
+    names: HashMap<Vec<String>, String>,
+}
+
+impl<'a> Shapes<'a> {
+    fn collect(fields: &'a [BindingField], reserved: &[&str]) -> Self {
+        let mut shapes = Self {
+            entries: Vec::new(),
+            names: HashMap::new(),
+        };
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for field in fields {
+            let path = vec![field.public_name.clone()];
+            if (field.required || field.optional) && nested_container(&field.r#type).is_some() {
+                shapes.visit_builder(field, &[], reserved, &mut seen);
+            } else if let Some(fields) = object_fields(&field.r#type) {
+                shapes.declare(path, fields, false, reserved, &mut seen);
+            }
+        }
+        shapes
+    }
+
+    fn visit_builder(
+        &mut self,
+        field: &'a BindingField,
+        parent_path: &[String],
+        reserved: &[&str],
+        seen: &mut HashMap<String, usize>,
+    ) {
+        if !field.required && !field.optional {
+            return;
+        }
+        let Some(container) = nested_container(&field.r#type) else {
+            return;
+        };
+        let path = child_path(parent_path, field);
+        for child in container.fields() {
+            self.visit_builder(child, &path, reserved, seen);
+        }
+        self.declare(path, container.fields(), true, reserved, seen);
+    }
+
+    fn declare(
+        &mut self,
+        path: Vec<String>,
+        fields: &'a [BindingField],
+        builder: bool,
+        reserved: &[&str],
+        seen: &mut HashMap<String, usize>,
+    ) {
+        let key = format!(
+            "{}:{}",
+            builder,
+            serde_json::to_string(fields).unwrap_or_default()
+        );
+        if let Some(&index) = seen.get(&key) {
+            self.entries[index].occurrences += 1;
+            let name = self.entries[index].name.clone();
+            self.names.insert(path, name);
+            return;
+        }
+        let name = nested_type_name(&path, reserved);
+        seen.insert(key, self.entries.len());
+        self.names.insert(path.clone(), name.clone());
+        self.entries.push(NestedType {
+            path,
+            name,
+            fields,
+            builder,
+            occurrences: 1,
+        });
+    }
+
+    /// The Lean type standing for the object shape at `path`.
+    fn name(&self, path: &[String]) -> String {
+        self.names
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| nested_type_name(path, &[]))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -541,62 +661,24 @@ fn object_fields(r#type: &BindingType) -> Option<&[BindingField]> {
     }
 }
 
-fn collect_nested_types(fields: &[BindingField]) -> Vec<NestedType<'_>> {
-    fn visit_builder<'a>(
-        field: &'a BindingField,
-        parent_path: &[String],
-        types: &mut Vec<NestedType<'a>>,
-    ) {
-        if !field.required && !field.optional {
-            return;
-        }
-        let Some(container) = nested_container(&field.r#type) else {
-            return;
-        };
-        let path = child_path(parent_path, field);
-        for child in container.fields() {
-            visit_builder(child, &path, types);
-        }
-        types.push(NestedType {
-            path,
-            fields: container.fields(),
-            builder: true,
-        });
-    }
-
-    let mut types = Vec::new();
-    for field in fields {
-        let path = vec![field.public_name.clone()];
-        if (field.required || field.optional) && nested_container(&field.r#type).is_some() {
-            visit_builder(field, &[], &mut types);
-        } else if let Some(fields) = object_fields(&field.r#type) {
-            types.push(NestedType {
-                path,
-                fields,
-                builder: false,
-            });
-        }
-    }
-    types
-}
-
-fn render_nested_types(fields: &[BindingField], reserved: &[&str]) -> String {
+fn render_shapes(shapes: &Shapes<'_>, module: &str) -> String {
     let mut output = String::new();
-    for nested in collect_nested_types(fields) {
+    for nested in &shapes.entries {
         if nested.builder {
-            output.push_str(&render_nested_builder(&nested, reserved));
+            output.push_str(&render_nested_builder(nested, module, shapes));
         } else {
-            output.push_str(&render_nested_marker(&nested, reserved));
+            output.push_str(&render_nested_marker(nested));
         }
     }
     output
 }
 
-fn render_nested_marker(nested: &NestedType<'_>, reserved: &[&str]) -> String {
-    let type_name = nested_type_name(&nested.path, reserved);
+fn render_nested_marker(nested: &NestedType<'_>) -> String {
+    let type_name = &nested.name;
     let mut doc = format!(
-        "The shape of the computed `{}` attribute.",
-        nested.path.join(".")
+        "The shape of the computed `{}` attribute{}.",
+        nested.path.join("."),
+        shared_note(nested.occurrences)
     );
     if !nested.fields.is_empty() {
         doc.push('\n');
@@ -624,10 +706,10 @@ fn render_nested_marker(nested: &NestedType<'_>, reserved: &[&str]) -> String {
     format!("{}inductive {type_name}\n\n", doc_comment(&doc))
 }
 
-fn render_nested_builder(nested: &NestedType<'_>, reserved: &[&str]) -> String {
-    let type_name = nested_type_name(&nested.path, reserved);
+fn render_nested_builder(nested: &NestedType<'_>, module: &str, shapes: &Shapes<'_>) -> String {
+    let type_name = &nested.name;
     let required_name = format!("{type_name}Required");
-    let constructor_name = format!("{}Args", builder_prefix(&nested.path));
+    let constructor_name = format!("{}Args", lower_first(type_name));
     let provider_path = nested.path.join(".");
     let required: Vec<_> = nested
         .fields
@@ -635,22 +717,29 @@ fn render_nested_builder(nested: &NestedType<'_>, reserved: &[&str]) -> String {
         .filter(|field| field.required)
         .collect();
     let mut output = format!(
-        "/-- Builder for the `{provider_path}` block. Start with `{constructor_name}` and refine with\n`{type_name}.*` setters. -/\nstructure {type_name} where\n  values : InputObject\n\n"
+        "/-- Builder for the `{provider_path}` block{}. Start with `{constructor_name}` and refine with\n`{type_name}.*` setters. -/\nabbrev {type_name} := Block \"{module}.{type_name}\"\n\n",
+        shared_note(nested.occurrences)
     );
     let _ = write!(
         output,
         "/-- Required fields of `{type_name}`. -/\nstructure {required_name} where\n"
     );
-    render_required_fields(&mut output, &required, &nested.path);
+    render_required_fields(&mut output, &required, &nested.path, shapes);
     let argument = if required.is_empty() { "_" } else { "required" };
     let _ = write!(
         output,
         "\ndef {constructor_name} ({argument} : {required_name}) : {type_name} :=\n  ⟨InputObject.ofList\n    ["
     );
-    render_required_values(&mut output, &required, &nested.path);
+    render_required_values(&mut output, &required, &nested.path, shapes);
     output.push_str("]⟩\n\n");
     for field in nested.fields.iter().filter(|field| field.optional) {
-        output.push_str(&render_setter(&type_name, "block", field, &nested.path));
+        output.push_str(&render_setter(
+            type_name,
+            "block",
+            field,
+            &nested.path,
+            shapes,
+        ));
     }
     let _ = write!(
         output,
@@ -659,19 +748,22 @@ fn render_nested_builder(nested: &NestedType<'_>, reserved: &[&str]) -> String {
     output
 }
 
-fn render_input_type(r#type: &BindingType, path: &[String]) -> String {
+fn render_input_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
     match nested_container(r#type) {
-        Some(NestedContainer::Single(_)) => nested_type_name(path, &[]),
-        Some(NestedContainer::Array(_)) => format!("List {}", nested_type_name(path, &[])),
-        Some(NestedContainer::Map(_)) => {
-            format!("List (String × {})", nested_type_name(path, &[]))
-        }
-        None => format!("Input {}", render_type_argument(r#type, path)),
+        Some(NestedContainer::Single(_)) => shapes.name(path),
+        Some(NestedContainer::Array(_)) => format!("List {}", shapes.name(path)),
+        Some(NestedContainer::Map(_)) => format!("List (String × {})", shapes.name(path)),
+        None => format!("Input {}", render_type_argument(r#type, path, shapes)),
     }
 }
 
-fn render_input_node(value: &str, r#type: &BindingType, path: &[String]) -> String {
-    let type_name = nested_type_name(path, &[]);
+fn render_input_node(
+    value: &str,
+    r#type: &BindingType,
+    path: &[String],
+    shapes: &Shapes<'_>,
+) -> String {
+    let type_name = shapes.name(path);
     match nested_container(r#type) {
         Some(NestedContainer::Single(_)) => format!("{type_name}.toExprNode {value}"),
         Some(NestedContainer::Array(_)) => {
@@ -684,31 +776,39 @@ fn render_input_node(value: &str, r#type: &BindingType, path: &[String]) -> Stri
     }
 }
 
-fn render_type(r#type: &BindingType, path: &[String]) -> String {
+fn render_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
     match r#type {
         BindingType::String => "String".into(),
         BindingType::Bool => "Bool".into(),
         BindingType::Number => "Number".into(),
         BindingType::List(item) | BindingType::Set(item) => {
-            format!("List {}", render_type_argument(item, path))
+            format!("List {}", render_type_argument(item, path, shapes))
         }
-        BindingType::Map(item) => format!("Map {}", render_type_argument(item, path)),
+        BindingType::Map(item) => format!("Map {}", render_type_argument(item, path, shapes)),
         BindingType::Tuple(_) | BindingType::Dynamic => "Value".into(),
-        BindingType::Object(_) => nested_type_name(path, &[]),
+        BindingType::Object(_) => shapes.name(path),
     }
 }
 
-fn render_type_argument(r#type: &BindingType, path: &[String]) -> String {
+fn render_type_argument(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
     match r#type {
         BindingType::String
         | BindingType::Bool
         | BindingType::Number
         | BindingType::Tuple(_)
         | BindingType::Dynamic
-        | BindingType::Object(_) => render_type(r#type, path),
+        | BindingType::Object(_) => render_type(r#type, path, shapes),
         BindingType::List(_) | BindingType::Set(_) | BindingType::Map(_) => {
-            format!("({})", render_type(r#type, path))
+            format!("({})", render_type(r#type, path, shapes))
         }
+    }
+}
+
+fn shared_note(occurrences: usize) -> String {
+    if occurrences > 1 {
+        format!(" (shared by {occurrences} block paths with the same shape)")
+    } else {
+        String::new()
     }
 }
 
@@ -723,15 +823,12 @@ fn nested_type_name(path: &[String], reserved: &[&str]) -> String {
     safe_type_name(&name, reserved, "Block")
 }
 
-fn builder_prefix(path: &[String]) -> String {
-    let Some((first, rest)) = path.split_first() else {
-        return String::new();
-    };
-    let mut prefix = first.clone();
-    for part in rest {
-        prefix.push_str(&upper_first(part));
-    }
-    prefix
+fn lower_first(value: &str) -> String {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .map(|first| first.to_ascii_lowercase().to_string() + characters.as_str())
+        .unwrap_or_default()
 }
 
 fn upper_first(value: &str) -> String {
@@ -776,6 +873,7 @@ const RESERVED_TYPE_NAMES: &[&str] = &[
     "Infra",
     "Args",
     "Required",
+    "Block",
     "Lean",
     "Inframe",
 ];
@@ -1169,7 +1267,8 @@ mod tests {
         assert!(
             source.contains("  /-- The provider-assigned tag identifier. -/\n  id : Expr String")
         );
-        assert!(source.contains("structure NodePool where\n  values : InputObject"));
+        assert!(source.contains("abbrev NodePool := Block \"DigitalOcean.Resource.Tag.NodePool\""));
+        assert!(source.contains("abbrev Args := Block \"DigitalOcean.Resource.Tag.Args\""));
         assert!(source.contains("structure NodePoolRequired where\n  name : Input String"));
         assert!(source.contains("def nodePoolArgs (required : NodePoolRequired) : NodePool"));
         assert!(source.contains("/-- Whether automatic scaling is enabled. -/\ndef NodePool.autoScale (value : Input Bool) (block : NodePool) : NodePool"));
@@ -1192,8 +1291,8 @@ mod tests {
         assert!(source.contains("labels : Expr (Map String)"));
         assert!(source.contains("end DigitalOcean.Resource.Tag"));
 
-        let taint_position = source.find("structure NodePoolTaint where").unwrap();
-        let pool_position = source.find("structure NodePool where").unwrap();
+        let taint_position = source.find("abbrev NodePoolTaint := Block").unwrap();
+        let pool_position = source.find("abbrev NodePool := Block").unwrap();
         assert!(
             taint_position < pool_position,
             "children are emitted before parents"
@@ -1218,6 +1317,47 @@ mod tests {
             generated.files[Path::new("lean-toolchain")],
             format!("{LEAN_TOOLCHAIN}\n")
         );
+    }
+
+    #[test]
+    fn identical_nested_shapes_share_one_type() {
+        let shape = || {
+            BindingType::List(Box::new(BindingType::Object(vec![
+                field("key", "key", BindingType::String, true, false, false),
+                field("value", "value", BindingType::String, false, true, false),
+            ])))
+        };
+        let mut package = package();
+        package.resources[0].fields = vec![
+            field("primary", "primary", shape(), true, false, false),
+            field("secondary", "secondary", shape(), false, true, false),
+            field(
+                "different",
+                "different",
+                BindingType::List(Box::new(BindingType::Object(vec![field(
+                    "key",
+                    "key",
+                    BindingType::Number,
+                    true,
+                    false,
+                    false,
+                )]))),
+                false,
+                true,
+                false,
+            ),
+        ];
+        let generated = render_package(&package, "DigitalOcean", "abc", &core()).unwrap();
+        let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
+        assert!(source.contains("abbrev Primary := Block"));
+        assert!(source.contains("(shared by 2 block paths with the same shape)"));
+        assert!(!source.contains("abbrev Secondary"));
+        assert!(source.contains("primary : List Primary"));
+        assert!(source.contains("def Args.secondary (value : List Primary) (a : Args) : Args"));
+        assert!(source.contains("secondary : Expr (List Primary)"));
+        assert!(source.contains("abbrev Different := Block"));
+        assert!(source.contains("def primaryArgs (required : PrimaryRequired) : Primary"));
+        assert_eq!(source.matches("def Primary.value ").count(), 1);
     }
 
     #[test]

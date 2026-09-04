@@ -234,26 +234,28 @@ that still runs on the emitted document.
 
 ### Stress test
 
-The Lean emitter was exercised against the three provider schemas below by
-generating a package and running `lake build` on every module:
+The Lean emitter was exercised against three provider schemas by generating a
+package and running `lake build` on every module:
 
-| Provider | Modules | Generate | `lake build` (wall, 20 cores) |
-| --- | --- | --- | --- |
-| `digitalocean/digitalocean` 2.100.0 | 156 | < 1 s | 7 s |
-| `hashicorp/google` 8.1.0 | 1,797 | 1.2 s | 1 min 49 s |
-| `hashicorp/aws` 6.63.0 | 2,394 | 5.6 s | 2,388 ordinary modules in the parallel run; the six largest are built one at a time (see below) |
+| Provider | Modules | Generate | Package | `lake build`, clean (wall, 20 cores) |
+| --- | --- | --- | --- | --- |
+| `digitalocean/digitalocean` 2.100.0 | 156 | < 1 s | 2 MB | 7 s |
+| `hashicorp/google` 8.1.0 | 1,797 | 1.6 s | 23 MB | 2 min 13 s (10 threads, 4.1 GB peak) |
+| `hashicorp/aws` 6.63.0 | 2,394 | 13 s | 24 MB | 2 min 27 s (10 threads, 4.1 GB peak) |
 
-Every ordinary module of all three providers compiles. The runs found six
-reserved words that the emitter now escapes (`continue`, `from`, `prefix`,
-`public`, `meta`, `matches`) and one scaling limit worth knowing about: six AWS
-resources (`aws_wafv2_web_acl_rule`, `aws_wafv2_web_acl`, `aws_wafv2_rule_group`,
-and the QuickSight dashboard, template, and analysis resources) unroll
-recursive nested blocks to 8,000 to 21,000 distinct block paths, so their
-generated modules are 19 to 56 MB of Lean and need more than 6 GB each to
-elaborate. Building them with Lake's default parallelism exhausted a 23 GB
-machine; Lake has no jobs flag, so bound it with `LEAN_NUM_THREADS=N lake
-build` on such packages. Sharing identical nested shapes across paths would
-shrink them and is future work for the binding model.
+Every module of all three providers compiles. The runs found six reserved
+words that the emitter now escapes (`continue`, `from`, `prefix`, `public`,
+`meta`, `matches`) and one scaling problem that changed the emitter's design.
+Six AWS resources (the WAF rule, rule group, and web ACL resources and the
+QuickSight dashboard, template, and analysis resources) unroll recursive nested
+blocks to 8,000 to 21,000 block paths each. Emitted one type per path, they
+were 19 to 59 MB of Lean apiece, the AWS package was 213 MB, and the smallest of
+them could not be elaborated within 15 GB; building the package with Lake's
+default parallelism exhausted a 23 GB machine. Those paths have only 49 to 424
+structurally distinct shapes, so the emitter now declares each shape once and
+reuses it: the worst module is 244 KB and compiles in two seconds, and the
+package fits in 24 MB. Lake has no jobs flag; if you ever need to bound its
+parallelism, set `LEAN_NUM_THREADS=N`.
 
 ## How to use it
 

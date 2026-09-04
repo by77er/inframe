@@ -36,6 +36,13 @@ def toExprNode (object : InputObject) : ExprNode :=
 
 end InputObject
 
+/-- A phantom-tagged argument accumulator. Generated adapters define each `Args` type and each
+nested block builder as `Block "<qualified name>"`, so arguments of different shapes remain
+distinct types without paying for a `structure` (and its dozen auxiliary declarations) per
+shape; provider schemas can unroll to tens of thousands of shapes in one module. -/
+structure Block (tag : String) where
+  values : InputObject
+
 /-- Values accepted by `output` and `sensitiveOutput`. -/
 class OutputValue (v : Type) where
   outputValueNode : v → ExprNode

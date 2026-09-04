@@ -843,6 +843,18 @@ decomposition (`<Root>.Provider`, `<Root>.Resource.<Name>`, `<Root>.Data.<Name>`
 plus a `<Root>` module that imports everything). Differences that follow from
 the target language:
 
+- **Structural sharing of nested shapes.** Provider schemas unroll recursive blocks to a
+  fixed depth, so one resource can contain thousands of nested block paths but only a few
+  dozen distinct field lists (`aws_wafv2_web_acl_rule`: 21,025 paths, 73 shapes). The emitter
+  keys every nested object by its serialized field list and declares each shape once, named
+  after the first path where it occurs; later paths reuse that type and the doc comment says
+  how many paths share it. This took the generated AWS package from 213 MB to 24 MB and the
+  worst module from 59 MB (unbuildable in 15 GB) to 244 KB (two seconds). `emit-purescript`
+  does not share shapes yet and would emit the unrolled form for such providers.
+- **One structure for every argument shape.** `Args` and every nested block builder are
+  `abbrev`s of the core's phantom-tagged `Block "<qualified name>"`, so shapes stay distinct
+  types (a `NodePool` cannot be passed where `Args` is expected) while Lean generates no
+  per-shape constructor, projection, injectivity, or recursor declarations.
 - **Namespaces instead of prefixes.** Each module opens `namespace <Root>.Resource.<Name>`.
   Optional-argument setters live in the `Args` namespace and nested block setters in
   the block's namespace, so callers write `args { … } |>.vpcUuid network.id` and
@@ -2248,9 +2260,10 @@ Compilation catches invalid PureScript.
 
 The Lean emitter has the same shape of tests, and CI runs `lake build` on every
 generated DigitalOcean module. The emitter was also stress tested offline
-against `hashicorp/google` 8.1.0 and `hashicorp/aws` 6.63.0 (thousands of
-modules) to flush out keyword and name collisions; the reserved-word tables in
-`emit-lean` come from those runs.
+against `hashicorp/google` 8.1.0 and `hashicorp/aws` 6.63.0 (about 4,200
+modules) to flush out keyword and name collisions and scaling limits; the
+reserved-word tables and the structural sharing of nested shapes in `emit-lean`
+come from those runs.
 
 ---
 
