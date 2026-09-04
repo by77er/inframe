@@ -176,6 +176,10 @@ def lit [ToValue α] (value : α) : Input α :=
 
 /-- Known values coerce to inputs, so provider arguments can be written as plain literals. -/
 instance [ToValue α] : Coe α (Input α) := ⟨lit⟩
+
+/-- Any typed input is acceptable where a provider takes a `dynamic` value. -/
+instance : CoeOut (Input α) (Input Value) :=
+  ⟨fun | .known value => .known value | .symbolic node => .symbolic node⟩
 instance : OfNat (Input Number) n := ⟨lit (OfNat.ofNat n)⟩
 instance : OfScientific (Input Number) := ⟨fun m e d => lit (OfScientific.ofScientific m e d)⟩
 
@@ -214,6 +218,13 @@ instance : GetElem (Input (Map α)) (Input String) (Input α) (fun _ _ => True) 
   ⟨fun collection key _ => lookup collection key⟩
 instance : GetElem (Input (Map α)) String (Input α) (fun _ _ => True) :=
   ⟨fun collection key _ => lookup collection (lit key)⟩
+
+/-- Traversing a `dynamic` value yields another `dynamic` value. -/
+instance : GetElem (Input Value) String (Input Value) (fun _ _ => True) :=
+  ⟨fun collection key _ => .symbolic (.index (inputNode collection) (.literal (.string key)))⟩
+instance : GetElem (Input Value) Nat (Input Value) (fun _ _ => True) :=
+  ⟨fun collection key _ =>
+    .symbolic (.index (inputNode collection) (.literal (.number (Lean.JsonNumber.fromNat key))))⟩
 
 def ifThenElse (condition : Input Bool) (whenTrue whenFalse : Input α) : Input α :=
   .symbolic (.conditional (inputNode condition) (inputNode whenTrue) (inputNode whenFalse))

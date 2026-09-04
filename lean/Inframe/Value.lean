@@ -100,6 +100,35 @@ instance [ToValue α] : ToValue (List α) := ⟨fun items => .array (items.map t
 instance [ToValue α] : ToValue (Array α) := ⟨fun items => .array (items.toList.map toValue)⟩
 instance [ToValue α] : ToValue (Option α) := ⟨fun | none => .null | some value => toValue value⟩
 
+/-- JSON-literal syntax for known values, for provider attributes typed `dynamic` or as
+tuples: `value% { team: "core", replicas: 3, tags: ["a", "b"] }`. Braces may hold a Lean term
+with `$`, for example `value% { name: $name }` where `name : String`. -/
+syntax "value% " json : term
+
+open Lean.Json in
+macro_rules
+  | `(value% null) => `(Inframe.Value.null)
+  | `(value% true) => `(Inframe.Value.bool Bool.true)
+  | `(value% false) => `(Inframe.Value.bool Bool.false)
+  | `(value% $n:str) => `(Inframe.Value.string $n)
+  | `(value% $n:num) => `(Inframe.Value.number $n)
+  | `(value% $n:scientific) => `(Inframe.Value.number $n)
+  | `(value% -$n:num) => `(Inframe.Value.number (-$n))
+  | `(value% -$n:scientific) => `(Inframe.Value.number (-$n))
+  | `(value% [$[$xs],*]) => `(Inframe.Value.array [$[value% $xs],*])
+  | `(value% {$[$ks:jsonIdent : $vs:json],*}) => do
+    let ks : Array (Lean.TSyntax `term) ← ks.mapM fun
+      | `(jsonIdent| $k:ident) => pure (Lean.quote (toString k.getId))
+      | `(jsonIdent| $k:str) => pure k
+      | _ => Lean.Macro.throwUnsupported
+    `(Inframe.Value.object [$[($ks, value% $vs)],*])
+  | `(value% $stx) =>
+    if stx.raw.isAntiquot then
+      let stx : Lean.Term := ⟨stx.raw.getAntiquotTerm⟩
+      `(Inframe.toValue $stx)
+    else
+      Lean.Macro.throwUnsupported
+
 /-- A string-keyed map, the host representation of an OpenTofu `map(...)` value. -/
 structure Map (α : Type) where
   entries : List (String × α)

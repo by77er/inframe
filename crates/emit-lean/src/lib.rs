@@ -364,16 +364,18 @@ fn render_item(
         );
     }
     output.push('\n');
+    // Fully qualified: a nested block named `managed` or `dependable` would otherwise shadow
+    // the core class inside this namespace.
     if data_source {
         let _ = write!(
             output,
-            "instance : Dependable {handle_name} := ⟨fun handle => handle.dataSource.address⟩\n\n"
+            "instance : Inframe.Dependable {handle_name} := ⟨fun handle => handle.dataSource.address⟩\n\n"
         );
     } else {
         let _ = write!(
             output,
-            "instance : Dependable {handle_name} := ⟨fun handle => handle.resource.address⟩\n\
-             instance : Managed {handle_name} := ⟨fun handle => handle.resource.address⟩\n\n"
+            "instance : Inframe.Dependable {handle_name} := ⟨fun handle => handle.resource.address⟩\n\
+             instance : Inframe.Managed {handle_name} := ⟨fun handle => handle.resource.address⟩\n\n"
         );
     }
     let (operation, operation_with, options_type, default_options, add, attr, handle_key) =
@@ -886,6 +888,9 @@ const RESERVED_TYPE_NAMES: &[&str] = &[
     "Args",
     "Required",
     "Block",
+    "Dependable",
+    "Managed",
+    "Interpolated",
     "Lean",
     "Inframe",
 ];
@@ -1276,11 +1281,13 @@ mod tests {
             "addResource options (Identifier.mk \"digitalocean_tag\") ⟨name, valid⟩ a.values"
         ));
         assert!(source.contains("      id := resourceAttr handle [\"id\"]"));
+        assert!(source.contains(
+            "instance : Inframe.Dependable Tag := ⟨fun handle => handle.resource.address⟩"
+        ));
         assert!(
-            source.contains("instance : Dependable Tag := ⟨fun handle => handle.resource.address⟩")
-        );
-        assert!(
-            source.contains("instance : Managed Tag := ⟨fun handle => handle.resource.address⟩")
+            source.contains(
+                "instance : Inframe.Managed Tag := ⟨fun handle => handle.resource.address⟩"
+            )
         );
         assert!(
             source.contains("  /-- The provider-assigned tag identifier. -/\n  id : Input String")
@@ -1319,10 +1326,10 @@ mod tests {
         let data = &generated.files[Path::new("DigitalOcean/Data/Tag.lean")];
         assert!(data.contains("def readWith (name : String) (a : Args) (options : DataSourceOptions DigitalOcean.Provider.DigitalOceanProvider)"));
         assert!(data.contains("dataSourceAttr handle [\"name\"]"));
-        assert!(
-            data.contains("instance : Dependable Tag := ⟨fun handle => handle.dataSource.address⟩")
-        );
-        assert!(!data.contains("instance : Managed Tag"));
+        assert!(data.contains(
+            "instance : Inframe.Dependable Tag := ⟨fun handle => handle.dataSource.address⟩"
+        ));
+        assert!(!data.contains("instance : Inframe.Managed Tag"));
 
         let root = &generated.files[Path::new("DigitalOcean.lean")];
         assert!(root.contains("import DigitalOcean.Provider\nimport DigitalOcean.Resource.Tag\nimport DigitalOcean.Data.Tag\n"));

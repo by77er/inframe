@@ -71,6 +71,18 @@ theorem typed_functions_lower_to_calls :
       == .function "join" [.literal (.string ","), .literal (.array [.string "a", .string "b"])]) = true := by
   decide
 
+/-- `value%` builds known values for `dynamic` attributes, with `$` splices. -/
+theorem value_literals (name : String) :
+    (value% { team: "core", replicas: 3, tags: ["a", true, null], nested: { deep: -1.5 } })
+      = .object [("team", .string "core"), ("replicas", .number 3),
+          ("tags", .array [.string "a", .bool true, .null]), ("nested", .object [("deep", .number (-1.5))])] ∧
+    (value% { name: $name }) = .object [("name", .string name)] ∧
+    (((resourceAttr (resourceHandle (Identifier.mk "digitalocean_tag") (Identifier.mk "app") : Resource Unit)
+        ["meta"] : Input Value)["team"] : Input Value)
+      == .symbolic (.index (.resourceAttribute (.res "digitalocean_tag" "app") ["meta"])
+          (.literal (.string "team")))) = true := by
+  exact ⟨rfl, rfl, by decide⟩
+
 /-- `tf!` folds known text and splices symbolic parts into one flat template. -/
 theorem interpolation_is_a_flat_template (x : Input String) (hx : x = .symbolic (.secretEnvironment "X")) :
     tf!"a-{x}-b" = .symbolic (.template [.text "a-", .interpolation (.secretEnvironment "X"), .text "-b"]) ∧

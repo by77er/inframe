@@ -1199,6 +1199,10 @@ Design decisions specific to Lean:
   string syntax (any `Interpolated` value in braces; all-known text folds to a
   literal). Generated handles carry `Dependable`/`Managed` instances so
   `dependsOn network` and `replaceTriggeredBy network` take the handle itself.
+- **Dynamic values.** Attributes typed `dynamic` (or as tuples) are `Input Value`.
+  Known ones are written with JSON-literal syntax, `value% { team: "core", tags: ["a"] }`
+  (with `$term` splices), any typed input upcasts to `Input Value`, and indexing a
+  dynamic value with a string or number yields another dynamic value.
 - **Numbers are exact.** `Number` is `Lean.JsonNumber`; `lit 2` and `lit 80.5`
   elaborate through `OfNat`/`OfScientific` and serialize without rounding.
 - **Test executables double as proofs.** A stack's test module states theorems
