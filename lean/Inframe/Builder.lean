@@ -312,6 +312,19 @@ def moved (origin : Address) [Dependable h] (destination : h) : Infra Unit :=
   Infra.modify fun graph =>
     { graph with moves := graph.moves ++ [⟨origin, Dependable.dependencyAddress destination⟩] }
 
+/-- Run `program` and also return the managed resources it added, in creation order. This is
+the primitive for scope combinators that post-process everything created inside a block, for
+example assigning it all to a cloud project. -/
+def Infra.capture (program : Infra α) : Infra (α × List ResourceSpec) :=
+  ⟨fun graph =>
+    let (value, next) := program.run graph
+    ((value, next.resources.drop graph.resources.length), next)⟩
+
+/-- A symbolic attribute of an already-added resource. The caller chooses the result type, so
+this is an escape hatch like `unsafeCall`; generated handles are the typed path. -/
+def ResourceSpec.unsafeAttr (resource : ResourceSpec) (path : List String) : Expr α :=
+  ⟨.resourceAttribute resource.address path⟩
+
 /-- Run a program against the empty graph and keep only the graph. Pure. -/
 def buildGraph (program : Infra α) : Graph :=
   (program.run {}).2

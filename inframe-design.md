@@ -1179,7 +1179,10 @@ Design decisions specific to Lean:
   `ResourceSpec` keeps plain strings so policy authors compare `resourceType == "…"`
   without unwrapping. `Graph.validate` re-checks identifiers anyway, matching Rust.
 - **`Infra` is a private state transformer**, not `StateM`, so programs cannot
-  read or overwrite the graph; only the builder primitives extend it.
+  read or overwrite the graph; only the builder primitives extend it. The one
+  introspection primitive is `Infra.capture`, which runs a sub-program and also
+  returns the resources it added, so a stack can define scope combinators such as
+  "assign everything created in this block to a project" without leaving `Infra`.
 - **`Expr α` coerces to `Input α`.** The PureScript `computed` wrapper remains
   available but is rarely needed.
 - **Numbers are exact.** `Number` is `Lean.JsonNumber`; `lit 2` and `lit 80.5`
