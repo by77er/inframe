@@ -1318,6 +1318,11 @@ ifThenElse
 interpolate
 ```
 
+The Lean API adds a `Fn` namespace of typed wrappers for OpenTofu functions
+with fixed signatures (`Fn.tonumber`, `Fn.tostring`, `Fn.tobool`, `Fn.lower`,
+`Fn.upper`, `Fn.trimspace`, `Fn.length`, `Fn.join`), so the common case of a
+provider typing one value differently on two resources needs no `unsafeCall`.
+
 Only operations that the lowerer knows how to serialize are allowed on unresolved expressions.
 
 ---

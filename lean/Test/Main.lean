@@ -60,6 +60,12 @@ theorem tags_are_named : tagsAreNamed.Holds graph := by decide
 /-- The conditional is symbolic, so the literal check does not fire. -/
 theorem purpose_is_symbolic : noProdPurpose.Holds graph := by decide
 
+theorem typed_functions_lower_to_calls :
+    (inputNode (Fn.tonumber (lit "42")) == .function "tonumber" [.literal (.string "42")]) = true ∧
+    (inputNode (Fn.join (lit ",") (lit ["a", "b"]))
+      == .function "join" [.literal (.string ","), .literal (.array [.string "a", .string "b"])]) = true := by
+  decide
+
 theorem literal_equality_is_decidable :
     (ExprNode.literal (.string "a") == ExprNode.literal (.string "a")) = true ∧
     (ExprNode.literal (.string "a") == ExprNode.literal (.number 1)) = false := by

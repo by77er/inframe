@@ -229,6 +229,41 @@ def secretEnv (name : String) (_valid : validEnvironmentName name = true := by d
     Input String :=
   symbolic (.secretEnvironment name)
 
+/-! Typed wrappers for OpenTofu functions with fixed signatures. Provider schemas sometimes
+type the same value differently on two resources (a droplet's `id` is a string, an
+attachment's `droplet_id` a number); these convert without giving up typing. Anything not
+listed here goes through `unsafeCall`, which keeps the loss of typing visible. -/
+namespace Fn
+
+private def call (name : String) (args : List ExprNode) : Input α :=
+  .computed ⟨.function name args⟩
+
+def tonumber (value : Input String) : Input Number :=
+  call "tonumber" [inputNode value]
+
+def tostring (value : Input α) : Input String :=
+  call "tostring" [inputNode value]
+
+def tobool (value : Input String) : Input Bool :=
+  call "tobool" [inputNode value]
+
+def lower (value : Input String) : Input String :=
+  call "lower" [inputNode value]
+
+def upper (value : Input String) : Input String :=
+  call "upper" [inputNode value]
+
+def trimspace (value : Input String) : Input String :=
+  call "trimspace" [inputNode value]
+
+def length (value : Input (List α)) : Input Number :=
+  call "length" [inputNode value]
+
+def join (separator : Input String) (items : Input (List String)) : Input String :=
+  call "join" [inputNode separator, inputNode items]
+
+end Fn
+
 def resourceHandle (resourceType name : Identifier) : Resource r := ⟨resourceType, name⟩
 def dataSourceHandle (dataSourceType name : Identifier) : DataSource r := ⟨dataSourceType, name⟩
 def providerHandle (address : String) : Provider p := ⟨address⟩
