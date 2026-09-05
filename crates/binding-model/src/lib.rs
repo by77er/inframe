@@ -59,6 +59,12 @@ pub struct BindingField {
     pub target_reserved: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// For nested blocks, the fewest entries the provider accepts (when more than zero).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<u64>,
+    /// For nested blocks, the most entries the provider accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +171,8 @@ fn derive_fields(block: &BlockSchema) -> Vec<BindingField> {
             block: true,
             target_reserved: reserved_words().contains(field_name(name).as_str()),
             description: None,
+            min_items: block.min_items.filter(|minimum| *minimum > 0),
+            max_items: block.max_items,
         }
     }));
     fields.sort_by(|left, right| left.provider_name.cmp(&right.provider_name));
@@ -184,6 +192,8 @@ fn derive_attribute(name: &str, attribute: &AttributeSchema) -> BindingField {
         block: false,
         target_reserved: reserved_words().contains(public_name.as_str()),
         description: attribute.description.clone(),
+        min_items: None,
+        max_items: None,
     }
 }
 
@@ -429,5 +439,9 @@ mod tests {
             item.outputs()
                 .any(|field| { field.provider_name == "node_pool" && field.block })
         );
+        let node_pool = &item.fields[0];
+        assert!(node_pool.required);
+        assert_eq!(node_pool.min_items, Some(1));
+        assert_eq!(node_pool.max_items, Some(1));
     }
 }

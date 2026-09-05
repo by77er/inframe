@@ -2,11 +2,12 @@
 //!
 //! Renders a language-neutral [`BindingPackage`] into a Lake package whose modules mirror
 //! the PureScript adapters: one module per resource and data source, a provider module,
-//! required-argument structures, optional-argument setters, nested block builders, and
-//! typed symbolic handles. Logical names are validated at compile time through the core
-//! library's `Identifier` proofs.
+//! argument records with nested block records, and typed symbolic handles. Logical names are
+//! validated at compile time through the core library's `Identifier` proofs, and the number
+//! of entries a nested block may have is in the record's types (exactly one, at most one) or
+//! in a `blocksInRange` obligation the caller discharges by `decide`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -266,30 +267,61 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
         provider.source
     );
     let shapes = Shapes::collect(fields, &[&marker]);
-    output.push_str(&render_shapes(&shapes));
+    let mut ranged = HashSet::new();
+    output.push_str(&render_shapes(&shapes, &mut ranged));
     output.push_str(&render_args_structure(
         "Args",
         &[],
         &fields.iter().collect::<Vec<_>>(),
         &format!("Arguments for the `{}` provider.", provider.source),
         &shapes,
+        &mut ranged,
     ));
+    let obligation = block_obligation(&ranged);
     let local_name = provider_local_name_from_source(&provider.source);
     let version = format!("= {}", provider.version);
     let _ = write!(
         output,
         "/-- Configure the default `{local_name}` provider. -/\n\
-         def configure (a : Args) : Infra (Inframe.Provider {marker}) :=\n  \
+         def configure (a : Args){} : Infra (Inframe.Provider {marker}) :=\n  \
            addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.toInputObject\n\n\
          /-- Configure an aliased `{local_name}` provider. The alias is validated at compile time. -/\n\
-         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by valid_identifier) :\n    \
+         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by valid_identifier){} :\n    \
            Infra (Inframe.Provider {marker}) :=\n  \
            addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.toInputObject\n\n\
          end {module_root}.Provider\n",
+        obligation.consumed,
         escape_string(&provider.source),
+        obligation.consumed,
         escape_string(&provider.source)
     );
     output
+}
+
+/// The extra parameter of a builder whose `Args` carry a `blocksInRange` obligation: a literal
+/// record discharges it by `decide`, a record built from run-time lists needs the caller's
+/// proof. `forwarded` names the proof so the convenience builder can pass it on with
+/// `discharge`; `consumed` is for the builder that only demands it.
+struct BlockObligation {
+    forwarded: &'static str,
+    consumed: &'static str,
+    discharge: &'static str,
+}
+
+fn block_obligation(ranged: &HashSet<String>) -> BlockObligation {
+    if ranged.contains("Args") {
+        BlockObligation {
+            forwarded: "\n    (blocks : a.blocksInRange = true := by blocks_in_range)",
+            consumed: "\n    (_blocks : a.blocksInRange = true := by blocks_in_range)",
+            discharge: " blocks",
+        }
+    } else {
+        BlockObligation {
+            forwarded: "",
+            consumed: "",
+            discharge: "",
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -327,14 +359,17 @@ fn render_item(
         item.provider_type
     );
     let shapes = Shapes::collect(&item.fields, &[&handle_name, &node]);
-    output.push_str(&render_shapes(&shapes));
+    let mut ranged = HashSet::new();
+    output.push_str(&render_shapes(&shapes, &mut ranged));
     output.push_str(&render_args_structure(
         "Args",
         &[],
         &item.fields.iter().collect::<Vec<_>>(),
         &format!("Arguments for `{}`.", item.provider_type),
         &shapes,
+        &mut ranged,
     ));
+    let obligation = block_obligation(&ranged);
     let handle_fields: Vec<_> = item.outputs().collect();
     let handle_reserved: &[&str] = if data_source {
         &["dataSource"]
@@ -411,11 +446,12 @@ fn render_item(
         output,
         "/-- Add `{}.<name>` to the graph with explicit options. The logical name is validated at\ncompile time. -/\n\
          def {operation_with} (name : String) (a : Args) (options : {options_type} {module_root}.Provider.{marker})\n    \
-           (valid : validIdentifier name = true := by valid_identifier) : Infra {handle_name} := do\n  \
+           (valid : validIdentifier name = true := by valid_identifier){} : Infra {handle_name} := do\n  \
            requireProvider (Identifier.mk \"{local_name}\") \"{}\" \"= {}\"\n  \
            let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.toInputObject\n  \
            pure\n    {{ {handle_key} := handle",
         item.provider_type,
+        obligation.consumed,
         escape_string(&provider.source),
         escape_string(&provider.version),
         item.provider_type
@@ -432,11 +468,11 @@ fn render_item(
         output,
         " }}\n\n\
          /-- Add `{}.<name>` to the graph with default options. -/\n\
-         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier) :\n    \
+         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier){} :\n    \
            Infra {handle_name} :=\n  \
-           {operation_with} name a {default_options} valid\n\n\
+           {operation_with} name a {default_options} valid{}\n\n\
          end {module}\n",
-        item.provider_type
+        item.provider_type, obligation.forwarded, obligation.discharge
     );
     output
 }
@@ -445,14 +481,18 @@ fn render_item(
 const ARGS_RESERVED: &[&str] = &["mk", "toInputObject", "toExprNode"];
 
 /// One record per argument shape: required attributes are plain fields, optional ones default
-/// to unset, nested blocks are (lists of) nested records. `toInputObject` emits only what was
-/// set, so an untouched optional field never reaches the graph.
+/// to unset, nested blocks are nested records held according to how many the schema allows
+/// (one, `Option`, or `List`). `toInputObject` emits only what was set, so an untouched
+/// optional field never reaches the graph. When a block list has a lower or upper bound, or a
+/// nested record has one, the record also gets `blocksInRange`, and `ranged` records the
+/// record names that have it so that parents and builders can require it.
 fn render_args_structure(
     name: &str,
     parent_path: &[String],
     fields: &[&BindingField],
     doc: &str,
     shapes: &Shapes<'_>,
+    ranged: &mut HashSet<String>,
 ) -> String {
     let inputs: Vec<_> = fields
         .iter()
@@ -470,9 +510,11 @@ fn render_args_structure(
             render_args_field_type(field, &path, shapes)
         );
     }
+    // A record with no inputs never reads its argument; `_a` keeps the generated code lint-clean.
+    let binder = if inputs.is_empty() { "_a" } else { "a" };
     let _ = write!(
         output,
-        "\ndef {name}.toInputObject (a : {name}) : InputObject :=\n  ⟨List.filterMap (fun entry => entry) ([",
+        "\ndef {name}.toInputObject ({binder} : {name}) : InputObject :=\n  ⟨List.filterMap (fun entry => entry) ([",
     );
     for (index, field) in inputs.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n    , " };
@@ -492,7 +534,91 @@ fn render_args_structure(
         "] : List (Option (String × ExprNode)))⟩\n\n\
          def {name}.toExprNode (a : {name}) : ExprNode :=\n  a.toInputObject.toExprNode\n\n"
     );
+    let constraints: Vec<_> = inputs
+        .iter()
+        .flat_map(|field| block_constraints(field, &child_path(parent_path, field), shapes, ranged))
+        .collect();
+    if !constraints.is_empty() {
+        ranged.insert(name.to_owned());
+        let (descriptions, checks): (Vec<_>, Vec<_>) = constraints.into_iter().unzip();
+        let _ = write!(
+            output,
+            "/-- Whether the nested blocks hold as many entries as the provider schema allows: {}. \
+             Builders taking this record require it; a literal record discharges it by `decide`. -/\n\
+             def {name}.blocksInRange (a : {name}) : Bool :=\n  {}\n\n",
+            descriptions.join(", "),
+            checks.join(" && ")
+        );
+    }
     output
+}
+
+/// How many entries a nested block list may hold, from the provider schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Multiplicity {
+    /// Exactly one: the block is a single record field.
+    One,
+    /// At most one: the block is an `Option` field.
+    AtMostOne,
+    /// Any number within the bounds: a `List`, with each bound a proof obligation.
+    Many { min: Option<u64>, max: Option<u64> },
+}
+
+fn multiplicity(field: &BindingField) -> Multiplicity {
+    match field.max_items {
+        Some(1) if field.required => Multiplicity::One,
+        Some(1) => Multiplicity::AtMostOne,
+        max => Multiplicity::Many {
+            min: field.min_items,
+            max,
+        },
+    }
+}
+
+/// The `(description, Lean check)` pairs one field contributes to its record's
+/// `blocksInRange`: its own list bounds, and its nested record's obligation when it has one.
+fn block_constraints(
+    field: &BindingField,
+    path: &[String],
+    shapes: &Shapes<'_>,
+    ranged: &HashSet<String>,
+) -> Vec<(String, String)> {
+    let Some(container) = nested_container(&field.r#type) else {
+        return Vec::new();
+    };
+    let field_name = safe_field_name(field, ARGS_RESERVED);
+    let record = format!("{}Args", shapes.name(path));
+    let mut constraints = Vec::new();
+    let multiplicity = multiplicity(field);
+    if let (NestedContainer::Array, Multiplicity::Many { min, max }) = (container, multiplicity) {
+        if let Some(min) = min {
+            constraints.push((
+                format!("`{}` at least {min}", field.provider_name),
+                format!("{min} ≤ a.{field_name}.length"),
+            ));
+        }
+        if let Some(max) = max {
+            constraints.push((
+                format!("`{}` at most {max}", field.provider_name),
+                format!("a.{field_name}.length ≤ {max}"),
+            ));
+        }
+    }
+    if ranged.contains(&record) {
+        let check = match (container, field.required, multiplicity) {
+            (NestedContainer::Single, true, _) | (NestedContainer::Array, _, Multiplicity::One) => {
+                format!("{record}.blocksInRange a.{field_name}")
+            }
+            (NestedContainer::Single, false, _) | (NestedContainer::Array, _, _) => {
+                format!("a.{field_name}.all {record}.blocksInRange")
+            }
+            (NestedContainer::Map, _, _) => {
+                format!("a.{field_name}.all fun (_, block) => {record}.blocksInRange block")
+            }
+        };
+        constraints.push((format!("`{}` entries in range", field.provider_name), check));
+    }
+    constraints
 }
 
 /// The field type in an argument record, with the default for optional fields.
@@ -501,8 +627,12 @@ fn render_args_field_type(field: &BindingField, path: &[String], shapes: &Shapes
     match (nested_container(&field.r#type), field.required) {
         (Some(NestedContainer::Single), true) => record,
         (Some(NestedContainer::Single), false) => format!("Option {record} := none"),
-        (Some(NestedContainer::Array), true) => format!("List {record}"),
-        (Some(NestedContainer::Array), false) => format!("List {record} := []"),
+        (Some(NestedContainer::Array), required) => match multiplicity(field) {
+            Multiplicity::One => record,
+            Multiplicity::AtMostOne => format!("Option {record} := none"),
+            Multiplicity::Many { .. } if required => format!("List {record}"),
+            Multiplicity::Many { .. } => format!("List {record} := []"),
+        },
         (Some(NestedContainer::Map), true) => format!("List (String × {record})"),
         (Some(NestedContainer::Map), false) => format!("List (String × {record}) := []"),
         (None, true) => format!(
@@ -536,10 +666,18 @@ fn render_args_field_entry(
         (Some(NestedContainer::Single), false) => {
             format!("a.{field_name}.map fun block => (\"{key}\", block.toExprNode)")
         }
-        (Some(NestedContainer::Array), true) => format!("some (\"{key}\", {array})"),
-        (Some(NestedContainer::Array), false) => {
-            format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {array})")
-        }
+        (Some(NestedContainer::Array), required) => match multiplicity(field) {
+            Multiplicity::One => {
+                format!("some (\"{key}\", ExprNode.array [a.{field_name}.toExprNode])")
+            }
+            Multiplicity::AtMostOne => format!(
+                "a.{field_name}.map fun block => (\"{key}\", ExprNode.array [block.toExprNode])"
+            ),
+            Multiplicity::Many { .. } if required => format!("some (\"{key}\", {array})"),
+            Multiplicity::Many { .. } => {
+                format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {array})")
+            }
+        },
         (Some(NestedContainer::Map), true) => format!("some (\"{key}\", {map})"),
         (Some(NestedContainer::Map), false) => {
             format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {map})")
@@ -694,7 +832,7 @@ fn object_fields(r#type: &BindingType) -> Option<&[BindingField]> {
     }
 }
 
-fn render_shapes(shapes: &Shapes<'_>) -> String {
+fn render_shapes(shapes: &Shapes<'_>, ranged: &mut HashSet<String>) -> String {
     let mut output = String::new();
     for nested in &shapes.entries {
         let fields: Vec<_> = nested.fields.iter().collect();
@@ -721,6 +859,7 @@ fn render_shapes(shapes: &Shapes<'_>) -> String {
                     shared_note(nested.occurrences)
                 ),
                 shapes,
+                ranged,
             ));
         }
     }
@@ -1175,7 +1314,94 @@ mod tests {
             block: false,
             target_reserved: false,
             description: None,
+            min_items: None,
+            max_items: None,
         }
+    }
+
+    /// A nested block with the given entry bounds.
+    fn block(
+        name: &str,
+        fields: Vec<BindingField>,
+        min_items: Option<u64>,
+        max_items: Option<u64>,
+    ) -> BindingField {
+        let required = min_items.is_some_and(|minimum| minimum > 0);
+        BindingField {
+            block: true,
+            min_items: min_items.filter(|minimum| *minimum > 0),
+            max_items,
+            ..field(
+                name,
+                &inframe_binding_model::field_name(name),
+                BindingType::List(Box::new(BindingType::Object(fields))),
+                required,
+                !required,
+                false,
+            )
+        }
+    }
+
+    #[test]
+    fn block_cardinality_shapes_the_argument_record() {
+        let mut bounded = package();
+        let entry = || {
+            vec![field(
+                "value",
+                "value",
+                BindingType::String,
+                true,
+                false,
+                false,
+            )]
+        };
+        bounded.resources[0].fields = vec![
+            field("name", "name", BindingType::String, true, false, false),
+            block("exactly_one", entry(), Some(1), Some(1)),
+            block("at_most_one", entry(), None, Some(1)),
+            block("at_least_one", entry(), Some(1), None),
+            block("bounded", entry(), Some(1), Some(3)),
+            block("unbounded", entry(), None, None),
+            // A block whose own list is unbounded but whose entries carry an obligation.
+            block(
+                "outer",
+                vec![block("inner", entry(), Some(2), None)],
+                None,
+                Some(1),
+            ),
+        ];
+        let generated = render_package(&bounded, "DigitalOcean", "abc", &core()).unwrap();
+        let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
+        assert!(source.contains("  exactlyOne : ExactlyOneArgs\n"));
+        assert!(source.contains("  atMostOne : Option ExactlyOneArgs := none\n"));
+        assert!(source.contains("  atLeastOne : List ExactlyOneArgs\n"));
+        assert!(source.contains("  bounded : List ExactlyOneArgs\n"));
+        assert!(source.contains("  unbounded : List ExactlyOneArgs := []\n"));
+        assert!(
+            source.contains("some (\"exactly_one\", ExprNode.array [a.exactlyOne.toExprNode])")
+        );
+        assert!(source.contains(
+            "a.atMostOne.map fun block => (\"at_most_one\", ExprNode.array [block.toExprNode])"
+        ));
+        assert!(source.contains(
+            "def OuterArgs.blocksInRange (a : OuterArgs) : Bool :=\n  2 ≤ a.inner.length\n"
+        ));
+        assert!(source.contains(
+            "def Args.blocksInRange (a : Args) : Bool :=\n  1 ≤ a.atLeastOne.length && 1 ≤ a.bounded.length && a.bounded.length ≤ 3 && a.outer.all OuterArgs.blocksInRange\n"
+        ));
+        assert!(source.contains(
+            "(valid : validIdentifier name = true := by valid_identifier)\n    (_blocks : a.blocksInRange = true := by blocks_in_range) : Infra Tag := do"
+        ));
+        assert!(source.contains(
+            "(valid : validIdentifier name = true := by valid_identifier)\n    (blocks : a.blocksInRange = true := by blocks_in_range) :\n    Infra Tag :=\n  createWith name a resourceOptions valid blocks\n"
+        ));
+        assert!(!source.contains("ExactlyOneArgs.blocksInRange"));
+
+        // Without bounds nothing changes: no obligation, no extra parameter.
+        let plain = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
+        let plain = &plain.files[Path::new("DigitalOcean/Resource/Tag.lean")];
+        assert!(!plain.contains("blocksInRange"));
+        assert!(plain.contains("createWith name a resourceOptions valid\n"));
     }
 
     #[allow(clippy::too_many_lines)]

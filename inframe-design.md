@@ -1206,9 +1206,9 @@ Design decisions specific to Lean:
   type cannot be chosen apart from the payload (`(⟨.literal (.bool true)⟩ : Input
   String)` does not compile outside the core); the only ways to pick it freely are
   the generated adapters and the functions named `unsafe…` (`unsafeInput`,
-  `unsafeCall`, `unsafeTraverse`), which `lean/Negative/check.sh` keeps honest.
+  `unsafeCall`, `unsafeTraverse`), which `scripts/lean-negative.sh` keeps honest.
 - **A small DSL over inputs.** Arguments are record literals with defaults
-  (`{ image := "…", region := "nyc3", nodePool := [{ name := "workers", size := "…" }] }`),
+  (`{ image := "…", region := "nyc3", nodePool := { name := "workers", size := "…" } }`),
   OpenTofu string and conversion functions are
   dot-notation on inputs (`Input.tonumber`, `.lower`, `.replace`, `.substr`, `.split`,
   `.join`, `.startswith`, …), `++` concatenates string inputs into one flat
@@ -1217,6 +1217,18 @@ Design decisions specific to Lean:
   string syntax (any `Interpolated` value in braces; all-known text folds to a
   literal). Generated handles carry `Dependable`/`Managed` instances so
   `dependsOn network` and `replaceTriggeredBy network` take the handle itself.
+- **Block cardinality is in the types.** The provider schema says how many
+  entries a nested block may have, and the argument record says the same: a block
+  allowed exactly once (`node_pool` on a Kubernetes cluster) is a plain record
+  field, one allowed at most once (`versioning`, `storage_autoscale`) is an
+  `Option` (`versioning := some { enabled := true }`), and any other block is a
+  `List`. A list with a lower or upper bound (`rule` on a database firewall needs
+  at least one entry) gives the record a generated `Args.blocksInRange : Bool`,
+  and `create` takes `(blocks : a.blocksInRange = true := by blocks_in_range)`:
+  a literal record discharges it by `decide`, a record whose lists come from
+  run-time values makes the caller prove the bound, which is the point. What the
+  types do not carry is the value-level part of the schema (enumerations,
+  formats, cross-attribute rules); that is the provider's `validate`.
 - **Higher-kinded attribute structures.** Each resource, data source, and nested
   block shape is emitted once as `structure Attributes (f o : Type → Type)`: required
   attributes are `f T`, everything else `f (o T)`, because OpenTofu leaves unset

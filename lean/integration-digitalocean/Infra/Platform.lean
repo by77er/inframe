@@ -44,7 +44,7 @@ def createDatabases (env : Environment) (network : Vpc.Vpc) :
         region := env.region
         size := "db-s-1vcpu-1gb"
         privateNetworkUuid := network.id
-        storageAutoscale := [{ enabled := true, thresholdPercent := 80, incrementGib := 10 }]
+        storageAutoscale := some { enabled := true, thresholdPercent := 80, incrementGib := 10 }
         version := "15" }
     let databases ← createDatabases env network rest
     pure (database :: databases)
@@ -71,8 +71,8 @@ def infrastructureFor (env : Environment) (databases : List Identifier) : Infra 
       region := env.region
       version := versions.latestVersion
       nodePool :=
-        [{ name := "workers", size := "s-2vcpu-4gb", nodeCount := 2, autoScale := true
-           minNodes := 2, maxNodes := env.workerMax, tags := ["platform", "workers"] }]
+        { name := "workers", size := "s-2vcpu-4gb", nodeCount := 2, autoScale := true
+          minNodes := 2, maxNodes := env.workerMax, tags := ["platform", "workers"] }
       autoUpgrade := true
       ha := env == .prod
       surgeUpgrade := true
@@ -84,7 +84,7 @@ def infrastructureFor (env : Environment) (databases : List Identifier) : Infra 
   let bucket ← SpacesBucket.create "assets"
     { name := "replace-with-a-globally-unique-space-name"
       region := env.region
-      versioning := [{ enabled := true }] }
+      versioning := some { enabled := true } }
 
   let clusters ← createDatabases env network databases
 

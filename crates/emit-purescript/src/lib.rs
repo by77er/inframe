@@ -894,6 +894,8 @@ mod tests {
             block: false,
             target_reserved: false,
             description: Some("The tag name.\nMust be unique within the account.".into()),
+            min_items: None,
+            max_items: None,
         };
         let id = BindingField {
             provider_name: "id".into(),
@@ -906,6 +908,8 @@ mod tests {
             block: false,
             target_reserved: false,
             description: Some("The provider-assigned tag identifier.".into()),
+            min_items: None,
+            max_items: None,
         };
         let nested_field = |provider_name: &str,
                             public_name: &str,
@@ -923,6 +927,8 @@ mod tests {
             block: false,
             target_reserved: false,
             description: None,
+            min_items: None,
+            max_items: None,
         };
         let nested_name = nested_field("name", "name", BindingType::String, true, false, false);
         let mut auto_scale = nested_field(

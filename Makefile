@@ -4,7 +4,8 @@ test:
 	cargo test --workspace
 	cd purescript && spago test -p inframe-graph-core
 	cd lean && lake -q exe inframe-test
-	cd lean && Negative/check.sh
+	scripts/lean-negative.sh lean
+	scripts/lean-negative.sh lean/integration-digitalocean
 
 check:
 	cargo fmt --all -- --check

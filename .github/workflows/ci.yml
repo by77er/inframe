@@ -81,8 +81,7 @@ jobs:
           lake build
           lake -q exe inframe-test
       - name: Programs the core must reject
-        working-directory: lean
-        run: Negative/check.sh
+        run: scripts/lean-negative.sh lean
       - name: Generate pinned DigitalOcean bindings
         run: |
           cargo run -q -p inframe-cli -- provider generate --frontend lean \
@@ -95,6 +94,8 @@ jobs:
         run: |
           lake -q exe infra | cargo run -q -p inframe-cli -- graph validate -
           lake -q exe platform | cargo run -q -p inframe-cli -- graph validate -
+      - name: Programs the generated bindings must reject
+        run: scripts/lean-negative.sh lean/integration-digitalocean
       - name: Configured project build and compile-time policies
         run: |
           cargo run -q -p inframe-cli -- build --stack lean-example
