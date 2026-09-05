@@ -473,34 +473,36 @@ impl Project {
         Ok((graph, path))
     }
 
-    pub fn test(&self, stack: &str) -> Result<ExitStatus> {
+    /// The test entry point that checks `stack`'s policies, if one is configured: the
+    /// stack's own `test`, else the frontend's default.
+    pub fn test_entry_point(&self, stack: &str) -> Result<Option<&str>> {
         let stack_config = self.stack(stack)?;
+        let default = match self.stack_frontend(stack)? {
+            Frontend::PureScript => self.purescript_config()?.test.as_deref(),
+            Frontend::Lean => self.lean_config()?.test.as_deref(),
+        };
+        Ok(stack_config.test.as_deref().or(default))
+    }
+
+    pub fn test(&self, stack: &str) -> Result<ExitStatus> {
         let frontend = self.stack_frontend(stack)?;
         let mut command = match frontend {
             Frontend::PureScript => {
                 let config = self.purescript_config()?;
-                let test = stack_config
-                    .test
-                    .as_deref()
-                    .or(config.test.as_deref())
-                    .with_context(|| {
-                        format!(
-                            "stack `{stack}` has no PureScript test entry point; set `stacks.{stack}.test` or `purescript.test`"
-                        )
-                    })?;
+                let test = self.test_entry_point(stack)?.with_context(|| {
+                    format!(
+                        "stack `{stack}` has no PureScript test entry point; set `stacks.{stack}.test` or `purescript.test`"
+                    )
+                })?;
                 self.spago(config, "test", test)
             }
             Frontend::Lean => {
                 let config = self.lean_config()?;
-                let test = stack_config
-                    .test
-                    .as_deref()
-                    .or(config.test.as_deref())
-                    .with_context(|| {
-                        format!(
-                            "stack `{stack}` has no Lean test executable; set `stacks.{stack}.test` or `lean.test`"
-                        )
-                    })?;
+                let test = self.test_entry_point(stack)?.with_context(|| {
+                    format!(
+                        "stack `{stack}` has no Lean test executable; set `stacks.{stack}.test` or `lean.test`"
+                    )
+                })?;
                 self.lake(config, test)
             }
         };

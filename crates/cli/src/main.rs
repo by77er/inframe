@@ -68,6 +68,9 @@ enum Command {
     Apply(RunArgs),
     /// Prepare a stack and run `tofu destroy`.
     Destroy(RunArgs),
+    /// Prepare a stack and run any other `tofu` subcommand in its workspace, for example
+    /// `inframe tofu --stack dev -- state list` or `-- import <address> <id>`.
+    Tofu(RunArgs),
     /// Run `tofu show -json` in an existing stack.
     Show(ExistingStackArgs),
     /// Run `tofu output -json` in an existing stack.
@@ -188,6 +191,10 @@ struct RunArgs {
     graph: Option<PathBuf>,
     #[arg(long)]
     workspace: Option<PathBuf>,
+    /// Do not run the stack's configured test entry point, which otherwise has to pass
+    /// before `OpenTofu` runs.
+    #[arg(long)]
+    skip_tests: bool,
     /// Arguments passed directly to `OpenTofu` after `--`.
     #[arg(last = true)]
     tofu_args: Vec<OsString>,
@@ -213,14 +220,29 @@ fn main() -> Result<()> {
         Command::Provider { command } => provider_command(command, &cli.project, &cli.tofu_binary),
         Command::Graph { command } => graph_command(command, &cli.project),
         Command::Render(arguments) => render(&arguments),
-        Command::Init(arguments) => run_graph("init", &arguments, &cli.project, &cli.tofu_binary),
-        Command::Validate(arguments) => {
-            run_graph("validate", &arguments, &cli.project, &cli.tofu_binary)
+        Command::Init(arguments) => {
+            run_lifecycle("init", &arguments, &cli.project, &cli.tofu_binary)
         }
-        Command::Plan(arguments) => run_graph("plan", &arguments, &cli.project, &cli.tofu_binary),
-        Command::Apply(arguments) => run_graph("apply", &arguments, &cli.project, &cli.tofu_binary),
+        Command::Validate(arguments) => {
+            run_lifecycle("validate", &arguments, &cli.project, &cli.tofu_binary)
+        }
+        Command::Plan(arguments) => {
+            run_lifecycle("plan", &arguments, &cli.project, &cli.tofu_binary)
+        }
+        Command::Apply(arguments) => {
+            run_lifecycle("apply", &arguments, &cli.project, &cli.tofu_binary)
+        }
         Command::Destroy(arguments) => {
-            run_graph("destroy", &arguments, &cli.project, &cli.tofu_binary)
+            run_lifecycle("destroy", &arguments, &cli.project, &cli.tofu_binary)
+        }
+        Command::Tofu(arguments) => {
+            let (command, rest) = arguments.tofu_args.split_first().context(
+                "pass the tofu subcommand after `--`, for example `inframe tofu --stack dev -- state list`",
+            )?;
+            let command = command
+                .to_str()
+                .context("the tofu subcommand must be valid UTF-8")?;
+            run_graph(command, rest, &arguments, &cli.project, &cli.tofu_binary)
         }
         Command::Show(arguments) => {
             run_existing_json("show", &arguments, &cli.project, &cli.tofu_binary)
@@ -535,8 +557,28 @@ fn render(arguments: &RenderArgs) -> Result<()> {
     write_text(&arguments.output, &output)
 }
 
+fn run_lifecycle(
+    command: &str,
+    arguments: &RunArgs,
+    project_path: &Path,
+    tofu_binary: &Path,
+) -> Result<()> {
+    run_graph(
+        command,
+        &arguments.tofu_args,
+        arguments,
+        project_path,
+        tofu_binary,
+    )
+}
+
+/// Build (or read) the stack's graph, write the workspace, and run one `tofu` subcommand in
+/// it. A graph built from the project only reaches `OpenTofu` after the stack's configured
+/// test entry point has passed; a graph read with `--graph` bypasses the project and is not
+/// checked beyond the reference validator.
 fn run_graph(
     command: &str,
+    tofu_args: &[OsString],
     arguments: &RunArgs,
     project_path: &Path,
     tofu_binary: &Path,
@@ -552,6 +594,7 @@ fn run_graph(
         let project = Project::load(project_path)?;
         let (graph, path) = project.build(&arguments.stack, None)?;
         eprintln!("built stack `{}` to {}", arguments.stack, path.display());
+        check_stack(&project, &arguments.stack, arguments.skip_tests)?;
         let base = arguments
             .workspace
             .clone()
@@ -562,17 +605,43 @@ fn run_graph(
         (graph, workspace)
     };
     workspace.write_graph(&graph)?;
-    let environment = if matches!(command, "plan" | "apply" | "destroy") {
+    let environment = if needs_credentials(command) {
         secret_environment(&graph)?
     } else {
         BTreeMap::new()
     };
-    OpenTofu::new(tofu_binary).run_with_env(
-        &workspace,
+    OpenTofu::new(tofu_binary).run_with_env(&workspace, command, tofu_args, &environment)?;
+    Ok(())
+}
+
+/// The subcommands that contact providers and therefore need the graph's secrets.
+fn needs_credentials(command: &str) -> bool {
+    matches!(
         command,
-        &arguments.tofu_args,
-        &environment,
-    )?;
+        "plan" | "apply" | "destroy" | "refresh" | "import" | "console"
+    )
+}
+
+/// Lifecycle commands run against a graph only after the stack's configured test entry
+/// point has passed, so a policy suite kept in a separate executable gates `plan` and
+/// `apply` as well as `inframe test`. Both the override and the absence of a suite are said
+/// out loud: a green build of the main executable is not evidence that any policy holds.
+fn check_stack(project: &Project, stack: &str, skip: bool) -> Result<()> {
+    if skip {
+        eprintln!("skipping the tests of stack `{stack}` (--skip-tests)");
+        return Ok(());
+    }
+    if project.test_entry_point(stack)?.is_none() {
+        eprintln!("note: stack `{stack}` has no test entry point, so no policies were checked");
+        return Ok(());
+    }
+    let status = project.test(stack)?;
+    if !status.success() {
+        bail!(
+            "tests for stack `{stack}` failed ({status}); fix the violations, or pass --skip-tests to run OpenTofu regardless"
+        );
+    }
+    eprintln!("tests for stack `{stack}` passed");
     Ok(())
 }
 

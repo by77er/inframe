@@ -1240,7 +1240,10 @@ Design decisions specific to Lean:
 - **Test executables double as proofs.** A stack's test module states theorems
   (`theorem policies : p.Holds (buildGraph infra) := by decide`) and a `main` that
   prints `Policy.report`; `inframe test --stack <name>` runs `lake -q exe <test>`,
-  so the theorems are checked before the report runs.
+  so the theorems are checked before the report runs. The test executable is
+  separate from the main one, so a green `inframe build` says nothing about the
+  policies; the lifecycle commands therefore run the configured test executable
+  after building and stop when it fails (see §20.4.1).
 
 Deriving `DecidableEq` for nested inductives is unsupported in Lean 4.33, so
 `Value` and `ExprNode` provide hand-written structural `BEq`; propositions are
@@ -2363,9 +2366,20 @@ For example, a repository can build its production graph and assert that every
 DigitalOcean database's `private_network_uuid` is a symbolic reference to a
 managed `digitalocean_vpc` resource. The README contains a runnable PureScript
 version that pattern-matches on the native `Graph` and `ExprNode` values. The
-`inframe test --stack <name>` command simply runs the configured PureScript test
-entry point and preserves its exit status, leaving assertion libraries,
-frameworks, reporting, and policy organization to the project.
+`inframe test --stack <name>` command simply runs the configured test entry point
+and preserves its exit status, leaving assertion libraries, frameworks,
+reporting, and policy organization to the project.
+
+The test entry point is a separate program from the one that prints the graph,
+so its success has to be tied to deployment explicitly: `init`, `validate`,
+`plan`, `apply`, `destroy`, and `tofu` run the configured test entry point after
+building the graph and refuse to continue when it fails. `--skip-tests` overrides
+that and is announced on stderr; a stack with no test entry point is pointed out
+on every run; a graph supplied with `--graph` bypasses the project and is only
+validated structurally. What remains the project's responsibility is that the
+test program checks the same program the main program renders (both should
+import one `infrastructure` definition), because the CLI cannot see inside
+either executable.
 
 Policies over symbolic expressions need three outcomes: pass, violation, and
 unknown. Unknown rules can be evaluated against machine-readable OpenTofu plan

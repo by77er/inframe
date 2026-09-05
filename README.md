@@ -373,10 +373,23 @@ inframe destroy --stack platform
 ```
 
 Lifecycle commands rebuild the configured entry point and write deterministic
-OpenTofu JSON into `.inframe/stacks/<stack>/`. Secrets referenced with
-`secretEnv` are required only for `plan`, `apply`, and `destroy`; Inframe passes
-them to OpenTofu as sensitive variables without writing their values to Graph
-IR or OpenTofu configuration.
+OpenTofu JSON into `.inframe/stacks/<stack>/`. When the stack configures a
+`test` entry point, `init`, `validate`, `plan`, `apply`, `destroy`, and `tofu`
+run it after building and stop if it fails, so a policy suite kept in its own
+executable gates deployment and not only `inframe test`; `--skip-tests`
+overrides that and says so on stderr, and a stack without a test entry point is
+pointed out every time. A graph passed with `--graph` bypasses the project and
+only the reference validator runs on it.
+
+Secrets referenced with `secretEnv` are required only for the subcommands that
+contact providers (`plan`, `apply`, `destroy`, and `refresh`, `import`, and
+`console` through `inframe tofu`); Inframe passes them to OpenTofu as sensitive
+variables without writing their values to Graph IR or OpenTofu configuration.
+
+Anything else OpenTofu can do in the workspace goes through the same prepared
+configuration with `inframe tofu --stack <name> -- <subcommand>`, for example
+`-- state list`, `-- import digitalocean_droplet.web 12345`, or
+`-- force-unlock <id>`.
 
 ### 6. Configure remote state
 

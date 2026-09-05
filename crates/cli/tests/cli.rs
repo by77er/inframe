@@ -634,6 +634,132 @@ type = "local"
     assert!(recorded.trim_end().ends_with("/lean"));
 }
 
+/// Lifecycle commands run the configured test entry point after building and refuse to run
+/// `OpenTofu` when it fails, so a policy suite in a separate executable gates deployment.
+#[cfg(unix)]
+#[test]
+fn lifecycle_commands_require_the_stack_tests_to_pass() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let bin = directory.path().join("bin");
+    let lake = bin.join("lake");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(
+        &project,
+        r#"[lean]
+main = "graph"
+test = "policies"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &lake,
+        format!(
+            "#!/bin/sh\ncase \"$3\" in\n  graph) cat <<'GRAPH'\n{GRAPH}\nGRAPH\n  ;;\n  policies) exit \"$INFRAME_TEST_POLICY_EXIT\" ;;\n  *) exit 9 ;;\nesac\n"
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&lake).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&lake, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let plan = |policy_exit: &str, extra: &[&str]| {
+        let mut command = Command::cargo_bin("inframe").unwrap();
+        command
+            .arg("--project")
+            .arg(&project)
+            .args([
+                "plan",
+                "--stack",
+                "dev",
+                "--tofu-binary",
+                "/nonexistent/tofu",
+            ])
+            .args(extra)
+            .env("PATH", &path)
+            .env("INFRAME_TEST_POLICY_EXIT", policy_exit);
+        command
+    };
+
+    // A failing suite stops before OpenTofu is even started.
+    plan("7", &[])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tests for stack `dev` failed"))
+        .stderr(predicate::str::contains("failed to start OpenTofu").not());
+
+    // A passing suite, or an explicit override, reaches OpenTofu.
+    plan("0", &[])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tests for stack `dev` passed"))
+        .stderr(predicate::str::contains("failed to start OpenTofu binary"));
+    plan("7", &["--skip-tests"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "skipping the tests of stack `dev`",
+        ))
+        .stderr(predicate::str::contains("failed to start OpenTofu binary"));
+}
+
+/// `inframe tofu` runs any subcommand in the stack's workspace, so state, import, and
+/// recovery operations go through the same prepared configuration as `plan` and `apply`.
+#[cfg(unix)]
+#[test]
+fn tofu_passthrough_runs_any_subcommand_in_the_stack_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let graph = directory.path().join("graph.json");
+    let tofu = directory.path().join("tofu");
+    let recorded = directory.path().join("tofu-args");
+    fs::write(&graph, GRAPH).unwrap();
+    fs::write(
+        &tofu,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$INFRAME_TEST_ARGS\"\npwd >> \"$INFRAME_TEST_ARGS\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&tofu).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&tofu, permissions).unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["tofu", "--stack", "dev", "--graph"])
+        .arg(&graph)
+        .arg("--workspace")
+        .arg(directory.path().join("work"))
+        .arg("--tofu-binary")
+        .arg(&tofu)
+        .args(["--", "state", "list"])
+        .env("INFRAME_TEST_ARGS", &recorded)
+        .assert()
+        .success();
+    let recorded = fs::read_to_string(recorded).unwrap();
+    assert!(recorded.starts_with("state\nlist\n"));
+    assert!(recorded.trim_end().ends_with("/work/stacks/dev"));
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["tofu", "--stack", "dev", "--graph"])
+        .arg(&graph)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "pass the tofu subcommand after `--`",
+        ));
+}
+
 #[cfg(unix)]
 #[test]
 fn builds_a_lean_stack_from_the_executable_output() {
