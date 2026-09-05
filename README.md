@@ -169,6 +169,20 @@ theorem databases_use_managed_vpc (env : Environment) (databases : List Identifi
 A policy is a decidable proposition over the graph, so an invalid infrastructure
 configuration will refuse to compile before even making it to OpenTofu.
 
+Kernel `decide` is a proof, and its cost grows with the graph: forty instances
+each carrying a four-kilobyte startup script take about nine seconds to
+validate. For deployed graphs beyond that, `#assert_policy policy graph` and
+`#assert_valid graph` evaluate the same checks with the compiled evaluator while
+the module compiles and fail the build with the report. That is a check rather
+than a proof, but it is the same gate: keep theorems for statements over every
+input of a parameterized stack, and the assertions for the concrete instance.
+
+Elements of computed nested blocks are traversed with the schema's types
+(`instance.networkInterface[1].fields.networkIp`,
+`instance.networkInterface.splat (·.networkIp)`), and names derived from data
+carry their proofs (`site.indexed 3`, `net.slug "10.192.0.0/16"`,
+`rule.append "22-tcp"`).
+
 ## How to use it
 
 ### 1. Install and build
@@ -204,7 +218,11 @@ inframe provider generate
 This emits one package per configured frontend. By convention the PureScript
 package above goes to `<purescript.directory>/.generated/digitalocean` and the
 Lean package to `<lean.directory>/.generated/digitalocean`. Generated adapters
-are gitignored build artifacts. Select one provider with `inframe provider
+are gitignored build artifacts. Module names drop the provider's type prefix
+(`google_compute_instance` becomes `ComputeInstance`); the prefix is inferred
+from the provider name and its resource types, so a `google-beta` provider
+strips `google_` rather than stuttering, and `strip_prefix = "google_"` in the
+provider table (or `--strip-prefix`) pins it explicitly. Select one provider with `inframe provider
 generate digitalocean` and one frontend with `--frontend purescript|lean`;
 `--source`, `--version`, `--module-root`, and `--output` are available for ad
 hoc generation or overrides. `--schema-json` accepts a raw or normalized schema
@@ -270,8 +288,12 @@ test = "Infra.PlatformTest"
 type = "local"
 ```
 
-Each stack main prints one Graph IR document with `renderGraph`; its optional
-test entry point runs assertions over the same pure infrastructure value.
+Each stack main prints one Graph IR document: in PureScript
+`log (renderGraph infrastructure)`, in Lean `def main : IO Unit := emitGraph infrastructure`.
+`emitGraph` renders compact JSON and writes it with `putStr`; it is the one
+printing path the core's scale test exercises, and it is the whole of a stack's
+`main`. Its optional test entry point runs assertions over the same pure
+infrastructure value.
 Reusable infrastructure is just ordinary pure functions called while
 constructing its `Infra` value.
 
@@ -307,7 +329,11 @@ inframe graph validate --stack platform
 
 Every command that takes `--stack` builds the stack first, so `inspect`,
 `validate`, `plan`, and `apply` always reflect the current source; pass
-`--no-build` to the graph commands to look at the last built artifact instead.
+`--no-build` to the graph commands to look at the last built artifact instead,
+which warns when any source under the stack's package changed after the
+artifact was written. A frontend tool that fails is reported with its command
+line, exit status, and stderr verbatim, and a tool that is missing from `PATH`
+is named along with how to install it.
 `inspect` prints a tree of provider pins, configured arguments, resources, data
 sources, symbolic outputs, moves, and dependency edges. An explicit JSON path
 or `-` for stdin remains available for debugging. `build` does not invoke
@@ -370,7 +396,29 @@ example, `TF_HTTP_USERNAME` and `TF_HTTP_PASSWORD`. Inframe rejects
 secret-looking backend keys because OpenTofu may persist backend configuration
 in its working directory.
 
-### 7. Run the checks
+### 7. Compose stacks through remote state
+
+`terraform_remote_state` belongs to OpenTofu's builtin provider, which no
+provider schema describes, so the Lean core ships it directly: `RemoteState.read`
+adds the data source for a backend and exposes the other stack's outputs as
+typed inputs. The backend and its non-secret configuration are the same values
+the producing stack's `[stacks.<name>.backend]` table holds.
+
+```lean
+def infrastructure : Infra Unit := do
+  let platform ← RemoteState.read "platform" (.gcs "acme-state" (prefix_ := "platform"))
+  let cluster : Input String := platform.output "cluster_endpoint"
+  let region : Input String := platform.outputOr "region" "nyc3"   -- `try` with a default
+  …
+```
+
+`RemoteBackend` has constructors for `localFile`, `gcs`, `s3`, `azurerm`,
+`http`, `kubernetes`, and `consul`, and `other` for any backend with its
+configuration as known values. The type of an output is the consumer's claim
+about what the producer exports; a policy over the consumer can still see the
+reference as `data.terraform_remote_state.platform.outputs.<name>`.
+
+### 8. Run the checks
 
 ```bash
 cargo fmt --all -- --check
@@ -382,6 +430,7 @@ spago test
 
 cd lean
 lake -q exe inframe-test
+lake -q exe inframe-scale-test | inframe graph validate -
 cd integration-digitalocean
 lake build
 ```

@@ -275,6 +275,8 @@ fn render_expression(expression: &Expr) -> Result<String, LowerError> {
             render_expression(collection)?,
             render_expression(key)?
         )),
+        Expr::Attribute { of, name } => Ok(format!("{}.{name}", render_expression(of)?)),
+        Expr::Splat { of } => Ok(format!("{}[*]", render_expression(of)?)),
         Expr::Conditional {
             condition,
             when_true,
@@ -651,6 +653,35 @@ mod tests {
         assert_eq!(
             value["output"]["tag_name"]["value"],
             "${data.digitalocean_tag.read.name}"
+        );
+    }
+
+    #[test]
+    fn lowers_attribute_access_and_splats_as_traversals() {
+        let interfaces = Expr::ResourceAttr {
+            address: Address::parse("google_compute_instance.web").unwrap(),
+            path: vec!["network_interface".into()],
+        };
+        let element = Expr::Attribute {
+            of: Box::new(Expr::Index {
+                collection: Box::new(interfaces.clone()),
+                key: Box::new(Expr::literal(1)),
+            }),
+            name: "network_ip".into(),
+        };
+        assert_eq!(
+            lower_expr(&element).unwrap(),
+            Value::String("${google_compute_instance.web.network_interface[1].network_ip}".into())
+        );
+        let splat = Expr::Attribute {
+            of: Box::new(Expr::Splat {
+                of: Box::new(interfaces),
+            }),
+            name: "network_ip".into(),
+        };
+        assert_eq!(
+            lower_expr(&splat).unwrap(),
+            Value::String("${google_compute_instance.web.network_interface[*].network_ip}".into())
         );
     }
 

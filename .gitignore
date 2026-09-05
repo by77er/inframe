@@ -14,3 +14,6 @@
 
 **/.lake/
 /lean/integration-digitalocean/.generated/
+
+# Untracked local review material; never commit.
+/inframe-critique.zip*

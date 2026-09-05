@@ -358,6 +358,8 @@ fn format_expr(expression: &Expr) -> String {
         Expr::Index { collection, key } => {
             format!("{}[{}]", format_expr(collection), format_expr(key))
         }
+        Expr::Attribute { of, name } => format!("{}.{name}", format_expr(of)),
+        Expr::Splat { of } => format!("{}[*]", format_expr(of)),
         Expr::Conditional {
             condition,
             when_true,

@@ -972,6 +972,41 @@ fn render_attributes(
         }
         output.push_str(" }\n\n");
     }
+    output.push_str(&render_symbolic_fields(name, fields, reserved));
+    output
+}
+
+/// The same structure read off a symbolic value of it: an element of a computed list
+/// (`cluster.nodePool[0].fields.nodes`) or a splat (`cluster.nodePool.splat (·.name)`) is
+/// traversed with the schema's types rather than through `Input.field` and a claimed type.
+fn render_symbolic_fields(name: &str, fields: &[&BindingField], reserved: &[&str]) -> String {
+    let mut output = String::new();
+    let _ = write!(
+        output,
+        "/-- The typed attributes of a symbolic `{name}` value, behind `Input.fields`: \
+         `value.fields.<attribute>` for an element of a computed list, and the projection \
+         `Input.splat` maps over every element. -/\n\
+         def {name}.ofInput (value : Input ({name} Input Resolved)) : {name} Input Resolved :=\n  "
+    );
+    if fields.is_empty() {
+        output.push_str("let _ := value\n  {}\n\n");
+    } else {
+        output.push('{');
+        for (index, field) in fields.iter().enumerate() {
+            let separator = if index == 0 { " " } else { "\n    " };
+            let _ = write!(
+                output,
+                "{separator}{} := value.schemaField \"{}\"",
+                safe_field_name(field, reserved),
+                escape_string(&field.provider_name)
+            );
+        }
+        output.push_str(" }\n\n");
+    }
+    let _ = write!(
+        output,
+        "instance : Inframe.SymbolicFields ({name} Input Resolved) := ⟨{name}.ofInput⟩\n\n"
+    );
     output
 }
 
@@ -1582,6 +1617,18 @@ mod tests {
         );
         assert!(source.contains("  name : f String"));
         assert!(source.contains("nodePool : f (List (NodePoolAttributes f o))"));
+        // Symbolic elements of computed lists are traversed with the schema's types.
+        assert!(source.contains(
+            "def NodePoolAttributes.ofInput (value : Input (NodePoolAttributes Input Resolved)) : NodePoolAttributes Input Resolved :="
+        ));
+        assert!(source.contains("actualNodeCount := value.schemaField \"actual_node_count\""));
+        assert!(source.contains("taint := value.schemaField \"taint\""));
+        assert!(source.contains(
+            "instance : Inframe.SymbolicFields (NodePoolAttributes Input Resolved) := ⟨NodePoolAttributes.ofInput⟩"
+        ));
+        assert!(source.contains(
+            "instance : Inframe.SymbolicFields (Attributes Input Resolved) := ⟨Attributes.ofInput⟩"
+        ));
         assert!(source.contains("kubeConfig : f (o (List (KubeConfigAttributes f o)))"));
         assert!(source.contains("labels : f (o (Map String))"));
         assert!(source.contains(

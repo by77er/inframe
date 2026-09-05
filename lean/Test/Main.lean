@@ -163,6 +163,100 @@ example (site : Identifier) : Identifier := site.child "network"
 /-- A name carried by an `Identifier` needs no `decide`: the auto-param reuses its proof. -/
 example (name : Identifier) : Address := .res "digitalocean_tag" name
 
+/-- A handle whose attributes are traversed below. -/
+def tagHandle : Resource Unit := resourceHandle (Identifier.mk "digitalocean_tag") (Identifier.mk "app")
+
+/-- The shape of a nested block, as the generated adapters emit it, with its `SymbolicFields`
+instance so that elements of a computed list can be traversed with types. -/
+structure InterfaceAttributes (f o : Type → Type) where
+  networkIp : f String
+  natIps : f (o (List String))
+
+instance : SymbolicFields (InterfaceAttributes Input Resolved) :=
+  ⟨fun value => { networkIp := value.field "network_ip", natIps := value.field "nat_ips" }⟩
+
+def interfaces : Input (List (InterfaceAttributes Input Resolved)) :=
+  resourceAttr tagHandle ["network_interface"]
+
+/-- Attribute access on computed expressions: `field` extends a plain reference's path, wraps
+anything else in an `attribute` node, and `splat` maps a typed projection over a list. -/
+theorem attribute_nodes :
+    (inputNode (interfaces[1].fields.networkIp)
+      == .attribute (.index (.resourceAttribute (.res "digitalocean_tag" "app") ["network_interface"])
+          (.literal (.number 1))) "network_ip") = true ∧
+    (inputNode (interfaces.splat (·.networkIp))
+      == .attribute (.splat (.resourceAttribute (.res "digitalocean_tag" "app") ["network_interface"]))
+          "network_ip") = true ∧
+    (inputNode ((resourceAttr tagHandle ["meta"] : Input Value).field "team" : Input String)
+      == .resourceAttribute (.res "digitalocean_tag" "app") ["meta", "team"]) = true ∧
+    (inputNode (interfaces.splat (·.natIps)) : ExprNode).render
+      = "digitalocean_tag.app.network_interface[*].nat_ips" := by
+  refine ⟨by decide, by decide, by decide, rfl⟩
+
+/-- The attribute name is validated like any path element, and references inside are found. -/
+theorem attribute_nodes_are_validated :
+    ({ outputs := [("x", ⟨.attribute (.literal .null) "bad name", false⟩)] } : Graph).validate
+      = .error (.invalidIdentifier "output.x" "bad name") ∧
+    (ExprNode.attribute (.splat (.resourceAttribute (.res "digitalocean_tag" "app") ["a"])) "b").references
+      = [.res "digitalocean_tag" "app"] := by
+  exact ⟨by decide, by decide⟩
+
+/-- Names derived from run-time data: an index, arbitrary text, a literal tail. -/
+theorem identifier_suffixes :
+    ((Identifier.mk "fwd").indexed 1).raw = "fwd-1" ∧
+    ((Identifier.mk "net").slug "10.192.0.0/16").raw = "net-10-192-0-0-16" ∧
+    ((Identifier.mk "rule").append "22-tcp").raw = "rule-22-tcp" := by
+  decide
+
+example (site : Identifier) (index : Nat) : Identifier := site.indexed index
+example (site : Identifier) (cidr : String) : Identifier := site.slug cidr
+
+/-- A stack that consumes another stack's outputs through `terraform_remote_state`. -/
+def consumer : Infra Unit := do
+  let platform ← RemoteState.read "platform" (.gcs "acme-state" (prefix_ := "platform"))
+  output "endpoint" (platform.output "cluster_endpoint" : Input String)
+  output "region" (platform.outputOr "region" "nyc3" : Input String)
+
+theorem remote_state_is_a_builtin_data_source :
+    (buildGraph consumer).Valid ∧
+    (buildGraph consumer).requiredProviders = [] ∧
+    (((buildGraph consumer).dataSource? (.data "terraform_remote_state" "platform")).map (·.arguments)
+      == some
+        [ ("backend", .literal (.string "gcs"))
+        , ("config", .object [("bucket", .literal (.string "acme-state")), ("prefix", .literal (.string "platform"))]) ]) = true ∧
+    (((buildGraph consumer).output? "region").map (·.value)
+      == some (.function "try"
+          [ .dataSourceAttribute (.data "terraform_remote_state" "platform") ["outputs", "region"]
+          , .literal (.string "nyc3") ])) = true := by
+  refine ⟨by decide, by decide, by decide, by decide⟩
+
+/-! `#assert_policy` and `#assert_valid` evaluate instead of reducing, and fail the build with
+the report when violated. -/
+#assert_policy tagsAreNamed graph
+#assert_valid graph
+
+def prodGraph : Graph := buildGraph do
+  let _ : Resource Unit ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "prod")
+    (InputObject.ofList [("purpose", .literal (.string "prod"))])
+  pure ()
+
+/--
+error: policy is violated:
+  [no-literal-prod] digitalocean_tag.prod: purpose must not be the literal prod
+-/
+#guard_msgs in
+#assert_policy noProdPurpose prodGraph
+
+/-- error: graph is invalid: duplicate address `digitalocean_tag.twice` -/
+#guard_msgs in
+#assert_valid (buildGraph (do
+  let _ : Resource Unit ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "twice") InputObject.empty
+  let _ : Resource Unit ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "twice") InputObject.empty
+  pure ()))
+
 def main : IO Unit := do
   let rendered := (encodeGraph graph).compress
   for needle in ["digitalocean_tag.app", "resource_attr", "required_providers",
@@ -170,8 +264,12 @@ def main : IO Unit := do
       "\"function\"", "\"sensitive\":true", "known-now", "\"count\":{\"kind\":\"literal\",\"value\":2}"] do
     expect (contains rendered needle) s!"rendered graph contains {needle}"
   match Lean.Json.parse (renderGraph program) with
-  | .ok json => expect (json == encodeGraph graph) "pretty-printed Graph IR round-trips"
+  | .ok json => expect (json == encodeGraph graph) "rendered Graph IR round-trips"
   | .error error => throw (IO.userError s!"rendered Graph IR does not parse: {error}")
+  expect (!(renderGraph program).contains '\n') "rendered Graph IR is one compact line"
+  match Lean.Json.parse (renderGraphPretty program) with
+  | .ok json => expect (json == encodeGraph graph) "pretty-printed Graph IR round-trips"
+  | .error error => throw (IO.userError s!"pretty-printed Graph IR does not parse: {error}")
   expect (graph.validate == .ok ()) "graph validates at run time"
   expect (tagsAreNamed.holds graph) "policy holds at run time"
   expect (Policy.all "everything" [Policy.validGraph, tagsAreNamed, noProdPurpose] |>.holds graph)

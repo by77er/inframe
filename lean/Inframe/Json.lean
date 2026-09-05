@@ -28,6 +28,8 @@ mutual
     | .object fields => tagged "object" [("fields", Json.mkObj (toJsonFields fields))]
     | .index collection key =>
         tagged "index" [("collection", toJson collection), ("key", toJson key)]
+    | .attribute of name => tagged "attribute" [("of", toJson of), ("name", .str name)]
+    | .splat of => tagged "splat" [("of", toJson of)]
     | .conditional condition whenTrue whenFalse =>
         tagged "conditional"
           [("condition", toJson condition), ("when_true", toJson whenTrue),
@@ -121,8 +123,29 @@ def encodeGraph (graph : Graph) : Json :=
 
 instance : Lean.ToJson Graph := ⟨encodeGraph⟩
 
-/-- Build a program and print its Graph IR document. -/
+/-- Build a program and render its Graph IR document as one line of compact JSON. Compact
+rather than pretty-printed on purpose: `Lean.Json.pretty` goes through `Std.Format`, whose
+recursion has overflowed the stack of compiled executables on graphs with a few dozen
+resources and multi-kilobyte literals, while `compress` is a loop. The CLI reads either. -/
 def renderGraph (program : Infra α) : String :=
+  (encodeGraph (buildGraph program)).compress
+
+/-- Pretty-printed Graph IR, for reading by eye. Not for a stack's `main`; see `renderGraph`. -/
+def renderGraphPretty (program : Infra α) : String :=
   (encodeGraph (buildGraph program)).pretty
+
+/-- Print a program's Graph IR document on stdout, the whole of a stack's `main`:
+
+```lean
+def main : IO Unit := emitGraph infrastructure
+```
+
+The document is rendered compactly, written to the stream with `putStr`, and flushed, so no
+stack `main` has to know which printing path survives a large graph. -/
+def emitGraph (program : Infra α) : IO Unit := do
+  let stdout ← IO.getStdout
+  stdout.putStr (renderGraph program)
+  stdout.putStr "\n"
+  stdout.flush
 
 end Inframe

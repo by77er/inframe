@@ -95,6 +95,12 @@ encodeExprNode expression = case expression of
     [ Tuple "collection" (encodeExprNode collection)
     , Tuple "key" (encodeExprNode key)
     ]
+  AttributeExpression target name -> tagged "attribute"
+    [ Tuple "of" (encodeExprNode target)
+    , Tuple "name" (fromString name)
+    ]
+  SplatExpression target -> tagged "splat"
+    [ Tuple "of" (encodeExprNode target) ]
   ConditionalExpression condition whenTrue whenFalse -> tagged "conditional"
     [ Tuple "condition" (encodeExprNode condition)
     , Tuple "when_true" (encodeExprNode whenTrue)

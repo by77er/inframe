@@ -23,6 +23,12 @@ mutual
     | array (items : List ExprNode)
     | object (fields : List (String × ExprNode))
     | index (collection : ExprNode) (key : ExprNode)
+    /-- The attribute `name` of a computed value, `of.name`: an element of a nested block
+    (`x.network_interface[1].network_ip`), a splat, or any expression that is not a plain
+    handle reference (those keep the attribute in their `path`). -/
+    | attribute (of : ExprNode) (name : String)
+    /-- The full splat `of[*]`: the list of every element of `of`, on which `attribute` maps. -/
+    | splat (of : ExprNode)
     | conditional (condition : ExprNode) (whenTrue : ExprNode) (whenFalse : ExprNode)
     | function (name : String) (args : List ExprNode)
     | template (parts : List TemplatePart)
@@ -43,6 +49,8 @@ mutual
     | .array a, .array b => beqList a b
     | .object a, .object b => beqFields a b
     | .index c k, .index d l => beq c d && beq k l
+    | .attribute a n, .attribute b m => beq a b && n == m
+    | .splat a, .splat b => beq a b
     | .conditional c t e, .conditional d u f => beq c d && beq t u && beq e f
     | .function n a, .function m b => n == m && beqList a b
     | .template a, .template b => beqParts a b
@@ -82,6 +90,8 @@ mutual
     | .array items => "[" ++ ", ".intercalate (renderList items) ++ "]"
     | .object fields => "{" ++ ", ".intercalate (renderFields fields) ++ "}"
     | .index collection key => render collection ++ "[" ++ render key ++ "]"
+    | .attribute of name => render of ++ "." ++ name
+    | .splat of => render of ++ "[*]"
     | .conditional condition whenTrue whenFalse =>
         "(" ++ render condition ++ " ? " ++ render whenTrue ++ " : " ++ render whenFalse ++ ")"
     | .function name args => name ++ "(" ++ ", ".intercalate (renderList args) ++ ")"
@@ -405,13 +415,46 @@ def resourceAttr (handle : Resource r) (path : List String) : Input α :=
 def dataSourceAttr (handle : DataSource r) (path : List String) : Input α :=
   ⟨.dataSourceAttribute handle.address path⟩
 
-/-- Traverse further into a symbolic value, for example an element of a nested block. The
-result type is chosen by the caller, so this is an escape hatch like `unsafeCall`. -/
-def unsafeTraverse (value : Input α) (step : String)
-    (_valid : validIdentifier step = true := by valid_identifier) : Input β :=
+/-- `Input.field` without the compile-time name check, for generated adapters whose attribute
+names come from the provider schema; `Graph.validate` still checks them. -/
+def Input.schemaField (value : Input α) (name : String) : Input β :=
   match inputNode value with
-  | .resourceAttribute address path => ⟨.resourceAttribute address (path ++ [step])⟩
-  | .dataSourceAttribute address path => ⟨.dataSourceAttribute address (path ++ [step])⟩
-  | node => ⟨.index node (.literal (.string step))⟩
+  | .resourceAttribute address path => ⟨.resourceAttribute address (path ++ [name])⟩
+  | .dataSourceAttribute address path => ⟨.dataSourceAttribute address (path ++ [name])⟩
+  | node => ⟨.attribute node name⟩
+
+/-- The attribute `name` of a symbolic value: `instance.networkInterface[1].field "network_ip"`
+lowers to `….network_interface[1].network_ip`. On a plain handle attribute the reference's
+path is extended instead, so a policy matching `resourceAttribute` sees one node either way.
+The result type is the caller's, so this is an escape hatch like `unsafeCall`; the generated
+`fields` records (`Input.fields`) are the typed path. -/
+def Input.field (value : Input α) (name : String)
+    (_valid : validIdentifier name = true := by valid_identifier) : Input β :=
+  value.schemaField name
+
+/-- The former name of `Input.field`. -/
+def unsafeTraverse (value : Input α) (step : String)
+    (valid : validIdentifier step = true := by valid_identifier) : Input β :=
+  value.field step valid
+
+/-- Attribute structures whose fields can be read off a symbolic value of that structure. The
+generated `XAttributes Input Resolved` records instantiate it, so `value.fields.networkIp` is
+the typed `network_ip` attribute of a symbolic nested-block element and
+`instance.networkInterface[1].fields.accessConfig[0].fields.natIp` is a typed traversal. -/
+class SymbolicFields (σ : Type) where
+  fields : Input σ → σ
+
+/-- The typed attributes of a symbolic structured value; see `SymbolicFields`. -/
+def Input.fields [SymbolicFields σ] (value : Input σ) : σ :=
+  SymbolicFields.fields value
+
+/-- The full splat `items[*]…`: `select` names an attribute of each element, possibly through
+further indexing and `fields`, and the result is the list of that attribute over every
+element. `instance.networkInterface.splat (·.networkIp)` lowers to
+`….network_interface[*].network_ip`. Whatever `select` returns is the element expression, so
+it should be a projection of its argument. -/
+def Input.splat [SymbolicFields σ] (items : Input (List σ)) (select : σ → Input β) :
+    Input (List β) :=
+  ⟨inputNode (select (SymbolicFields.fields (⟨.splat (inputNode items)⟩ : Input σ)))⟩
 
 end Inframe

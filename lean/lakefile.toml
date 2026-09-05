@@ -13,3 +13,7 @@ globs = ["Test.+"]
 [[lean_exe]]
 name = "inframe-test"
 root = "Test.Main"
+
+[[lean_exe]]
+name = "inframe-scale-test"
+root = "Test.Scale"

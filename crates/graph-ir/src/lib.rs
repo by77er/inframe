@@ -255,6 +255,17 @@ pub enum Expr {
         collection: Box<Expr>,
         key: Box<Expr>,
     },
+    /// The attribute `name` of a computed value, `of.name`: an element of a nested block
+    /// (`x.network_interface[1].network_ip`), a splat, or any other expression that is not a
+    /// plain reference (those carry attributes in their `path`).
+    Attribute {
+        of: Box<Expr>,
+        name: String,
+    },
+    /// The full splat `of[*]`.
+    Splat {
+        of: Box<Expr>,
+    },
     Conditional {
         condition: Box<Expr>,
         when_true: Box<Expr>,
@@ -302,6 +313,7 @@ impl Expr {
                 collection.references(references);
                 key.references(references);
             }
+            Self::Attribute { of, .. } | Self::Splat { of } => of.references(references),
             Self::Conditional {
                 condition,
                 when_true,
@@ -345,6 +357,9 @@ impl Expr {
             Self::Index { collection, key } => {
                 collection.collect_secret_environment_names(names);
                 key.collect_secret_environment_names(names);
+            }
+            Self::Attribute { of, .. } | Self::Splat { of } => {
+                of.collect_secret_environment_names(names);
             }
             Self::Conditional {
                 condition,
@@ -695,6 +710,11 @@ fn validate_expr_structure(owner: &str, expression: &Expr) -> Result<(), Validat
             validate_expr_structure(owner, collection)?;
             validate_expr_structure(owner, key)?;
         }
+        Expr::Attribute { of, name } => {
+            validate_identifier(owner, name)?;
+            validate_expr_structure(owner, of)?;
+        }
+        Expr::Splat { of } => validate_expr_structure(owner, of)?,
         Expr::Conditional {
             condition,
             when_true,
@@ -977,6 +997,65 @@ mod tests {
         let schema = GraphDocument::json_schema();
         assert_eq!(schema["title"], "GraphDocument");
         assert_eq!(schema["$defs"]["Address"]["type"], "string");
+    }
+
+    #[test]
+    fn attribute_and_splat_nodes_carry_references_and_validate_names() {
+        let mut graph = tag_graph();
+        let interfaces = Expr::ResourceAttr {
+            address: Address::parse("digitalocean_tag.app").unwrap(),
+            path: vec!["network_interface".into()],
+        };
+        graph.outputs.insert(
+            "ip".into(),
+            OutputSpec {
+                value: Expr::Attribute {
+                    of: Box::new(Expr::Index {
+                        collection: Box::new(interfaces.clone()),
+                        key: Box::new(Expr::literal(1)),
+                    }),
+                    name: "network_ip".into(),
+                },
+                sensitive: false,
+                description: None,
+            },
+        );
+        graph.outputs.insert(
+            "ips".into(),
+            OutputSpec {
+                value: Expr::Attribute {
+                    of: Box::new(Expr::Splat {
+                        of: Box::new(interfaces),
+                    }),
+                    name: "network_ip".into(),
+                },
+                sensitive: false,
+                description: None,
+            },
+        );
+        graph.validate().unwrap();
+        let mut references = BTreeSet::new();
+        graph.outputs["ips"].value.references(&mut references);
+        assert_eq!(
+            references,
+            BTreeSet::from([Address::parse("digitalocean_tag.app").unwrap()])
+        );
+
+        graph.outputs.insert(
+            "bad".into(),
+            OutputSpec {
+                value: Expr::Attribute {
+                    of: Box::new(Expr::literal(serde_json::json!({}))),
+                    name: "bad name".into(),
+                },
+                sensitive: false,
+                description: None,
+            },
+        );
+        assert!(matches!(
+            graph.validate(),
+            Err(ValidationError::InvalidIdentifier { value, .. }) if value == "bad name"
+        ));
     }
 
     #[test]

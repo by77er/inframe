@@ -93,7 +93,23 @@ pub enum DeriveError {
     },
 }
 
+/// Choices that the provider schema alone does not settle.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BindingOptions {
+    /// The prefix removed from every resource and data-source type to form its public module
+    /// name, `google_` for `google_compute_instance` → `ComputeInstance`. `None` infers it
+    /// from the provider name and the types themselves (see [`infer_type_prefix`]).
+    pub strip_prefix: Option<String>,
+}
+
 pub fn derive_bindings(schema: &ProviderSchema) -> Result<BindingPackage, DeriveError> {
+    derive_bindings_with(schema, &BindingOptions::default())
+}
+
+pub fn derive_bindings_with(
+    schema: &ProviderSchema,
+    options: &BindingOptions,
+) -> Result<BindingPackage, DeriveError> {
     let provider_native_name = schema
         .source
         .rsplit('/')
@@ -104,7 +120,12 @@ pub fn derive_bindings(schema: &ProviderSchema) -> Result<BindingPackage, Derive
     if provider_name.is_empty() {
         return Err(DeriveError::InvalidProviderName(schema.source.clone()));
     }
-    let prefix = format!("{provider_native_name}_");
+    let prefix = options.strip_prefix.clone().unwrap_or_else(|| {
+        infer_type_prefix(
+            provider_native_name,
+            schema.resources.keys().chain(schema.data_sources.keys()),
+        )
+    });
     let resources = derive_items(&schema.resources, &prefix)?;
     let data_sources = derive_items(&schema.data_sources, &prefix)?;
     Ok(BindingPackage {
@@ -117,6 +138,34 @@ pub fn derive_bindings(schema: &ProviderSchema) -> Result<BindingPackage, Derive
         resources,
         data_sources,
     })
+}
+
+/// The prefix a provider's resource types share. `<provider>_` is the convention, but a
+/// provider named with a dash (`google-beta`) still names its types after its base provider
+/// (`google_compute_instance`), so the candidates are tried from longest to shortest:
+/// `google-beta_`, `google_beta_`, `google_`. The first one some type starts with wins; when
+/// none matches nothing is stripped.
+pub fn infer_type_prefix<'a>(
+    provider_native_name: &str,
+    types: impl IntoIterator<Item = &'a String>,
+) -> String {
+    let types: Vec<&String> = types.into_iter().collect();
+    let mut candidates = vec![
+        format!("{provider_native_name}_"),
+        format!("{}_", provider_native_name.replace('-', "_")),
+    ];
+    let parts: Vec<&str> = provider_native_name.split('-').collect();
+    for end in (1..parts.len()).rev() {
+        candidates.push(format!("{}_", parts[..end].join("_")));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            types
+                .iter()
+                .any(|kind| kind.starts_with(candidate.as_str()))
+        })
+        .unwrap_or_else(|| format!("{provider_native_name}_"))
 }
 
 fn derive_items(
@@ -339,6 +388,46 @@ mod tests {
         );
         assert!(package.resources[0].fields[1].target_reserved);
         assert!(package.resources[0].fields[1].sensitive);
+    }
+
+    #[test]
+    fn strips_the_base_provider_prefix_from_beta_providers() {
+        let types = [
+            "google_compute_instance".to_owned(),
+            "google_storage_bucket".to_owned(),
+        ];
+        assert_eq!(infer_type_prefix("google-beta", &types), "google_");
+        assert_eq!(infer_type_prefix("google", &types), "google_");
+        assert_eq!(
+            infer_type_prefix("digitalocean", &["digitalocean_tag".to_owned()]),
+            "digitalocean_"
+        );
+        assert_eq!(infer_type_prefix("odd", &types), "odd_");
+
+        let schema = ProviderSchema {
+            source: "hashicorp/google-beta".into(),
+            version: "6.0.0".into(),
+            provider_config: BlockSchema::default(),
+            resources: BTreeMap::from([(
+                "google_compute_instance".to_owned(),
+                ResourceSchema {
+                    block: BlockSchema::default(),
+                },
+            )]),
+            data_sources: BTreeMap::new(),
+        };
+        assert_eq!(
+            derive_bindings(&schema).unwrap().resources[0].public_name,
+            "ComputeInstance"
+        );
+        let explicit = derive_bindings_with(
+            &schema,
+            &BindingOptions {
+                strip_prefix: Some("google_compute_".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(explicit.resources[0].public_name, "Instance");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, env};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use inframe_binding_model::derive_bindings;
+use inframe_binding_model::{BindingOptions, derive_bindings_with};
 use inframe_emit_lean::CoreDependency;
 use inframe_graph_ir::GraphDocument;
 use inframe_opentofu::{OpenTofu, Workspace, secret_variable_name, to_pretty_json};
@@ -134,6 +134,10 @@ struct ProviderGenerateArgs {
     module_root: Option<String>,
     #[arg(long)]
     output: Option<PathBuf>,
+    /// The resource-type prefix removed to form module names, for example `google_` for
+    /// `hashicorp/google-beta`; inferred from the provider name and its types by default.
+    #[arg(long)]
+    strip_prefix: Option<String>,
     /// Read a raw `tofu providers schema -json` fixture instead of acquiring it.
     #[arg(long)]
     schema_json: Option<PathBuf>,
@@ -365,6 +369,7 @@ fn generate_providers(
         vec![ProviderGeneration {
             source: source.clone(),
             version: version.clone(),
+            strip_prefix: None,
             targets: vec![FrontendTarget {
                 frontend,
                 module_root: arguments
@@ -390,13 +395,17 @@ fn generate_providers(
     if generations.len() > 1
         && (arguments.module_root.is_some()
             || arguments.output.is_some()
-            || arguments.schema_json.is_some())
+            || arguments.schema_json.is_some()
+            || arguments.strip_prefix.is_some())
     {
         bail!(
-            "--module-root, --output, and --schema-json require selecting one configured provider"
+            "--module-root, --output, --strip-prefix, and --schema-json require selecting one configured provider"
         );
     }
     if let Some(generation) = generations.first_mut() {
+        if let Some(strip_prefix) = arguments.strip_prefix {
+            generation.strip_prefix = Some(strip_prefix);
+        }
         if let Some(module_root) = arguments.module_root {
             for target in &mut generation.targets {
                 target.module_root.clone_from(&module_root);
@@ -422,7 +431,11 @@ fn generate_providers(
         };
         let schema = load_provider_schema(&request, arguments.schema_json.clone(), tofu_binary)?;
         let hash = schema.sha256()?;
-        let bindings = derive_bindings(&schema).context("failed to derive provider bindings")?;
+        let options = BindingOptions {
+            strip_prefix: generation.strip_prefix.clone(),
+        };
+        let bindings = derive_bindings_with(&schema, &options)
+            .context("failed to derive provider bindings")?;
         for target in generation.targets {
             let written = match target.frontend {
                 Frontend::PureScript => {
@@ -540,15 +553,48 @@ fn read_selected_graph(arguments: &GraphPathArgs, project_path: &Path) -> Result
     if arguments.no_build {
         project.stack(stack)?;
         let path = project.graph_path(stack);
-        return read_graph(&path).with_context(|| {
+        let graph = read_graph(&path).with_context(|| {
             format!(
                 "no built graph found for stack `{stack}`; run `inframe build --stack {stack}` or drop --no-build"
             )
-        });
+        })?;
+        warn_if_stale(&project, stack, &path);
+        return Ok(graph);
     }
     let (graph, path) = project.build(stack, None)?;
     eprintln!("built stack `{stack}` to {}", path.display());
     Ok(graph)
+}
+
+/// A built graph is only evidence about the sources it was built from: say so when any file
+/// under the stack's package changed after the artifact was written.
+fn warn_if_stale(project: &Project, stack: &str, artifact: &Path) {
+    let Ok(sources) = project.stack_source_directory(stack) else {
+        return;
+    };
+    let built = fs::metadata(artifact).and_then(|metadata| metadata.modified());
+    if let (Ok(built), Some(newest)) = (built, project::newest_source_mtime(&sources)) {
+        if newest > built {
+            eprintln!(
+                "warning: sources under {} changed after {} was built; drop --no-build to rebuild stack `{stack}`",
+                sources.display(),
+                artifact.display()
+            );
+        }
+    }
+}
+
+/// Say which binary is missing, and how to get it, instead of a bare spawn error. The graph
+/// is built, validated, and policy-checked first: those results do not need `OpenTofu`, and
+/// a stack should fail on its own problems before it fails on the machine's.
+fn require_tofu(tofu_binary: &Path) -> Result<()> {
+    if project::find_executable(tofu_binary).is_some() {
+        return Ok(());
+    }
+    bail!(
+        "`{}` was not found; install OpenTofu (https://opentofu.org) and add it to PATH, or pass --tofu-binary",
+        tofu_binary.display()
+    )
 }
 
 fn render(arguments: &RenderArgs) -> Result<()> {
@@ -610,6 +656,7 @@ fn run_graph(
     } else {
         BTreeMap::new()
     };
+    require_tofu(tofu_binary)?;
     OpenTofu::new(tofu_binary).run_with_env(&workspace, command, tofu_args, &environment)?;
     Ok(())
 }
@@ -663,6 +710,7 @@ fn run_existing_json(
             workspace.root().display()
         );
     }
+    require_tofu(tofu_binary)?;
     let value =
         OpenTofu::new(tofu_binary).output_json(&workspace, command, &arguments.tofu_args)?;
     println!("{}", serde_json::to_string_pretty(&value)?);

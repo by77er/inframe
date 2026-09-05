@@ -695,21 +695,21 @@ type = "local"
         .assert()
         .failure()
         .stderr(predicate::str::contains("tests for stack `dev` failed"))
-        .stderr(predicate::str::contains("failed to start OpenTofu").not());
+        .stderr(predicate::str::contains("was not found; install OpenTofu").not());
 
     // A passing suite, or an explicit override, reaches OpenTofu.
     plan("0", &[])
         .assert()
         .failure()
         .stderr(predicate::str::contains("tests for stack `dev` passed"))
-        .stderr(predicate::str::contains("failed to start OpenTofu binary"));
+        .stderr(predicate::str::contains("was not found; install OpenTofu"));
     plan("7", &["--skip-tests"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "skipping the tests of stack `dev`",
         ))
-        .stderr(predicate::str::contains("failed to start OpenTofu binary"));
+        .stderr(predicate::str::contains("was not found; install OpenTofu"));
 }
 
 /// `inframe tofu` runs any subcommand in the stack's workspace, so state, import, and
@@ -820,4 +820,258 @@ type = "local"
         .success()
         .stderr(predicate::str::contains("built stack `dev`"))
         .stdout(predicate::str::contains("answer: 42"));
+}
+
+/// A fake `lake` on PATH that runs `script`, so a build's failure modes can be staged.
+#[cfg(unix)]
+fn fake_lake(directory: &std::path::Path, script: &str) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = directory.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let lake = bin.join("lake");
+    fs::write(&lake, script).unwrap();
+    let mut permissions = fs::metadata(&lake).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&lake, permissions).unwrap();
+    std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap()
+}
+
+const LEAN_PROJECT: &str = r#"[lean]
+main = "graph"
+
+[stacks.dev.backend]
+type = "local"
+"#;
+
+/// A failing child process is reported with its command line, exit status, and stderr
+/// verbatim; an empty stderr is said out loud instead of leaving a blank line.
+#[cfg(unix)]
+#[test]
+fn reports_a_failed_build_verbatim_even_when_stderr_is_empty() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(&project, LEAN_PROJECT).unwrap();
+
+    let silent = fake_lake(directory.path(), "#!/bin/sh\nexit 3\n");
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .env("PATH", silent)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`lake` failed while building stack `dev` (exit status: 3)",
+        ))
+        .stderr(predicate::str::contains("command: lake -q exe graph"))
+        .stderr(predicate::str::contains("stderr: (empty)"));
+
+    let loud = fake_lake(
+        directory.path(),
+        "#!/bin/sh\necho 'error: Infra/Main.lean:3:0: unknown identifier `droplet`' >&2\nexit 1\n",
+    );
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .env("PATH", loud)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "stderr:\nerror: Infra/Main.lean:3:0: unknown identifier `droplet`",
+        ));
+}
+
+#[test]
+fn reports_a_missing_frontend_tool_by_name() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let empty = directory.path().join("empty-bin");
+    fs::create_dir_all(&empty).unwrap();
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(&project, LEAN_PROJECT).unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .env("PATH", &empty)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("`lake` was not found on PATH"))
+        .stderr(predicate::str::contains("elan"));
+
+    // Lifecycle commands name a missing OpenTofu binary once the graph itself is fine.
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args([
+            "--tofu-binary",
+            "definitely-not-tofu",
+            "init",
+            "--stack",
+            "dev",
+            "--graph",
+        ])
+        .arg(workspace.join("fixtures/graph-ir/digitalocean-tag.json"))
+        .arg("--workspace")
+        .arg(directory.path().join(".inframe"))
+        .env("PATH", &empty)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`definitely-not-tofu` was not found; install OpenTofu",
+        ));
+}
+
+/// `--no-build` reads the last artifact, and says so when sources changed after it was
+/// written, so a stale graph is never mistaken for evidence about the current program.
+#[test]
+fn warns_when_no_build_reads_a_graph_older_than_the_sources() {
+    use std::time::{Duration, SystemTime};
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let sources = directory.path().join("purescript/src");
+    let graph_directory = directory.path().join(".inframe/graphs");
+    fs::create_dir_all(&sources).unwrap();
+    fs::create_dir_all(&graph_directory).unwrap();
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "example"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    let artifact = graph_directory.join("dev.json");
+    fs::write(&artifact, GRAPH).unwrap();
+    fs::write(sources.join("Main.purs"), "module Main where\n").unwrap();
+
+    let an_hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&artifact)
+        .unwrap()
+        .set_modified(an_hour_ago)
+        .unwrap();
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["graph", "validate", "--stack", "dev", "--no-build"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning: sources under"))
+        .stderr(predicate::str::contains("changed after"))
+        .stderr(predicate::str::contains(
+            "drop --no-build to rebuild stack `dev`",
+        ));
+
+    // Sources older than the artifact: no warning.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(sources.join("Main.purs"))
+        .unwrap()
+        .set_modified(an_hour_ago - Duration::from_secs(3600))
+        .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&artifact)
+        .unwrap()
+        .set_modified(an_hour_ago)
+        .unwrap();
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["graph", "validate", "--stack", "dev", "--no-build"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning").not());
+}
+
+const GOOGLE_BETA_SCHEMA: &str = r#"{
+  "format_version": "1.0",
+  "provider_schemas": {
+    "registry.opentofu.org/hashicorp/google-beta": {
+      "provider": { "version": 0, "block": { "attributes": {} } },
+      "resource_schemas": {
+        "google_compute_instance": {
+          "version": 0,
+          "block": {
+            "attributes": {
+              "id": { "type": "string", "computed": true },
+              "name": { "type": "string", "required": true }
+            }
+          }
+        }
+      },
+      "data_source_schemas": {}
+    }
+  }
+}"#;
+
+/// A `-beta` provider names its types after the base provider; the inferred prefix and an
+/// explicit `strip_prefix` both keep module names from stuttering.
+#[test]
+fn strips_the_base_provider_prefix_for_beta_providers() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let fixture = directory.path().join("google-beta.json");
+    fs::write(&fixture, GOOGLE_BETA_SCHEMA).unwrap();
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "example"
+
+[providers.google-beta]
+source = "hashicorp/google-beta"
+version = "6.0.0"
+module_root = "GoogleBeta"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["provider", "generate", "google-beta", "--schema-json"])
+        .arg(&fixture)
+        .assert()
+        .success();
+    let generated = directory
+        .path()
+        .join("purescript/.generated/google-beta/src/GoogleBeta/Resource");
+    assert!(generated.join("ComputeInstance.purs").is_file());
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args([
+            "provider",
+            "generate",
+            "google-beta",
+            "--strip-prefix",
+            "google_compute_",
+            "--schema-json",
+        ])
+        .arg(&fixture)
+        .assert()
+        .success();
+    assert!(generated.join("Instance.purs").is_file());
 }

@@ -80,6 +80,9 @@ jobs:
         run: |
           lake build
           lake -q exe inframe-test
+      - name: A deployment-sized graph builds, checks, and prints
+        working-directory: lean
+        run: lake -q exe inframe-scale-test | cargo run -q -p inframe-cli -- graph validate -
       - name: Programs the core must reject
         run: scripts/lean-negative.sh lean
       - name: Generate pinned DigitalOcean bindings

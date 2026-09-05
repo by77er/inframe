@@ -13,6 +13,7 @@ import Inframe.Internal.Core
   , TemplatePart
   , UnsafeArgument
   , array
+  , attribute
   , computed
   , ifThenElse
   , index
@@ -20,6 +21,7 @@ import Inframe.Internal.Core
   , lit
   , lookup
   , object
+  , splat
   , secretEnv
   , template
   , text

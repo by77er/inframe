@@ -61,6 +61,12 @@ def policies : Policy :=
 /-- The production graph passes the reference validator. -/
 theorem platform_valid : (buildGraph infrastructure).Valid := by decide
 
+/-! The same checks by evaluation. On a graph this size the theorems above are the better
+tool; once a graph outgrows kernel `decide` (dozens of resources with multi-kilobyte literals)
+these assertions are the ones that keep failing the build with a report. -/
+#assert_valid (buildGraph infrastructure)
+#assert_policy policies (buildGraph infrastructure)
+
 /-- Every policy holds for every environment with the deployed database list. -/
 theorem platform_policies (env : Environment) :
     policies.Holds (buildGraph (infrastructureFor env [Identifier.mk "postgres"])) := by

@@ -4,6 +4,7 @@ test:
 	cargo test --workspace
 	cd purescript && spago test -p inframe-graph-core
 	cd lean && lake -q exe inframe-test
+	cd lean && lake -q exe inframe-scale-test | cargo run -q -p inframe-cli -- graph validate -
 	scripts/lean-negative.sh lean
 	scripts/lean-negative.sh lean/integration-digitalocean
 

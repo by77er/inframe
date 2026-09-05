@@ -9,4 +9,4 @@ def infrastructure : Infra Unit := do
   output "tag_id" tag.id
 
 def main : IO Unit :=
-  IO.println (renderGraph infrastructure)
+  emitGraph infrastructure

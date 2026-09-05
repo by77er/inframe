@@ -14,6 +14,8 @@ module Inframe.Internal.Core
   , object
   , index
   , lookup
+  , attribute
+  , splat
   , ifThenElse
   , unsafeArgument
   , unsafeCall
@@ -49,6 +51,11 @@ data ExprNode
   | ArrayExpression (Array ExprNode)
   | ObjectExpression (Object.Object ExprNode)
   | IndexExpression ExprNode ExprNode
+  -- | The attribute `name` of a computed value, `of.name`, for anything that is
+  -- | not a plain reference (those carry attributes in their path).
+  | AttributeExpression ExprNode String
+  -- | The full splat `of[*]`.
+  | SplatExpression ExprNode
   | ConditionalExpression ExprNode ExprNode ExprNode
   | FunctionExpression String (Array ExprNode)
   | TemplateExpression (Array TemplatePart)
@@ -111,6 +118,22 @@ index collection key = symbolic $ IndexExpression (inputNode collection) (inputN
 
 lookup :: forall a. Input (Object.Object a) -> Input String -> Input a
 lookup collection key = symbolic $ IndexExpression (inputNode collection) (inputNode key)
+
+-- | The attribute `name` of a symbolic value, `instance.network_interface[1].network_ip`
+-- | for `attribute (index interfaces (lit 1.0)) "network_ip"`. On a plain handle
+-- | attribute the reference's path is extended instead. The result type is the
+-- | caller's, like `unsafeCall`.
+attribute :: forall a b. Input a -> String -> Input b
+attribute value name = symbolic case inputNode value of
+  ResourceAttribute address path -> ResourceAttribute address (path <> [ name ])
+  DataSourceAttribute address path -> DataSourceAttribute address (path <> [ name ])
+  node -> AttributeExpression node name
+
+-- | The full splat `items[*]`: attributes taken from it with `attribute` are
+-- | taken from every element, so `attribute (splat interfaces) "network_ip"` is
+-- | the list of every interface's IP.
+splat :: forall a. Input (Array a) -> Input (Array a)
+splat items = symbolic $ SplatExpression (inputNode items)
 
 ifThenElse :: forall a. Input Boolean -> Input a -> Input a -> Input a
 ifThenElse condition whenTrue whenFalse = symbolic $

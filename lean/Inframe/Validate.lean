@@ -67,6 +67,8 @@ mutual
     | .array items => referencesList items
     | .object fields => referencesFields fields
     | .index collection key => references collection ++ references key
+    | .attribute of _ => references of
+    | .splat of => references of
     | .conditional condition whenTrue whenFalse =>
         references condition ++ references whenTrue ++ references whenFalse
     | .function _ args => referencesList args
@@ -97,6 +99,8 @@ mutual
     | .array items => secretNamesList items
     | .object fields => secretNamesFields fields
     | .index collection key => secretNames collection ++ secretNames key
+    | .attribute of _ => secretNames of
+    | .splat of => secretNames of
     | .conditional condition whenTrue whenFalse =>
         secretNames condition ++ secretNames whenTrue ++ secretNames whenFalse
     | .function _ args => secretNamesList args
@@ -151,6 +155,10 @@ mutual
     | .index collection key => do
         validateStructure owner collection
         validateStructure owner key
+    | .attribute of name => do
+        validateIdentifier owner name
+        validateStructure owner of
+    | .splat of => validateStructure owner of
     | .conditional condition whenTrue whenFalse => do
         validateStructure owner condition
         validateStructure owner whenTrue

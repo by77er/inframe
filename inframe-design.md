@@ -1171,9 +1171,11 @@ Inframe.Identifier   validIdentifier, Identifier (proof-carrying), Address
 Inframe.Value        Value (plain JSON ADT), Number (exact decimal), ToValue, Map
 Inframe.Core         ExprNode, Expr α, Input α, handles, combinators
 Inframe.Builder      InputObject, NodeOptions, specs, Graph, Infra, buildGraph
-Inframe.Json         Graph IR 1.0 encoder, renderGraph
+Inframe.Json         Graph IR 1.0 encoder, renderGraph (compact), emitGraph
 Inframe.Validate     Graph.validate (port of the Rust validator), dependencies
 Inframe.Policy       Policy, Violation, Policy.Holds, reports
+Inframe.RemoteState  terraform_remote_state per backend, typed outputs
+Inframe.Assert       #assert_policy / #assert_valid (evaluation, not reduction)
 ```
 
 Design decisions specific to Lean:
@@ -1183,7 +1185,12 @@ Design decisions specific to Lean:
   `Value` inductive rather than `Lean.Json`, and maps are association lists. The
   payoff is that `Graph.Valid g`, `Policy.Holds p g`, `Graph.dependsOn`, and
   expression equality are decidable propositions proved with `decide`; no
-  `native_decide` is needed, so only the kernel is trusted.
+  `native_decide` is needed, so only the kernel is trusted. Kernel reduction
+  is not free: forty instances with four-kilobyte scripts take about nine
+  seconds to validate by `decide`, and beyond that the honest
+  tool is `#assert_policy`/`#assert_valid`, which evaluate the same functions
+  with the compiled evaluator during elaboration and fail the build with the
+  report. They check; theorems prove. Both gate `lake build`.
 - **Proofs at the boundary, strings inside.** `addResource` takes `Identifier`s,
   whose validity proofs are discharged from literals by `decide`; the stored
   `ResourceSpec` keeps plain strings so policy authors compare `resourceType == "…"`
@@ -1192,7 +1199,9 @@ Design decisions specific to Lean:
   combinator can derive a further resource's name from a handle (an assignment
   named after the resource it assigns) without re-validating strings at run time.
   Identifiers compose without proofs at the call site: `a.join b` and
-  `site.child "network"` (the suffix's validity discharged from its literal).
+  `site.child "network"` (the suffix's validity discharged from its literal),
+  and `validIdentifier_append` covers suffixes that are not identifiers on
+  their own: `site.indexed 3`, `net.slug "10.192.0.0/16"`, `rule.append "22-tcp"`.
 - **Attribute names are values.** Every generated attribute structure comes with
   `names`, the same structure at `fun _ => String` (`Droplet.names.size = "size"`,
   `KubernetesNodePool.names.nodeCount = "node_count"`), so policies
@@ -1229,7 +1238,10 @@ Design decisions specific to Lean:
   OpenTofu string and conversion functions are
   dot-notation on inputs (`Input.tonumber`, `.lower`, `.replace`, `.substr`, `.split`,
   `.join`, `.startswith`, …), `++` concatenates string inputs into one flat
-  template, `xs[i]`/`m[k]` index symbolic lists and maps, and
+  template, `xs[i]`/`m[k]` index symbolic lists and maps, `xs[i].fields.attr`
+  and `xs.splat (·.attr)` traverse elements of computed lists with the schema's
+  types (the generated `SymbolicFields` instances; `Input.field` is the untyped
+  form), and
   `tf!"web-{droplet.id}.internal"` builds a template with Lean's interpolated
   string syntax (any `Interpolated` value in braces; all-known text folds to a
   literal). Generated handles carry `Dependable`/`Managed` instances so
@@ -1276,8 +1288,9 @@ Design decisions specific to Lean:
 - **Numbers are exact.** `Number` is `Lean.JsonNumber`; `lit 2` and `lit 80.5`
   elaborate through `OfNat`/`OfScientific` and serialize without rounding.
 - **Test executables double as proofs.** A stack's test module states theorems
-  (`theorem policies : p.Holds (buildGraph infra) := by decide`) and a `main` that
-  prints `Policy.report`; `inframe test --stack <name>` runs `lake -q exe <test>`,
+  (`theorem policies : p.Holds (buildGraph infra) := by decide`, or
+  `#assert_policy p (buildGraph infra)` once the graph outgrows the kernel) and
+  a `main` that prints `Policy.report`; `inframe test --stack <name>` runs `lake -q exe <test>`,
   so the theorems are checked before the report runs. The test executable is
   separate from the main one, so a green `inframe build` says nothing about the
   policies; the lifecycle commands therefore run the configured test executable
@@ -1372,6 +1385,18 @@ pub enum Expr {
         key: Box<Expr>,
     },
 
+    /// `of.name` on a computed value (an element of a nested block, a splat);
+    /// plain references keep attributes in their path instead.
+    Attribute {
+        of: Box<Expr>,
+        name: String,
+    },
+
+    /// `of[*]`.
+    Splat {
+        of: Box<Expr>,
+    },
+
     Conditional {
         condition: Box<Expr>,
         when_true: Box<Expr>,
@@ -1393,7 +1418,6 @@ Later additions can include:
 
 - operators;
 - `for` expressions;
-- splats;
 - collection conversions;
 - provider-defined functions if useful.
 

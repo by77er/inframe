@@ -8,7 +8,7 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Test.Assert (assert)
 import Inframe.Builder (Infra, createBeforeDestroy, dependsOn, output, replaceTriggeredBy, resourceOptions, sensitiveOutput)
-import Inframe.Core (ExprNode, ifThenElse, interpolate, lit, secretEnv, template, text, unsafeArgument, unsafeCall)
+import Inframe.Core (ExprNode, Input, attribute, computed, ifThenElse, index, interpolate, lit, secretEnv, splat, template, text, unsafeArgument, unsafeCall)
 import Inframe.Internal.Builder (InputObject, addResource, inputObject, insertInputField, requireProvider)
 import Inframe.Internal.Core (inputNode, resourceAttr)
 import Inframe.Json (renderGraph)
@@ -34,6 +34,11 @@ program = do
     # appendField "normalized" (inputNode (unsafeCall "lower" [ unsafeArgument (lit "APP") ]))
   sensitiveOutput "tag_id" (resourceAttr tag [ "id" ])
   output "literal" (lit "known-now")
+  let
+    interfaces = computed (resourceAttr tag [ "network_interface" ]) :: Input (Array String)
+  output "first_ip" (attribute (index interfaces (lit 1.0)) "network_ip" :: Input String)
+  output "all_ips" (attribute (splat interfaces) "network_ip" :: Input (Array String))
+  output "team" (attribute (computed (resourceAttr tag [ "meta" ]) :: Input String) "team" :: Input String)
 
 main :: Effect Unit
 main = do
@@ -48,6 +53,11 @@ main = do
   assert $ contains (Pattern "function") rendered
   assert $ contains (Pattern "\"sensitive\": true") rendered
   assert $ contains (Pattern "known-now") rendered
+  assert $ contains (Pattern "\"kind\": \"attribute\"") rendered
+  assert $ contains (Pattern "\"kind\": \"splat\"") rendered
+  assert $ contains (Pattern "\"name\": \"network_ip\"") rendered
+  -- A plain reference keeps the attribute in its path rather than wrapping it.
+  assert $ contains (Pattern "\"team\"\n") rendered
 
 appendField :: String -> ExprNode -> InputObject -> InputObject
 appendField = insertInputField

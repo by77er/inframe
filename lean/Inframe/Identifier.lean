@@ -98,6 +98,100 @@ def Identifier.child (parent : Identifier) (suffix : String)
     (valid : validIdentifier suffix = true := by valid_identifier) : Identifier :=
   parent.join ⟨suffix, valid⟩
 
+/-! ### Suffixes that are not identifiers themselves
+
+`join` and `child` need a suffix that could stand alone, so it must start with a letter. The
+names infrastructure actually derives are often index- or CIDR-shaped (`fwd-1`,
+`net-10-192-0-0-16`): after a `-`, any identifier-tail characters keep an identifier valid, and
+`append`, `indexed`, and `slug` carry that proof. -/
+
+/-- Appending `-` and any run of identifier-tail characters (letters, digits, `_`, `-`) to an
+identifier keeps it valid; the suffix need not start with a letter. -/
+theorem validIdentifier_append (a suffix : String) (ha : validIdentifier a = true)
+    (hs : suffix.toList.all isIdentifierChar = true) :
+    validIdentifier (a ++ "-" ++ suffix) = true := by
+  unfold validIdentifier at *
+  have expand : (a ++ "-" ++ suffix).toList = a.toList ++ '-' :: suffix.toList := by simp
+  rw [expand]
+  cases ha' : a.toList with
+  | nil => simp [ha'] at ha
+  | cons c rest =>
+    simp only [ha'] at ha
+    simp only [List.cons_append, List.all_append, List.all_cons, Bool.and_eq_true] at ha ⊢
+    exact ⟨ha.1, ha.2, by decide, hs⟩
+
+/-- Every character that cannot continue an identifier replaced by `-`:
+`identifierTail "10.192.0.0/16" = "10-192-0-0-16"`. Total, so run-time text such as a CIDR
+or a hostname can always become part of a name. -/
+def identifierTail (text : String) : String :=
+  String.ofList (text.toList.map fun c => if isIdentifierChar c then c else '-')
+
+theorem identifierTail_all (text : String) :
+    (identifierTail text).toList.all isIdentifierChar = true := by
+  simp only [identifierTail, String.toList_ofList, List.all_map, List.all_eq_true]
+  intro c _
+  simp only [Function.comp]
+  split
+  · assumption
+  · decide
+
+theorem isIdentifierChar_digitChar (k : Nat) (h : k < 10) :
+    isIdentifierChar (Nat.digitChar k) = true := by
+  match k, h with
+  | 0, _ | 1, _ | 2, _ | 3, _ | 4, _ | 5, _ | 6, _ | 7, _ | 8, _ | 9, _ => decide
+
+theorem toDigitsCore_all (fuel n : Nat) (acc : List Char)
+    (hacc : acc.all isIdentifierChar = true) :
+    (Nat.toDigitsCore 10 fuel n acc).all isIdentifierChar = true := by
+  induction fuel generalizing n acc with
+  | zero => simpa [Nat.toDigitsCore] using hacc
+  | succ fuel ih =>
+    simp only [Nat.toDigitsCore]
+    have digit : isIdentifierChar (Nat.digitChar (n % 10)) = true :=
+      isIdentifierChar_digitChar _ (Nat.mod_lt _ (by decide))
+    split
+    · simp [digit, hacc]
+    · exact ih _ _ (by simp [digit, hacc])
+
+/-- The decimal digits of a natural number are identifier-tail characters. -/
+theorem repr_all_identifierChar (n : Nat) : (Nat.repr n).toList.all isIdentifierChar = true := by
+  simpa [Nat.repr, Nat.toDigits, String.toList_ofList] using toDigitsCore_all (n + 1) n [] rfl
+
+/-- Discharges `suffix.toList.all isIdentifierChar = true`: a literal by `decide`, a sanitized
+string by `identifierTail_all`, a decimal number by `repr_all_identifierChar`. -/
+macro "identifier_tail" : tactic =>
+  `(tactic| first
+    | decide
+    | exact Inframe.identifierTail_all _
+    | exact Inframe.repr_all_identifierChar _
+    | fail "the suffix must consist of letters, digits, `_`, and `-`; pass `identifierTail s` for arbitrary text")
+
+/-- `a-suffix`, where the suffix is any run of identifier-tail characters, so unlike `child` it
+may start with a digit: `rule.append "1"` is `rule-1`, `net.append "10-192-0-0-16"`. A
+literal suffix is checked at compile time; run-time text goes through `slug`. -/
+def Identifier.append (a : Identifier) (suffix : String)
+    (valid : suffix.toList.all isIdentifierChar = true := by identifier_tail) : Identifier :=
+  ⟨a.raw ++ "-" ++ suffix, validIdentifier_append a.raw suffix a.valid valid⟩
+
+/-- `a-<index>` for a run-time index: `(Identifier.mk "fwd").indexed 1` is `fwd-1`. -/
+def Identifier.indexed (a : Identifier) (index : Nat) : Identifier :=
+  a.append (Nat.repr index) (repr_all_identifierChar index)
+
+/-- `a-<slug>` for run-time text of any shape, with characters that cannot appear in an
+identifier replaced by `-`: `net.slug "10.192.0.0/16"` is `net-10-192-0-0-16`. -/
+def Identifier.slug (a : Identifier) (text : String) : Identifier :=
+  a.append (identifierTail text) (identifierTail_all text)
+
+@[simp] theorem Identifier.raw_append (a : Identifier) (suffix : String)
+    (valid : suffix.toList.all isIdentifierChar = true) :
+    (a.append suffix valid).raw = a.raw ++ "-" ++ suffix := rfl
+
+@[simp] theorem Identifier.raw_indexed (a : Identifier) (index : Nat) :
+    (a.indexed index).raw = a.raw ++ "-" ++ Nat.repr index := rfl
+
+@[simp] theorem Identifier.raw_slug (a : Identifier) (text : String) :
+    (a.slug text).raw = a.raw ++ "-" ++ identifierTail text := rfl
+
 /-- The address of a graph node. Addresses are structural so that policies and proofs can
 match on them without parsing strings. -/
 inductive Address where

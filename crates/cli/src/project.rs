@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Output};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use inframe_emit_lean::CoreDependency;
@@ -34,6 +37,9 @@ pub struct ProviderConfig {
     pub source: String,
     pub version: String,
     pub module_root: Option<String>,
+    /// The resource-type prefix removed to form module names (`google_` for a `google-beta`
+    /// provider). Inferred from the provider name and its resource types when unset.
+    pub strip_prefix: Option<String>,
     /// Override the PureScript package directory.
     pub output: Option<PathBuf>,
     /// Override the Lean package directory.
@@ -72,6 +78,7 @@ pub struct ProviderGeneration {
     pub name: String,
     pub source: String,
     pub version: String,
+    pub strip_prefix: Option<String>,
     pub targets: Vec<FrontendTarget>,
 }
 
@@ -356,6 +363,7 @@ impl Project {
                     name: name.to_owned(),
                     source: provider.source.clone(),
                     version: provider.version.clone(),
+                    strip_prefix: provider.strip_prefix.clone(),
                     targets,
                 })
             })
@@ -367,6 +375,13 @@ impl Project {
             .join(self.frontend_directory(frontend))
             .join(".generated")
             .join(name)
+    }
+
+    /// The directory holding the sources of `stack`: its frontend's package directory.
+    pub fn stack_source_directory(&self, stack: &str) -> Result<PathBuf> {
+        Ok(self
+            .root
+            .join(self.frontend_directory(self.stack_frontend(stack)?)))
     }
 
     fn frontend_directory(&self, frontend: Frontend) -> PathBuf {
@@ -447,25 +462,42 @@ impl Project {
                 (self.lake(config, main), main)
             }
         };
-        let output = command.output().with_context(|| {
-            format!(
-                "failed to start {} in {}; install it or add it to PATH",
-                frontend_tool(frontend),
-                self.frontend_directory(frontend).display()
-            )
-        })?;
+        let tool = frontend_tool(frontend);
+        let directory = self.root.join(self.frontend_directory(frontend));
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => bail!(
+                "`{tool}` was not found on PATH, so stack `{stack}` cannot be built; {}",
+                install_hint(frontend)
+            ),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to start `{tool}` in {}", directory.display())
+                });
+            }
+        };
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
-                "{} failed while building stack `{stack}`:\n{stderr}",
-                frontend_tool(frontend)
+                "{}",
+                child_failure_report(
+                    &format!("`{tool}` failed while building stack `{stack}`"),
+                    &command,
+                    &directory,
+                    &output
+                )
             );
         }
         let graph: GraphDocument = serde_json::from_slice(&output.stdout).with_context(|| {
-            format!(
+            let mut message = format!(
                 "{} entry point `{main}` did not print a Graph IR JSON document",
                 frontend.name()
-            )
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.trim().is_empty() {
+                message.push_str("\nstderr of the entry point:\n");
+                message.push_str(stderr.trim_end());
+            }
+            message
         })?;
         graph.validate()?;
         let path = output_override.map_or_else(|| self.graph_path(stack), Path::to_path_buf);
@@ -506,13 +538,21 @@ impl Project {
                 self.lake(config, test)
             }
         };
-        command.status().with_context(|| {
-            format!(
-                "failed to start {} in {}; install it or add it to PATH",
+        match command.status() {
+            Ok(status) => Ok(status),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => bail!(
+                "`{}` was not found on PATH, so the tests of stack `{stack}` cannot run; {}",
                 frontend_tool(frontend),
-                self.frontend_directory(frontend).display()
-            )
-        })
+                install_hint(frontend)
+            ),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to start `{}` in {}",
+                    frontend_tool(frontend),
+                    self.root.join(self.frontend_directory(frontend)).display()
+                )
+            }),
+        }
     }
 
     fn purescript_config(&self) -> Result<&PureScriptConfig> {
@@ -560,6 +600,112 @@ fn frontend_tool(frontend: Frontend) -> &'static str {
         Frontend::PureScript => "spago",
         Frontend::Lean => "lake",
     }
+}
+
+fn install_hint(frontend: Frontend) -> &'static str {
+    match frontend {
+        Frontend::PureScript => {
+            "install PureScript and Spago (`npm install -g purescript spago`) or add them to PATH"
+        }
+        Frontend::Lean => {
+            "install elan (https://github.com/leanprover/elan) and add `~/.elan/bin` to PATH"
+        }
+    }
+}
+
+/// What a failed child process said, verbatim: the command line, its directory, its exit
+/// status, and its stderr. An empty stderr is stated rather than left as a blank line, and
+/// then the tail of stdout is shown in case the error went there.
+fn child_failure_report(
+    headline: &str,
+    command: &Command,
+    directory: &Path,
+    output: &Output,
+) -> String {
+    let mut report = format!(
+        "{headline} ({})\ncommand: {}\ndirectory: {}\n",
+        output.status,
+        render_command(command),
+        directory.display()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.trim().is_empty() {
+        report.push_str("stderr: (empty)\n");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.trim().is_empty() {
+            let lines: Vec<&str> = stdout.lines().collect();
+            let tail = &lines[lines.len().saturating_sub(20)..];
+            report.push_str("stdout (tail):\n");
+            report.push_str(&tail.join("\n"));
+            report.push('\n');
+        }
+    } else {
+        report.push_str("stderr:\n");
+        report.push_str(stderr.trim_end());
+        report.push('\n');
+    }
+    report
+}
+
+fn render_command(command: &Command) -> String {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Where `binary` resolves: as given when it names a path, otherwise the first match on
+/// PATH. `None` means running it would fail with "not found".
+pub fn find_executable(binary: &Path) -> Option<PathBuf> {
+    if binary.components().count() > 1 {
+        return binary.is_file().then(|| binary.to_path_buf());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(binary))
+        .find(|candidate| candidate.is_file())
+}
+
+const BUILD_OUTPUT_DIRECTORIES: &[&str] = &[
+    ".lake",
+    ".spago",
+    ".inframe",
+    ".git",
+    ".jj",
+    "output",
+    "node_modules",
+    "target",
+];
+
+/// The newest modification time of any file under `directory`, skipping build output
+/// directories. `None` when nothing readable is there.
+pub fn newest_source_mtime(directory: &Path) -> Option<SystemTime> {
+    let mut newest = None;
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                let skipped = path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| BUILD_OUTPUT_DIRECTORIES.contains(&name));
+                if !skipped {
+                    pending.push(path);
+                }
+            } else if let Ok(modified) = metadata.modified() {
+                newest = Some(newest.map_or(modified, |current: SystemTime| current.max(modified)));
+            }
+        }
+    }
+    newest
 }
 
 pub fn initialize(path: &Path) -> Result<()> {

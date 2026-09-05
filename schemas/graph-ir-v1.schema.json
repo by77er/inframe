@@ -222,6 +222,46 @@
           ]
         },
         {
+          "description": "The attribute `name` of a computed value, `of.name`: an element of a nested block\n(`x.network_interface[1].network_ip`), a splat, or any other expression that is not a\nplain reference (those carry attributes in their `path`).",
+          "type": "object",
+          "properties": {
+            "of": {
+              "$ref": "#/$defs/Expr"
+            },
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "attribute"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "of",
+            "name"
+          ]
+        },
+        {
+          "description": "The full splat `of[*]`.",
+          "type": "object",
+          "properties": {
+            "of": {
+              "$ref": "#/$defs/Expr"
+            },
+            "kind": {
+              "type": "string",
+              "const": "splat"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "of"
+          ]
+        },
+        {
           "type": "object",
           "properties": {
             "condition": {
