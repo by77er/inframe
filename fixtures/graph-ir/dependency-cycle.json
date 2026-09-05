@@ -1,0 +1,24 @@
+{
+  "format_version": "1.0",
+  "required_providers": {},
+  "provider_configs": [],
+  "resources": [
+    {
+      "type": "terraform_data",
+      "name": "a",
+      "arguments": {},
+      "depends_on": ["terraform_data.b"]
+    },
+    {
+      "type": "terraform_data",
+      "name": "b",
+      "arguments": {
+        "input": { "kind": "resource_attr", "address": "terraform_data.a", "path": ["id"] }
+      },
+      "depends_on": []
+    }
+  ],
+  "data_sources": [],
+  "outputs": {},
+  "moves": []
+}

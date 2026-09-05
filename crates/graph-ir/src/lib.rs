@@ -415,6 +415,8 @@ pub enum ValidationError {
         "{owner} uses data source `{target}` in replace_triggered_by; only managed resources are allowed"
     )]
     InvalidReplaceTriggeredBy { owner: Address, target: Address },
+    #[error("dependency cycle: {}", render_cycle(.0))]
+    Cycle(Vec<Address>),
     #[error("move target `{0}` is not present in this graph")]
     MissingMoveTarget(Address),
     #[error("duplicate move target `{0}`")]
@@ -518,17 +520,33 @@ impl GraphDocument {
                 return Err(ValidationError::DuplicateMoveTarget(movement.to.clone()));
             }
         }
+
+        if let Some(cycle) = find_cycle(&self.edges()) {
+            return Err(ValidationError::Cycle(cycle));
+        }
         Ok(())
     }
 
+    /// Every edge of a valid graph: implicit edges derived from references plus the explicit
+    /// `depends_on` and `replace_triggered_by` edges. References are the source of truth; no
+    /// separate DAG is stored, and `validate` guarantees the edges form one.
     pub fn dependencies(&self) -> Result<BTreeSet<Dependency>, ValidationError> {
         self.validate()?;
+        Ok(self.edges())
+    }
+
+    fn edges(&self) -> BTreeSet<Dependency> {
         let mut dependencies = BTreeSet::new();
         for resource in &self.resources {
+            let triggers = resource
+                .lifecycle
+                .as_ref()
+                .map(|lifecycle| lifecycle.replace_triggered_by.as_slice())
+                .unwrap_or_default();
             add_dependencies(
                 &resource.address(),
                 resource.arguments.values(),
-                &resource.depends_on,
+                resource.depends_on.iter().chain(triggers),
                 &mut dependencies,
             );
         }
@@ -536,11 +554,11 @@ impl GraphDocument {
             add_dependencies(
                 &data_source.address(),
                 data_source.arguments.values(),
-                &data_source.depends_on,
+                data_source.depends_on.iter(),
                 &mut dependencies,
             );
         }
-        Ok(dependencies)
+        dependencies
     }
 
     #[must_use]
@@ -765,7 +783,7 @@ fn validate_path(owner: &str, path: &[String]) -> Result<(), ValidationError> {
 fn add_dependencies<'a>(
     owner: &Address,
     expressions: impl Iterator<Item = &'a Expr>,
-    explicit: &[Address],
+    explicit: impl Iterator<Item = &'a Address>,
     output: &mut BTreeSet<Dependency>,
 ) {
     for expression in expressions {
@@ -786,6 +804,54 @@ fn add_dependencies<'a>(
             explicit: true,
         });
     }
+}
+
+/// A dependency cycle, if the edges contain one: the nodes along it, first node repeated at
+/// the end (`a -> b -> a` means `a` depends on `b`, which depends on `a`). `OpenTofu` would
+/// reject such a graph at plan time; catching it here keeps `Valid` meaningful.
+fn find_cycle(edges: &BTreeSet<Dependency>) -> Option<Vec<Address>> {
+    let mut upstream: BTreeMap<&Address, Vec<&Address>> = BTreeMap::new();
+    for edge in edges {
+        upstream.entry(&edge.to).or_default().push(&edge.from);
+    }
+    let mut done = BTreeSet::new();
+    let mut path = Vec::new();
+    upstream
+        .keys()
+        .find_map(|start| search_cycle(start, &upstream, &mut path, &mut done))
+}
+
+fn search_cycle<'a>(
+    node: &'a Address,
+    upstream: &BTreeMap<&'a Address, Vec<&'a Address>>,
+    path: &mut Vec<&'a Address>,
+    done: &mut BTreeSet<&'a Address>,
+) -> Option<Vec<Address>> {
+    if done.contains(node) {
+        return None;
+    }
+    if let Some(start) = path.iter().position(|seen| *seen == node) {
+        let mut cycle: Vec<Address> = path[start..].iter().map(|seen| (*seen).clone()).collect();
+        cycle.push(node.clone());
+        return Some(cycle);
+    }
+    path.push(node);
+    for next in upstream.get(node).into_iter().flatten() {
+        if let Some(cycle) = search_cycle(next, upstream, path, done) {
+            return Some(cycle);
+        }
+    }
+    path.pop();
+    done.insert(node);
+    None
+}
+
+fn render_cycle(nodes: &[Address]) -> String {
+    nodes
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 fn validate_identifier(path: &str, value: &str) -> Result<(), ValidationError> {
@@ -961,6 +1027,64 @@ mod tests {
             graph.validate(),
             Err(ValidationError::MissingProviderConfig { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_dependency_cycles() {
+        let mut graph = tag_graph();
+        // The tag now depends on the data source that reads it.
+        graph.resources[0].depends_on = vec![graph.data_sources[0].address()];
+        let error = graph.validate().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "dependency cycle: digitalocean_tag.app -> data.digitalocean_tag.app_read -> digitalocean_tag.app"
+        );
+        assert!(graph.dependencies().is_err());
+    }
+
+    #[test]
+    fn a_self_reference_is_a_cycle() {
+        let mut graph = tag_graph();
+        let own_address = graph.resources[0].address();
+        graph.resources[0].arguments.insert(
+            "description".into(),
+            Expr::ResourceAttr {
+                address: own_address,
+                path: vec!["id".into()],
+            },
+        );
+        assert!(matches!(
+            graph.validate(),
+            Err(ValidationError::Cycle(nodes)) if nodes.len() == 2
+        ));
+    }
+
+    #[test]
+    fn replacement_triggers_are_dependency_edges() {
+        let mut graph = tag_graph();
+        let trigger = ResourceSpec {
+            resource_type: "digitalocean_tag".into(),
+            name: "trigger".into(),
+            arguments: BTreeMap::new(),
+            depends_on: Vec::new(),
+            provider: None,
+            lifecycle: None,
+        };
+        graph.resources[0].lifecycle = Some(Lifecycle {
+            replace_triggered_by: vec![trigger.address()],
+            ..Lifecycle::default()
+        });
+        graph.resources.push(trigger);
+        let dependencies = graph.dependencies().unwrap();
+        assert!(dependencies.iter().any(|edge| {
+            edge.explicit
+                && edge.from.to_string() == "digitalocean_tag.trigger"
+                && edge.to.to_string() == "digitalocean_tag.app"
+        }));
+
+        // A trigger that itself depends on the triggered resource closes a cycle.
+        graph.resources[1].depends_on = vec![graph.resources[0].address()];
+        assert!(matches!(graph.validate(), Err(ValidationError::Cycle(_))));
     }
 
     #[test]

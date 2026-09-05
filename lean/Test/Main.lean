@@ -123,6 +123,28 @@ theorem invalid_graph_is_rejected :
       = .error (.duplicateAddress (.res "digitalocean_tag" "twice")) := by
   decide
 
+/-- Two nodes that depend on each other: `a` through `depends_on`, `b` through a reference. -/
+def cyclic : Graph :=
+  { resources :=
+      [ { resourceType := "terraform_data", name := "a", arguments := []
+          dependsOn := [.res "terraform_data" "b"], provider := none, lifecycle := none }
+      , { resourceType := "terraform_data", name := "b"
+          arguments := [("input", .resourceAttribute (.res "terraform_data" "a") ["id"])]
+          dependsOn := [], provider := none, lifecycle := none } ] }
+
+/-- Cycles fail validation with the path that closes them; a resource that names itself in
+`replace_triggered_by` is the smallest one. -/
+theorem cycles_are_rejected :
+    cyclic.validate = .error (.cycle
+      [.res "terraform_data" "a", .res "terraform_data" "b", .res "terraform_data" "a"]) ∧
+    (buildGraph (do
+        let self : Resource Unit := resourceHandle (Identifier.mk "digitalocean_tag") (Identifier.mk "loop")
+        let _ : Resource Unit ← addResource ((resourceOptions : ResourceOptions Unit) |>.replaceTriggeredBy self)
+          (Identifier.mk "digitalocean_tag") (Identifier.mk "loop") InputObject.empty
+        pure ())).validate
+      = .error (.cycle [.res "digitalocean_tag" "loop", .res "digitalocean_tag" "loop"]) := by
+  decide
+
 def contains (haystack needle : String) : Bool :=
   (haystack.splitOn needle).length > 1
 

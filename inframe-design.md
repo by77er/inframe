@@ -1666,6 +1666,8 @@ It must:
 - emit `.tofu.json`;
 - reject duplicate resource/data-source addresses;
 - reject invalid graph-local references;
+- reject dependency cycles (through references, `depends_on`, and
+  `replace_triggered_by`), which OpenTofu would otherwise report only at plan time;
 - correctly distinguish resource vs data-source traversals;
 - make every literal denote exactly the value the frontend wrote: OpenTofu reads
   every JSON string in expression position as a template, including the strings
@@ -2339,6 +2341,8 @@ Unit and property tests:
 
 - duplicate address rejection;
 - invalid local reference rejection;
+- dependency cycle rejection, including self-references and cycles closed by
+  `replace_triggered_by`;
 - canonical ordering;
 - JSON round-trip;
 - dependency extraction;

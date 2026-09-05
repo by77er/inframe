@@ -202,9 +202,9 @@ theorem databases_use_managed_vpc (env : Environment) (databases : List Identifi
 - **The graph is valid before the CLI sees it.** Logical names, aliases,
   outputs, and secret variable names carry validity proofs discharged from
   their literals, and the reference validator (duplicate addresses, dangling
-  references, provider selection, replacement triggers, moves) is a theorem
-  about the concrete graph rather than a later error from `inframe graph
-  validate`.
+  references, provider selection, replacement triggers, moves, dependency
+  cycles) is a theorem about the concrete graph rather than a later error from
+  `inframe graph validate`.
 
 Everything goes through kernel `decide`, never `native_decide`, so the trusted
 base is the Lean kernel plus the Rust validator that still runs on the emitted

@@ -49,6 +49,34 @@ fn validates_a_graph() {
         .stdout(predicate::str::contains("valid Graph IR 1.0"));
 }
 
+/// `OpenTofu` rejects this graph only at plan time (`Cycle: terraform_data.b, terraform_data.a`);
+/// the validators reject it first, so `Valid` and `inframe graph validate` agree with the
+/// planner.
+#[test]
+fn rejects_dependency_cycles_before_open_tofu() {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let graph = workspace.join("fixtures/graph-ir/dependency-cycle.json");
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["graph", "validate"])
+        .arg(&graph)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "dependency cycle: terraform_data.a -> terraform_data.b -> terraform_data.a",
+        ));
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["init", "--stack", "cycle", "--graph"])
+        .arg(&graph)
+        .args(["--tofu-binary", "/nonexistent/tofu"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("dependency cycle"));
+}
+
 #[test]
 fn inspects_the_last_built_stack_graph_with_no_build() {
     let directory = tempdir().unwrap();

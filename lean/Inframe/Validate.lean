@@ -30,6 +30,9 @@ inductive ValidationError where
   | invalidReplaceTriggeredBy (owner : Address) (target : Address)
   | missingMoveTarget (target : Address)
   | duplicateMoveTarget (target : Address)
+  /-- The nodes along a dependency cycle, first node repeated at the end: `[a, b, a]` means
+  `a` depends on `b`, which depends on `a`. -/
+  | cycle (nodes : List Address)
   deriving DecidableEq, Repr
 
 namespace ValidationError
@@ -47,6 +50,7 @@ def message : ValidationError → String
       s!"`{owner}` lists non-resource `{target}` in replace_triggered_by"
   | .missingMoveTarget target => s!"move target `{target}` does not exist"
   | .duplicateMoveTarget target => s!"duplicate move target `{target}`"
+  | .cycle nodes => s!"dependency cycle: {" -> ".intercalate (nodes.map toString)}"
 
 instance : ToString ValidationError := ⟨message⟩
 
@@ -191,6 +195,61 @@ structure Dependency where
 
 namespace Graph
 
+private def addDependencies (owner : Address) (arguments : List (String × ExprNode))
+    (explicit : List Address) : List Dependency :=
+  (arguments.flatMap fun (_, expression) =>
+    expression.references.map fun upstream => ⟨upstream, owner, false⟩)
+    ++ explicit.map fun upstream => ⟨upstream, owner, true⟩
+
+/-- Every edge, with repeats: implicit edges derived from references plus the explicit
+`depends_on` and `replace_triggered_by` edges. -/
+private def edges (graph : Graph) : List Dependency :=
+  (graph.resources.flatMap fun resource =>
+      addDependencies resource.address resource.arguments
+        (resource.dependsOn ++ (resource.lifecycle.map (·.replaceTriggeredBy)).getD []))
+    ++ (graph.dataSources.flatMap fun dataSource =>
+      addDependencies dataSource.address dataSource.arguments dataSource.dependsOn)
+
+/-- Every edge in the graph, each once. References are the source of truth; no separate DAG
+is stored, and `validate` guarantees the edges form one. -/
+def dependencies (graph : Graph) : List Dependency :=
+  graph.edges.eraseDups
+
+/-- Whether `downstream` must be created after `upstream`, directly. -/
+def dependsOn (graph : Graph) (downstream upstream : Address) : Bool :=
+  graph.dependencies.any fun edge => edge.downstream == downstream && edge.upstream == upstream
+
+/-- The addresses `node` depends on directly. -/
+private def upstreamOf (edges : List Dependency) (node : Address) : List Address :=
+  edges.filterMap fun edge => if edge.downstream == node then some edge.upstream else none
+
+/-- The cycle closed by reaching `node` while it is already on `path` (nearest first): `node`,
+the nodes between, and `node` again, in dependency order. -/
+private def closeCycle (node : Address) (path : List Address) : List Address :=
+  (path.takeWhile (· != node) ++ [node]).reverse ++ [node]
+
+/-- Depth-first search from `node` for a dependency cycle, structurally recursive on `fuel`
+so that `Valid` stays decidable by `decide`. `path` holds the nodes on the current descent,
+nearest first; `done` the nodes fully explored without finding a cycle. The descent is never
+deeper than the number of nodes, so `fuel := nodes.length + 1` never runs out. -/
+private def searchCycle (edges : List Dependency) :
+    Nat → List Address → List Address → Address → Except (List Address) (List Address)
+  | 0, _, done, _ => .ok done
+  | fuel + 1, path, done, node =>
+    if done.contains node then .ok done
+    else if path.contains node then .error (closeCycle node path)
+    else do
+      let done ← (upstreamOf edges node).foldlM
+        (fun done next => searchCycle edges fuel (node :: path) done next) done
+      pure (node :: done)
+
+private def validateAcyclic (graph : Graph) : Except ValidationError Unit :=
+  let nodes := graph.addresses
+  let edges := graph.edges
+  match nodes.foldlM (fun done node => searchCycle edges (nodes.length + 1) [] done node) [] with
+  | .ok _ => .ok ()
+  | .error cycle => throw (.cycle cycle)
+
 private def validateExpr (owner : String) (addresses : List Address) (expression : ExprNode) :
     Except ValidationError Unit := do
   expression.validateStructure owner
@@ -330,7 +389,9 @@ private def validateMoves (addresses : List Address) (targets : List Address) :
     else if targets.contains move.destination then throw (.duplicateMoveTarget move.destination)
     else validateMoves addresses (move.destination :: targets) rest
 
-/-- The reference validation rules, ported from the Rust `GraphDocument::validate`. -/
+/-- The reference validation rules, ported from the Rust `GraphDocument::validate`: names,
+references, provider selection, replacement triggers, moves, and finally that the dependency
+edges form a DAG. -/
 def validate (graph : Graph) : Except ValidationError Unit := do
   validateProviderNames graph.requiredProviders
   validateProviderConfigs 0 [] graph.providerConfigs
@@ -342,6 +403,7 @@ def validate (graph : Graph) : Except ValidationError Unit := do
   validateOutputs addresses graph.outputs
   validateProviderArguments 0 addresses graph.providerConfigs
   validateMoves addresses [] graph.moves
+  validateAcyclic graph
 
 /-- The graph passes every validation rule. Decidable, so `by decide` proves it for a
 concrete graph. -/
@@ -353,25 +415,6 @@ def validationError? (graph : Graph) : Option String :=
   match graph.validate with
   | .ok () => none
   | .error error => some error.message
-
-private def addDependencies (owner : Address) (arguments : List (String × ExprNode))
-    (explicit : List Address) : List Dependency :=
-  (arguments.flatMap fun (_, expression) =>
-    expression.references.map fun upstream => ⟨upstream, owner, false⟩)
-    ++ explicit.map fun upstream => ⟨upstream, owner, true⟩
-
-/-- Every edge in the graph: implicit edges derived from references plus explicit
-`depends_on` edges. References are the source of truth; no separate DAG is stored. -/
-def dependencies (graph : Graph) : List Dependency :=
-  (graph.resources.flatMap fun resource =>
-      addDependencies resource.address resource.arguments resource.dependsOn)
-    ++ (graph.dataSources.flatMap fun dataSource =>
-      addDependencies dataSource.address dataSource.arguments dataSource.dependsOn)
-  |>.eraseDups
-
-/-- Whether `downstream` must be created after `upstream`, directly. -/
-def dependsOn (graph : Graph) (downstream upstream : Address) : Bool :=
-  graph.dependencies.any fun edge => edge.downstream == downstream && edge.upstream == upstream
 
 /-- Every `secretEnv` name the graph needs at plan or apply time. -/
 def secretEnvironmentNames (graph : Graph) : List String :=

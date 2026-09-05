@@ -141,7 +141,7 @@ struct ProviderGenerateArgs {
 
 #[derive(Debug, Subcommand)]
 enum GraphCommand {
-    /// Validate structural invariants and all graph-local references.
+    /// Validate structural invariants, all graph-local references, and acyclicity.
     Validate(GraphPathArgs),
     /// Print a compact summary and derived dependency edges.
     Inspect(GraphPathArgs),
