@@ -1,4 +1,4 @@
-.PHONY: test check generate validate-fixture conformance
+.PHONY: test check generate validate-fixture conformance conformance-tofu
 
 test:
 	cargo test --workspace
@@ -23,3 +23,7 @@ conformance:
 validate-fixture:
 	cargo run -q -p inframe-cli -- init --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json -- -backend=false -input=false
 	cargo run -q -p inframe-cli -- validate --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json
+
+# Literals with template markers must come back from OpenTofu exactly as written.
+conformance-tofu:
+	scripts/check-template-escapes.sh

@@ -1,0 +1,68 @@
+{
+  "format_version": "1.0",
+  "required_providers": {},
+  "provider_configs": [],
+  "resources": [],
+  "data_sources": [],
+  "outputs": {
+    "scalar": {
+      "value": { "kind": "literal", "value": "${1+2}" }
+    },
+    "literal_list": {
+      "value": { "kind": "literal", "value": ["${1+2}", "%{ if true }rewritten%{ endif }"] }
+    },
+    "literal_object": {
+      "value": {
+        "kind": "literal",
+        "value": { "${1+2}": "${3+4}", "%{ if true }key%{ endif }": ["${5}"] }
+      }
+    },
+    "expression_list": {
+      "value": {
+        "kind": "array",
+        "items": [
+          { "kind": "literal", "value": "${1+2}" },
+          { "kind": "literal", "value": "%{ if true }rewritten%{ endif }" }
+        ]
+      }
+    },
+    "expression_object": {
+      "value": {
+        "kind": "object",
+        "fields": { "${key}": { "kind": "literal", "value": "${value}" } }
+      }
+    },
+    "literal_inside_function": {
+      "value": {
+        "kind": "function",
+        "name": "tolist",
+        "args": [{ "kind": "literal", "value": ["${1+2}", "%{ if true }x%{ endif }"] }]
+      }
+    },
+    "object_keys_inside_function": {
+      "value": {
+        "kind": "function",
+        "name": "keys",
+        "args": [{ "kind": "literal", "value": { "${key}": "value" } }]
+      }
+    },
+    "template": {
+      "value": {
+        "kind": "template",
+        "parts": [
+          { "kind": "literal", "value": "${not} " },
+          { "kind": "interpolation", "expression": { "kind": "literal", "value": "%{ x }" } }
+        ]
+      }
+    },
+    "conditional": {
+      "value": {
+        "kind": "conditional",
+        "condition": { "kind": "literal", "value": true },
+        "when_true": { "kind": "literal", "value": "${yes}" },
+        "when_false": { "kind": "literal", "value": "${no}" }
+      }
+    }
+  },
+  "moves": []
+}

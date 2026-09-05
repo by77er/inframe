@@ -208,19 +208,20 @@ fn lower_arguments(arguments: &BTreeMap<String, Expr>) -> Result<Map<String, Val
         .collect()
 }
 
+/// Lower one expression to the JSON syntax. Every JSON string in expression position is a
+/// template to `OpenTofu`, including the strings inside literal arrays and objects and the
+/// property names of objects, so each one is escaped: a literal denotes exactly the value the
+/// frontend wrote.
 pub fn lower_expr(expression: &Expr) -> Result<Value, LowerError> {
     match expression {
-        Expr::Literal {
-            value: Value::String(value),
-        } => Ok(Value::String(escape_template(value))),
-        Expr::Literal { value } => Ok(value.clone()),
+        Expr::Literal { value } => Ok(escape_literal(value)),
         Expr::Array { items } => Ok(Value::Array(
             items.iter().map(lower_expr).collect::<Result<_, _>>()?,
         )),
         Expr::Object { fields } => Ok(Value::Object(
             fields
                 .iter()
-                .map(|(key, value)| Ok((key.clone(), lower_expr(value)?)))
+                .map(|(key, value)| Ok((escape_template(key), lower_expr(value)?)))
                 .collect::<Result<_, LowerError>>()?,
         )),
         Expr::Template { parts } => {
@@ -259,9 +260,15 @@ fn render_expression(expression: &Expr) -> Result<String, LowerError> {
         Expr::Object { fields } => {
             let values = fields
                 .iter()
-                .map(|(key, value)| Ok(format!("{} = {}", quote(key), render_expression(value)?)))
+                .map(|(key, value)| {
+                    Ok(format!(
+                        "{} = {}",
+                        quote(&escape_template(key)),
+                        render_expression(value)?
+                    ))
+                })
                 .collect::<Result<Vec<_>, LowerError>>()?;
-            Ok(format!("{{ {} }}", values.join(", ")))
+            Ok(render_object(&values))
         }
         Expr::Index { collection, key } => Ok(format!(
             "{}[{}]",
@@ -315,10 +322,58 @@ fn render_list<'a>(items: impl Iterator<Item = &'a Expr>) -> Result<Vec<String>,
     items.map(render_expression).collect()
 }
 
+/// A literal inside an interpolation, in the native syntax. Quoted strings are templates there
+/// too, so the same escaping applies at every depth, object keys included.
 fn render_literal(value: &Value) -> String {
     match value {
         Value::String(value) => quote(&escape_template(value)),
-        _ => serde_json::to_string(value).expect("JSON value serializes"),
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(render_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(fields) => {
+            let values: Vec<_> = fields
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{} = {}",
+                        quote(&escape_template(key)),
+                        render_literal(value)
+                    )
+                })
+                .collect();
+            render_object(&values)
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {
+            serde_json::to_string(value).expect("JSON value serializes")
+        }
+    }
+}
+
+fn render_object(entries: &[String]) -> String {
+    if entries.is_empty() {
+        "{}".to_owned()
+    } else {
+        format!("{{ {} }}", entries.join(", "))
+    }
+}
+
+/// A literal in the JSON syntax, with every string it contains escaped.
+fn escape_literal(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(escape_template(text)),
+        Value::Array(items) => Value::Array(items.iter().map(escape_literal).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (escape_template(key), escape_literal(value)))
+                .collect(),
+        ),
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
     }
 }
 
@@ -622,6 +677,49 @@ mod tests {
             lower_expr(&Expr::literal("literal ${not_a_reference} %{also_literal}")).unwrap(),
             "literal $${not_a_reference} %%{also_literal}"
         );
+    }
+
+    /// `OpenTofu` evaluates every string of a JSON literal as a template, object keys included,
+    /// so `lit ["${1+2}"]` must mean the same as `array [lit "${1+2}"]`.
+    #[test]
+    fn escapes_template_markers_inside_literal_collections() {
+        let literal = Expr::literal(json!([
+            "${1+2}",
+            { "%{ if true }key%{ endif }": "${x}", "plain": [true, null, 1] }
+        ]));
+        assert_eq!(
+            lower_expr(&literal).unwrap(),
+            json!([
+                "$${1+2}",
+                { "%%{ if true }key%%{ endif }": "$${x}", "plain": [true, null, 1] }
+            ])
+        );
+        let wrapped = Expr::Function {
+            name: "tolist".into(),
+            args: vec![literal],
+        };
+        assert_eq!(
+            lower_expr(&wrapped).unwrap(),
+            "${tolist([\"$${1+2}\", { \"%%{ if true }key%%{ endif }\" = \"$${x}\", \"plain\" = [true, null, 1] }])}"
+        );
+    }
+
+    #[test]
+    fn escapes_the_keys_of_expression_objects() {
+        let object = Expr::Object {
+            fields: BTreeMap::from([("${k}".to_owned(), Expr::literal(1))]),
+        };
+        assert_eq!(lower_expr(&object).unwrap(), json!({ "$${k}": 1 }));
+        let wrapped = Expr::Function {
+            name: "keys".into(),
+            args: vec![object],
+        };
+        assert_eq!(lower_expr(&wrapped).unwrap(), "${keys({ \"$${k}\" = 1 })}");
+        let empty = Expr::Function {
+            name: "keys".into(),
+            args: vec![Expr::literal(json!({}))],
+        };
+        assert_eq!(lower_expr(&empty).unwrap(), "${keys({})}");
     }
 
     #[test]

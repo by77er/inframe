@@ -153,6 +153,26 @@ fn digitalocean_fixture_matches_golden_output() {
         .stdout(golden);
 }
 
+/// Template markers inside literal collections, object keys, and interpolated literals are
+/// escaped at every depth; `scripts/check-template-escapes.sh` applies this fixture with
+/// `OpenTofu` and checks the resolved values match `fixtures/tofu-output/template-escapes.json`.
+#[test]
+fn template_escapes_fixture_matches_golden_output() {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let graph = workspace.join("fixtures/graph-ir/template-escapes.json");
+    let golden =
+        fs::read_to_string(workspace.join("fixtures/tofu-json/template-escapes.json")).unwrap();
+
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .args(["render", "--graph"])
+        .arg(graph)
+        .args(["--output", "-"])
+        .assert()
+        .success()
+        .stdout(golden);
+}
+
 #[test]
 fn initializes_a_project_without_overwriting_it() {
     let directory = tempdir().unwrap();

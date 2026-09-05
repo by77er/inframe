@@ -1667,7 +1667,12 @@ It must:
 - reject duplicate resource/data-source addresses;
 - reject invalid graph-local references;
 - correctly distinguish resource vs data-source traversals;
-- preserve literal JSON values where possible;
+- make every literal denote exactly the value the frontend wrote: OpenTofu reads
+  every JSON string in expression position as a template, including the strings
+  inside literal arrays and objects and the property names of objects, and the
+  quoted strings inside an interpolation, so `${` and `%{` are escaped at every
+  depth in both the JSON and the native syntax (`lit ["${1+2}"]` and
+  `array [lit "${1+2}"]` lower to the same value);
 - correctly render nested blocks;
 - correctly render provider meta-arguments;
 - render explicit `depends_on` using OpenTofu's JSON special form;
@@ -2395,7 +2400,12 @@ tofu validate
 
 against the generated configuration.
 
-This is the key semantic integration test for lowering.
+This is the key semantic integration test for lowering. It is complemented by a
+round trip that no static check can replace: `scripts/check-template-escapes.sh`
+applies `fixtures/graph-ir/template-escapes.json` (outputs only, so no provider
+or credentials) and compares the values OpenTofu resolves with the literals the
+graph wrote, exercising `${`/`%{` inside literal collections, object keys,
+interpolated literals, and function arguments.
 
 ---
 

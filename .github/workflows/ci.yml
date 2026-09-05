@@ -114,3 +114,5 @@ jobs:
           tofu_version: 1.12.6
       - run: cargo run -q -p inframe-cli -- init --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json -- -backend=false -input=false
       - run: cargo run -q -p inframe-cli -- validate --stack smoke --graph fixtures/graph-ir/digitalocean-tag.json
+      - name: Literals survive OpenTofu unchanged
+        run: scripts/check-template-escapes.sh

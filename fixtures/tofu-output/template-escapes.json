@@ -1,0 +1,11 @@
+{
+  "conditional": "${yes}",
+  "expression_list": ["${1+2}", "%{ if true }rewritten%{ endif }"],
+  "expression_object": { "${key}": "${value}" },
+  "literal_inside_function": ["${1+2}", "%{ if true }x%{ endif }"],
+  "literal_list": ["${1+2}", "%{ if true }rewritten%{ endif }"],
+  "literal_object": { "${1+2}": "${3+4}", "%{ if true }key%{ endif }": ["${5}"] },
+  "object_keys_inside_function": ["${key}"],
+  "scalar": "${1+2}",
+  "template": "${not} %{ x }"
+}
