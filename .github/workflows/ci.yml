@@ -80,6 +80,9 @@ jobs:
         run: |
           lake build
           lake -q exe inframe-test
+      - name: Programs the core must reject
+        working-directory: lean
+        run: Negative/check.sh
       - name: Generate pinned DigitalOcean bindings
         run: |
           cargo run -q -p inframe-cli -- provider generate --frontend lean \

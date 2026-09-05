@@ -333,7 +333,7 @@ def Infra.capture (program : Infra α) : Infra (α × List ResourceSpec) :=
 /-- A symbolic attribute of an already-added resource. The caller chooses the result type, so
 this is an escape hatch like `unsafeCall`; generated handles are the typed path. -/
 def ResourceSpec.unsafeAttr (resource : ResourceSpec) (path : List String) : Input α :=
-  .symbolic (.resourceAttribute resource.address path)
+  unsafeInput (.resourceAttribute resource.address path)
 
 /-- Run a program against the empty graph and keep only the graph. Pure. -/
 def buildGraph (program : Infra α) : Graph :=

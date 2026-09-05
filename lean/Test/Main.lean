@@ -83,7 +83,7 @@ theorem marshalling_decodes_known_values :
     (Marshal.required (f := Resolved) (o := Option) (value% { present: "x" }) "absent"
       : Except String (Resolved String)) = .error "attribute `absent` is null or missing" ∧
     (Marshal.optional (f := Input) (o := Resolved) (value% { present: "x" }) "absent"
-      : Except String (Input String)) = .ok (.known .null) := by
+      : Except String (Input String)) = .ok (unsafeInput (.literal .null)) := by
   exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- `value%` builds known values for `dynamic` attributes, with `$` splices. -/
@@ -94,14 +94,14 @@ theorem value_literals (name : String) :
     (value% { name: $name }) = .object [("name", .string name)] ∧
     (((resourceAttr (resourceHandle (Identifier.mk "digitalocean_tag") (Identifier.mk "app") : Resource Unit)
         ["meta"] : Input Value)["team"] : Input Value)
-      == .symbolic (.index (.resourceAttribute (.res "digitalocean_tag" "app") ["meta"])
+      == unsafeInput (.index (.resourceAttribute (.res "digitalocean_tag" "app") ["meta"])
           (.literal (.string "team")))) = true := by
   exact ⟨rfl, rfl, by decide⟩
 
 /-- `tf!` folds known text and splices symbolic parts into one flat template. -/
-theorem interpolation_is_a_flat_template (x : Input String) (hx : x = .symbolic (.secretEnvironment "X")) :
-    tf!"a-{x}-b" = .symbolic (.template [.text "a-", .interpolation (.secretEnvironment "X"), .text "-b"]) ∧
-    tf!"a-{"b"}" = (.known (.string "a-b") : Input String) ∧
+theorem interpolation_is_a_flat_template (x : Input String) (hx : x = secretEnv "X") :
+    inputNode tf!"a-{x}-b" = .template [.text "a-", .interpolation (.secretEnvironment "X"), .text "-b"] ∧
+    tf!"a-{"b"}" = (lit "a-b" : Input String) ∧
     ((2 : Input Number) == lit (2 : Number)) = true ∧
     (((array ["a", "b"] : Input (List String))[0] : Input String)
       == index (array ["a", "b"]) 0) = true := by

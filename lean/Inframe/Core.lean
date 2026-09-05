@@ -6,8 +6,11 @@ import Inframe.Value
 
 `ExprNode` is the language-native expression tree. Graph IR wire tags such as `resource_attr`
 are assigned only by the encoder in `Inframe.Json`. The typed wrapper `Input α` carries a
-phantom result type; the only ways to build an input whose phantom type is chosen freely are
-the generated provider adapters and the explicitly unsafe `unsafeCall`.
+phantom result type behind a private constructor: outside this module the only ways to build
+an input whose phantom type is chosen freely are the generated provider adapters (through
+`resourceAttr`/`dataSourceAttr`) and the functions named `unsafe…` (`unsafeInput`,
+`unsafeCall`, `unsafeTraverse`), so a type-level claim about an input can be traced to one of
+those call sites.
 -/
 
 namespace Inframe
@@ -124,12 +127,16 @@ def literal? : ExprNode → Option Value
 
 end ExprNode
 
-/-- A provider input: either a value known while the graph is built, or a symbolic
-expression that OpenTofu resolves. Handle attributes are symbolic inputs; literals coerce
-(`region := "nyc3"`, `nodeCount := 1`), so `lit` is only needed in polymorphic positions. -/
-inductive Input (α : Type) where
-  | known (value : Value)
-  | symbolic (node : ExprNode)
+/-- A provider input: a value known while the graph is built (`lit`, or a coerced literal
+such as `region := "nyc3"` and `nodeCount := 1`) or a symbolic expression that OpenTofu
+resolves (handle attributes, `array`, `tf!"…"`, the `Input.*` functions). The phantom `α` is
+the type OpenTofu will see. The constructor is private: `Input.known?` tells the two cases
+apart, `inputNode` gives the expression, and `unsafeInput` is the one explicit way to wrap an
+arbitrary expression at an arbitrary type. -/
+structure Input (α : Type) where
+  private mk ::
+  /-- The expression this input denotes. -/
+  node : ExprNode
 
 /-- A type-erased argument accepted only by the explicitly unsafe function API. -/
 structure UnsafeArgument where
@@ -170,16 +177,22 @@ instance : Dependable (Resource r) := ⟨Resource.address⟩
 instance : Dependable (DataSource r) := ⟨DataSource.address⟩
 instance : Managed (Resource r) := ⟨Resource.address⟩
 
+/-- Wrap an expression as an input of any type. The caller chooses the type, so this is an
+escape hatch like `unsafeCall`; generated handles and the typed combinators are the checked
+path. -/
+def unsafeInput (node : ExprNode) : Input α :=
+  ⟨node⟩
+
 /-- Embed a value that is known while the graph is constructed. -/
 def lit [ToValue α] (value : α) : Input α :=
-  .known (toValue value)
+  ⟨.literal (toValue value)⟩
 
 /-- Known values coerce to inputs, so provider arguments can be written as plain literals. -/
 instance [ToValue α] : Coe α (Input α) := ⟨lit⟩
 
 /-- Any typed input is acceptable where a provider takes a `dynamic` value. -/
 instance : CoeOut (Input α) (Input Value) :=
-  ⟨fun | .known value => .known value | .symbolic node => .symbolic node⟩
+  ⟨fun input => ⟨input.node⟩⟩
 instance : OfNat (Input Number) n := ⟨lit (OfNat.ofNat n)⟩
 instance : OfScientific (Input Number) := ⟨fun m e d => lit (OfScientific.ofScientific m e d)⟩
 
@@ -188,9 +201,9 @@ instance : OfNat (Option (Input Number)) n := ⟨some (lit (OfNat.ofNat n))⟩
 instance : OfScientific (Option (Input Number)) :=
   ⟨fun m e d => some (lit (OfScientific.ofScientific m e d))⟩
 
-def inputNode : Input α → ExprNode
-  | .known value => .literal value
-  | .symbolic node => node
+/-- The expression an input denotes: a known value as a literal, otherwise the symbolic node. -/
+def inputNode (input : Input α) : ExprNode :=
+  input.node
 
 /-- Either an input or a plain value that can become one. Combinators whose parameter would
 otherwise be a bare `Input ?α` (where coercions cannot fire) take this instead, so
@@ -210,33 +223,32 @@ instance : Marshal Input Resolved where
   required object name :=
     match object.field? name with
     | some .null | none => throw s!"attribute `{name}` is null or missing"
-    | some value => pure (.known value)
+    | some value => pure ⟨.literal value⟩
   optional object name :=
     match object.field? name with
-    | some .null | none => pure (.known .null)
-    | some value => pure (.known value)
+    | some .null | none => pure ⟨.literal .null⟩
+    | some value => pure ⟨.literal value⟩
 
 /-- Inputs are compared by the expression they denote. -/
 instance : BEq (Input α) := ⟨fun left right => inputNode left == inputNode right⟩
 
 /-- The literal value, if the input is known now. -/
-def Input.known? : Input α → Option Value
-  | .known value => some value
-  | .symbolic _ => none
+def Input.known? (input : Input α) : Option Value :=
+  input.node.literal?
 
 /-- A collection whose length is known now but whose elements may be symbolic. -/
 def array (items : List (Input α)) : Input (List α) :=
-  .symbolic (.array (items.map inputNode))
+  ⟨.array (items.map inputNode)⟩
 
 /-- An object whose keys are known now but whose values may be symbolic. -/
 def object (fields : List (String × Input α)) : Input (Map α) :=
-  .symbolic (.object (fields.map fun (key, value) => (key, inputNode value)))
+  ⟨.object (fields.map fun (key, value) => (key, inputNode value))⟩
 
 def index (collection : Input (List α)) (key : Input Number) : Input α :=
-  .symbolic (.index (inputNode collection) (inputNode key))
+  ⟨.index (inputNode collection) (inputNode key)⟩
 
 def lookup (collection : Input (Map α)) (key : Input String) : Input α :=
-  .symbolic (.index (inputNode collection) (inputNode key))
+  ⟨.index (inputNode collection) (inputNode key)⟩
 
 /-- `xs[i]` on a symbolic list and `m[k]` on a symbolic map, with a known or symbolic index. -/
 instance : GetElem (Input (List α)) (Input Number) (Input α) (fun _ _ => True) :=
@@ -250,13 +262,13 @@ instance : GetElem (Input (Map α)) String (Input α) (fun _ _ => True) :=
 
 /-- Traversing a `dynamic` value yields another `dynamic` value. -/
 instance : GetElem (Input Value) String (Input Value) (fun _ _ => True) :=
-  ⟨fun collection key _ => .symbolic (.index (inputNode collection) (.literal (.string key)))⟩
+  ⟨fun collection key _ => ⟨.index (inputNode collection) (.literal (.string key))⟩⟩
 instance : GetElem (Input Value) Nat (Input Value) (fun _ _ => True) :=
   ⟨fun collection key _ =>
-    .symbolic (.index (inputNode collection) (.literal (.number (Lean.JsonNumber.fromNat key))))⟩
+    ⟨.index (inputNode collection) (.literal (.number (Lean.JsonNumber.fromNat key)))⟩⟩
 
 def ifThenElse (condition : Input Bool) (whenTrue whenFalse : Input α) : Input α :=
-  .symbolic (.conditional (inputNode condition) (inputNode whenTrue) (inputNode whenFalse))
+  ⟨.conditional (inputNode condition) (inputNode whenTrue) (inputNode whenFalse)⟩
 
 def unsafeArgument [IntoInput v α] (value : v) : UnsafeArgument :=
   ⟨inputNode (toInput value : Input α)⟩
@@ -266,7 +278,7 @@ result type, so prefer the typed `Input.*` functions when one exists. The functi
 validated at compile time. -/
 def unsafeCall (name : String) (args : List UnsafeArgument)
     (_valid : validIdentifier name = true := by valid_identifier) : Input α :=
-  .symbolic (.function name (args.map UnsafeArgument.node))
+  ⟨.function name (args.map UnsafeArgument.node)⟩
 
 def text (value : String) : TemplatePart :=
   .text value
@@ -275,14 +287,14 @@ def interpolate [IntoInput v α] (value : v) : TemplatePart :=
   .interpolation (inputNode (toInput value : Input α))
 
 def template (parts : List TemplatePart) : Input String :=
-  .symbolic (.template parts)
+  ⟨.template parts⟩
 
 /-- Read a secret from the process environment at plan/apply time. The CLI passes it to
 OpenTofu as a sensitive variable and never writes its value. The variable name is validated
 at compile time. -/
 def secretEnv (name : String) (_valid : validEnvironmentName name = true := by decide) :
     Input String :=
-  .symbolic (.secretEnvironment name)
+  ⟨.secretEnvironment name⟩
 
 namespace Input
 
@@ -293,7 +305,7 @@ value differently on two resources (a droplet's `id` is a string, an attachment'
 through `unsafeCall`, which keeps the loss of typing visible. -/
 
 private def call (name : String) (args : List ExprNode) : Input α :=
-  .symbolic (.function name args)
+  ⟨.function name args⟩
 
 def tonumber (value : Input String) : Input Number :=
   call "tonumber" [inputNode value]
@@ -338,18 +350,18 @@ def strcontains (value needle : Input String) : Input Bool :=
   call "strcontains" [inputNode value, inputNode needle]
 
 /-- The template parts of a string input: a known string is text, a template is spliced. -/
-def parts : Input String → List TemplatePart
-  | .known (.string value) => [.text value]
-  | .known value => [.interpolation (.literal value)]
-  | .symbolic (.template parts) => parts
-  | .symbolic node => [.interpolation node]
+def parts (input : Input String) : List TemplatePart :=
+  match input.node with
+  | .literal (.string value) => [.text value]
+  | .template parts => parts
+  | node => [.interpolation node]
 
 /-- Concatenate string inputs. Two known strings stay a known string; otherwise the result is
 one flat template. -/
 def append (left right : Input String) : Input String :=
-  match left, right with
-  | .known (.string x), .known (.string y) => .known (.string (x ++ y))
-  | _, _ => .symbolic (.template (left.parts ++ right.parts))
+  match left.node, right.node with
+  | .literal (.string x), .literal (.string y) => ⟨.literal (.string (x ++ y))⟩
+  | _, _ => ⟨.template (left.parts ++ right.parts)⟩
 
 instance : HAppend (Input String) (Input String) (Input String) := ⟨append⟩
 instance : HAppend (Input String) String (Input String) := ⟨fun left right => append left (lit right)⟩
@@ -384,19 +396,22 @@ def dataSourceHandle (dataSourceType name : Identifier) : DataSource r := ⟨dat
 def providerHandle (address : String) : Provider p := ⟨address⟩
 def providerAddress (provider : Provider p) : String := provider.address
 
+/-- A symbolic attribute of a resource. Generated handles call this with the attribute's
+schema type; the result type is otherwise the caller's, so outside generated code prefer the
+handle's fields. -/
 def resourceAttr (handle : Resource r) (path : List String) : Input α :=
-  .symbolic (.resourceAttribute handle.address path)
+  ⟨.resourceAttribute handle.address path⟩
 
 def dataSourceAttr (handle : DataSource r) (path : List String) : Input α :=
-  .symbolic (.dataSourceAttribute handle.address path)
+  ⟨.dataSourceAttribute handle.address path⟩
 
 /-- Traverse further into a symbolic value, for example an element of a nested block. The
 result type is chosen by the caller, so this is an escape hatch like `unsafeCall`. -/
 def unsafeTraverse (value : Input α) (step : String)
     (_valid : validIdentifier step = true := by valid_identifier) : Input β :=
   match inputNode value with
-  | .resourceAttribute address path => .symbolic (.resourceAttribute address (path ++ [step]))
-  | .dataSourceAttribute address path => .symbolic (.dataSourceAttribute address (path ++ [step]))
-  | node => .symbolic (.index node (.literal (.string step)))
+  | .resourceAttribute address path => ⟨.resourceAttribute address (path ++ [step])⟩
+  | .dataSourceAttribute address path => ⟨.dataSourceAttribute address (path ++ [step])⟩
+  | node => ⟨.index node (.literal (.string step))⟩
 
 end Inframe

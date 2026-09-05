@@ -1197,10 +1197,16 @@ Design decisions specific to Lean:
   returns the resources it added, so a stack can define scope combinators such as
   "assign everything created in this block to a project" without leaving `Infra`.
 - **One value type.** Where PureScript distinguishes `Expr a` (symbolic) from
-  `Input a` (known or symbolic), Lean has only `Input α` with constructors `known`
-  and `symbolic`; handle attributes are symbolic inputs. Known values coerce
-  (`Coe α (Input α)` for every `ToValue α`, plus `OfNat`/`OfScientific` for
-  numbers), so `region := "nyc3"` and `nodeCount := 1` need no `lit`.
+  `Input a` (known or symbolic), Lean has only `Input α`, a structure wrapping
+  an `ExprNode` behind a private constructor; `Input.known?` tells a known value
+  from a symbolic one and `inputNode` gives the expression. Handle attributes are
+  symbolic inputs. Known values coerce (`Coe α (Input α)` for every `ToValue α`,
+  plus `OfNat`/`OfScientific` for numbers), so `region := "nyc3"` and
+  `nodeCount := 1` need no `lit`. Because the constructor is private, the phantom
+  type cannot be chosen apart from the payload (`(⟨.literal (.bool true)⟩ : Input
+  String)` does not compile outside the core); the only ways to pick it freely are
+  the generated adapters and the functions named `unsafe…` (`unsafeInput`,
+  `unsafeCall`, `unsafeTraverse`), which `lean/Negative/check.sh` keeps honest.
 - **A small DSL over inputs.** Arguments are record literals with defaults
   (`{ image := "…", region := "nyc3", nodePool := [{ name := "workers", size := "…" }] }`),
   OpenTofu string and conversion functions are
@@ -1393,7 +1399,13 @@ unsafeCall :: String -> Array UnsafeArgument -> Input a
 `unsafeCall` necessarily lets its caller choose the result type. It must not be
 the ordinary path; common functions should gain typed combinators instead.
 There is no public `resourceAttr`, `dataSourceAttr`, or unmarked polymorphic
-`call`.
+`call` in PureScript, and `Input`'s constructors are not exported.
+
+Lean keeps the same rule with one difference: generated modules are ordinary
+Lean files, so `resourceAttr`/`dataSourceAttr` are public for them to call, and
+the wrapper for an arbitrary expression is `unsafeInput`. Everything that chooses
+an input's type without a schema behind it is therefore greppable by the prefix
+`unsafe`.
 
 ---
 
