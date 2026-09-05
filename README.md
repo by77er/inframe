@@ -128,8 +128,9 @@ A resource's arguments are one record: required attributes are plain fields,
 optional ones default to unset, nested blocks are records held as the schema
 allows (a block allowed exactly once is a plain field, at most once an `Option`,
 otherwise a `List`, with any bound on the list's length a proof obligation that
-literal arguments discharge by `decide`), and known values are plain literals
-(they coerce to provider inputs). Handle attributes
+is discharged automatically whenever the number of blocks is literal, whatever
+their values refer to), and known values are plain literals (they coerce to
+provider inputs). Handle attributes
 are symbolic inputs, and computed strings are shaped with OpenTofu's own
 functions as dot-notation (`droplet.id.tonumber`, `name.replace " " "-"`) or
 interpolated with `tf!"web-{droplet.id}.internal"`. Every resource's

@@ -298,10 +298,11 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
     output
 }
 
-/// The extra parameter of a builder whose `Args` carry a `blocksInRange` obligation: a literal
-/// record discharges it by `decide`, a record built from run-time lists needs the caller's
-/// proof. `forwarded` names the proof so the convenience builder can pass it on with
-/// `discharge`; `consumed` is for the builder that only demands it.
+/// The extra parameter of a builder whose `Args` carry a `blocksInRange` obligation: a record
+/// whose block lists have literal length discharges it automatically (`blocks_in_range`), a
+/// record built from run-time lists needs the caller's proof. `forwarded` names the proof so
+/// the convenience builder can pass it on with `discharge`; `consumed` is for the builder that
+/// only demands it.
 struct BlockObligation {
     forwarded: &'static str,
     consumed: &'static str,
@@ -545,7 +546,8 @@ fn render_args_structure(
         let _ = write!(
             output,
             "/-- Whether the nested blocks hold as many entries as the provider schema allows: {}. \
-             Builders taking this record require it; a literal record discharges it by `decide`. -/\n\
+             Builders taking this record require it; a record whose block lists have literal \
+             length discharges it automatically. -/\n\
              def {name}.blocksInRange (a : {name}) : Bool :=\n  {}\n\n",
             descriptions.join(", "),
             checks.join(" && ")

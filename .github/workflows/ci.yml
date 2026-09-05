@@ -92,6 +92,7 @@ jobs:
       - name: Lean to Graph IR to Rust
         working-directory: lean/integration-digitalocean
         run: |
+          lake build
           lake -q exe infra | cargo run -q -p inframe-cli -- graph validate -
           lake -q exe platform | cargo run -q -p inframe-cli -- graph validate -
       - name: Programs the generated bindings must reject

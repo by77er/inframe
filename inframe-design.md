@@ -1241,9 +1241,12 @@ Design decisions specific to Lean:
   `Option` (`versioning := some { enabled := true }`), and any other block is a
   `List`. A list with a lower or upper bound (`rule` on a database firewall needs
   at least one entry) gives the record a generated `Args.blocksInRange : Bool`,
-  and `create` takes `(blocks : a.blocksInRange = true := by blocks_in_range)`:
-  a literal record discharges it by `decide`, a record whose lists come from
-  run-time values makes the caller prove the bound, which is the point. What the
+  and `create` takes `(blocks : a.blocksInRange = true := by blocks_in_range)`.
+  The tactic tries `decide`, then `rfl`: the first settles closed records, the
+  second records whose blocks mention other resources' handles (free variables
+  `decide` refuses, but only the list lengths matter to the reduction). A record
+  whose lists come from run-time values makes the caller prove the bound, which
+  is the point. What the
   types do not carry is the value-level part of the schema (enumerations,
   formats, cross-attribute rules); that is the provider's `validate`.
 - **Higher-kinded attribute structures.** Each resource, data source, and nested

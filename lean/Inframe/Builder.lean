@@ -104,11 +104,15 @@ end NodeOptions
 export NodeOptions (withProvider dependsOn createBeforeDestroy preventDestroy ignoreChanges replaceTriggeredBy)
 
 /-- Discharges a generated `Args.blocksInRange` obligation: the provider schema bounds how
-many entries some nested block lists may have, and a literal argument record settles that by
-`decide`. When the lists come from run-time values the caller proves the bound instead. -/
+many entries some nested block lists may have, and any record whose block lists have literal
+length settles that automatically. `decide` handles closed records; `rfl` handles records that
+mention other resources' handles (free variables `decide` refuses), since only the lengths
+matter to the reduction. When the lists come from run-time values the caller proves the bound
+instead. -/
 macro "blocks_in_range" : tactic =>
   `(tactic| first
     | decide
+    | rfl
     | fail "a nested block list has fewer or more entries than the provider schema allows, or its length is not a literal; see the resource's `Args.blocksInRange` and pass `(blocks := by …)` in the latter case")
 
 structure ProviderRequirement where
