@@ -865,7 +865,9 @@ the target language:
 - **Declaration order matters.** Nested shapes are emitted children-first because a
   parent's record and decoder refer to the child's.
 - **Compile-time validated names.** `create`, `createWith`, `read`, `readWith`, and
-  `configureAs` take a `String` plus an auto-param proof `validIdentifier name = true := by decide`;
+  `configureAs` take a `String` plus an auto-param proof
+  `validIdentifier name = true := by valid_identifier`, a tactic that reuses the proof when
+  the name is an `Identifier` and otherwise runs `decide` on the literal;
   the generated code itself uses `Identifier.mk "digitalocean_tag"`, so generated
   resource types are also proved valid when the package compiles. Identifiers compose:
   `a.join b` is `a-b` with a proof derived from `a`'s and `b`'s, so names built from

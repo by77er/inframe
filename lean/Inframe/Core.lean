@@ -265,7 +265,7 @@ def unsafeArgument [IntoInput v α] (value : v) : UnsafeArgument :=
 result type, so prefer the typed `Input.*` functions when one exists. The function name is
 validated at compile time. -/
 def unsafeCall (name : String) (args : List UnsafeArgument)
-    (_valid : validIdentifier name = true := by decide) : Input α :=
+    (_valid : validIdentifier name = true := by valid_identifier) : Input α :=
   .symbolic (.function name (args.map UnsafeArgument.node))
 
 def text (value : String) : TemplatePart :=
@@ -393,7 +393,7 @@ def dataSourceAttr (handle : DataSource r) (path : List String) : Input α :=
 /-- Traverse further into a symbolic value, for example an element of a nested block. The
 result type is chosen by the caller, so this is an escape hatch like `unsafeCall`. -/
 def unsafeTraverse (value : Input α) (step : String)
-    (_valid : validIdentifier step = true := by decide) : Input β :=
+    (_valid : validIdentifier step = true := by valid_identifier) : Input β :=
   match inputNode value with
   | .resourceAttribute address path => .symbolic (.resourceAttribute address (path ++ [step]))
   | .dataSourceAttribute address path => .symbolic (.dataSourceAttribute address (path ++ [step]))

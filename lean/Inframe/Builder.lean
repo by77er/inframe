@@ -308,12 +308,12 @@ private def outputWithSensitivity (sensitive : Bool) (name : String) (value : In
 /-- Declare a root output from an input or a plain value. The name is validated at compile
 time. -/
 def output [IntoInput v α] (name : String) (value : v)
-    (_valid : validIdentifier name = true := by decide) : Infra Unit :=
+    (_valid : validIdentifier name = true := by valid_identifier) : Infra Unit :=
   outputWithSensitivity false name (toInput value : Input α)
 
 /-- Declare a root output that OpenTofu must redact. -/
 def sensitiveOutput [IntoInput v α] (name : String) (value : v)
-    (_valid : validIdentifier name = true := by decide) : Infra Unit :=
+    (_valid : validIdentifier name = true := by valid_identifier) : Infra Unit :=
   outputWithSensitivity true name (toInput value : Input α)
 
 /-- Declare that the node now at `destination` previously lived at `origin`, lowering to an

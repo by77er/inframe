@@ -403,7 +403,7 @@ type = "local"
         "requireProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\""
     ));
     assert!(resource.contains(
-        "def create (name : String) (a : Args) (valid : validIdentifier name = true := by decide)"
+        "def create (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier)"
     ));
     let lakefile = fs::read_to_string(package.join("lakefile.toml")).unwrap();
     assert!(lakefile.contains("[[require]]\nname = \"inframe\"\npath = \"../../../core\""));

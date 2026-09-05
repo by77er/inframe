@@ -86,6 +86,12 @@ def join (a b : Identifier) : Identifier :=
 
 end Identifier
 
+/-- Discharges `validIdentifier s = true`: when `s` is the `raw` of an `Identifier` its proof
+is reused, otherwise `s` must be a literal and `decide` checks it. Every name parameter with
+this auto-param therefore accepts both a string literal and an `Identifier`. -/
+macro "valid_identifier" : tactic =>
+  `(tactic| first | exact Inframe.Identifier.valid _ | decide)
+
 /-- The address of a graph node. Addresses are structural so that policies and proofs can
 match on them without parsing strings. -/
 inductive Address where
@@ -111,14 +117,14 @@ def isDataSource (address : Address) : Bool :=
 
 /-- A managed-resource address whose components are checked at compile time. -/
 def res (resourceType name : String)
-    (_validType : validIdentifier resourceType = true := by decide)
-    (_validName : validIdentifier name = true := by decide) : Address :=
+    (_validType : validIdentifier resourceType = true := by valid_identifier)
+    (_validName : validIdentifier name = true := by valid_identifier) : Address :=
   .resource resourceType name
 
 /-- A data-source address whose components are checked at compile time. -/
 def data (dataSourceType name : String)
-    (_validType : validIdentifier dataSourceType = true := by decide)
-    (_validName : validIdentifier name = true := by decide) : Address :=
+    (_validType : validIdentifier dataSourceType = true := by valid_identifier)
+    (_validName : validIdentifier name = true := by valid_identifier) : Address :=
   .dataSource dataSourceType name
 
 end Address

@@ -282,7 +282,7 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
          def configure (a : Args) : Infra (Inframe.Provider {marker}) :=\n  \
            addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.toInputObject\n\n\
          /-- Configure an aliased `{local_name}` provider. The alias is validated at compile time. -/\n\
-         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by decide) :\n    \
+         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by valid_identifier) :\n    \
            Infra (Inframe.Provider {marker}) :=\n  \
            addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.toInputObject\n\n\
          end {module_root}.Provider\n",
@@ -411,7 +411,7 @@ fn render_item(
         output,
         "/-- Add `{}.<name>` to the graph with explicit options. The logical name is validated at\ncompile time. -/\n\
          def {operation_with} (name : String) (a : Args) (options : {options_type} {module_root}.Provider.{marker})\n    \
-           (valid : validIdentifier name = true := by decide) : Infra {handle_name} := do\n  \
+           (valid : validIdentifier name = true := by valid_identifier) : Infra {handle_name} := do\n  \
            requireProvider (Identifier.mk \"{local_name}\") \"{}\" \"= {}\"\n  \
            let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.toInputObject\n  \
            pure\n    {{ {handle_key} := handle",
@@ -432,7 +432,7 @@ fn render_item(
         output,
         " }}\n\n\
          /-- Add `{}.<name>` to the graph with default options. -/\n\
-         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by decide) :\n    \
+         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier) :\n    \
            Infra {handle_name} :=\n  \
            {operation_with} name a {default_options} valid\n\n\
          end {module}\n",
@@ -1368,7 +1368,7 @@ mod tests {
         ));
         assert!(source.contains("def NodePoolArgs.toExprNode (a : NodePoolArgs) : ExprNode :="));
         // Handle construction and creation.
-        assert!(source.contains("def create (name : String) (a : Args) (valid : validIdentifier name = true := by decide)"));
+        assert!(source.contains("def create (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier)"));
         assert!(source.contains(
             "def createWith (name : String) (a : Args) (options : ResourceOptions DigitalOcean.Provider.DigitalOceanProvider)"
         ));

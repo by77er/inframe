@@ -134,6 +134,9 @@ def expect (condition : Bool) (message : String) : IO Unit :=
 theorem identifier_join :
     ((Identifier.mk "droplet").join (Identifier.mk "nyc1")).raw = "droplet-nyc1" := by decide
 
+/-- A name carried by an `Identifier` needs no `decide`: the auto-param reuses its proof. -/
+example (name : Identifier) : Address := .res "digitalocean_tag" name
+
 def main : IO Unit := do
   let rendered := (encodeGraph graph).compress
   for needle in ["digitalocean_tag.app", "resource_attr", "required_providers",

@@ -37,7 +37,7 @@ def createDatabases (env : Environment) (network : Vpc.Vpc) :
     List Identifier → Infra (List DatabaseCluster.DatabaseCluster)
   | [] => pure []
   | db :: rest => do
-    let database ← DatabaseCluster.create db.raw
+    let database ← DatabaseCluster.create db
       { engine := "pg"
         name := "platform-" ++ db.raw
         nodeCount := 1
@@ -46,7 +46,6 @@ def createDatabases (env : Environment) (network : Vpc.Vpc) :
         privateNetworkUuid := network.id
         storageAutoscale := [{ enabled := true, thresholdPercent := 80, incrementGib := 10 }]
         version := "15" }
-      db.valid
     let databases ← createDatabases env network rest
     pure (database :: databases)
 
