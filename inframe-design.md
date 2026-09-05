@@ -867,7 +867,10 @@ the target language:
 - **Compile-time validated names.** `create`, `createWith`, `read`, `readWith`, and
   `configureAs` take a `String` plus an auto-param proof `validIdentifier name = true := by decide`;
   the generated code itself uses `Identifier.mk "digitalocean_tag"`, so generated
-  resource types are also proved valid when the package compiles.
+  resource types are also proved valid when the package compiles. Identifiers compose:
+  `a.join b` is `a-b` with a proof derived from `a`'s and `b`'s, so names built from
+  other names (a peering between two sites, a project assignment per resource) need no
+  `decide` where they are formed.
 - **Computed-only nested objects** get the same `<Shape>Attributes f o` structure as
   configurable ones (just no `<Shape>Args`), so handle fields read
   `Input (List (KubeConfigAttributes Input Resolved))` instead of `Input Value`, and the

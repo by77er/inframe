@@ -58,6 +58,32 @@ instance : ToString Identifier := ⟨Identifier.raw⟩
 instance : Repr Identifier := ⟨fun i _ => repr i.raw⟩
 instance : Coe Identifier String := ⟨Identifier.raw⟩
 
+theorem isIdentifierChar_of_start {c : Char} (h : isIdentifierStart c = true) :
+    isIdentifierChar c = true := by
+  simp [isIdentifierStart, isIdentifierChar, Char.isAlphanum] at *
+  rcases h with h | h <;> simp [h]
+
+/-- Identifiers compose: `a-b` is an identifier whenever `a` and `b` are. -/
+theorem validIdentifier_join (a b : String) (ha : validIdentifier a = true)
+    (hb : validIdentifier b = true) : validIdentifier (a ++ "-" ++ b) = true := by
+  unfold validIdentifier at *
+  have expand : (a ++ "-" ++ b).toList = a.toList ++ '-' :: b.toList := by simp
+  rw [expand]
+  cases ha' : a.toList with
+  | nil => simp [ha'] at ha
+  | cons c rest =>
+    cases hb' : b.toList with
+    | nil => simp [hb'] at hb
+    | cons d rest' =>
+      simp only [ha'] at ha
+      simp only [hb'] at hb
+      simp only [List.cons_append, List.all_append, List.all_cons, Bool.and_eq_true] at ha hb ⊢
+      exact ⟨ha.1, ha.2, by decide, isIdentifierChar_of_start hb.1, hb.2⟩
+
+/-- `a-b`, valid because `a` and `b` are: names derived from other names need no `decide`. -/
+def join (a b : Identifier) : Identifier :=
+  ⟨a.raw ++ "-" ++ b.raw, validIdentifier_join a.raw b.raw a.valid b.valid⟩
+
 end Identifier
 
 /-- The address of a graph node. Addresses are structural so that policies and proofs can

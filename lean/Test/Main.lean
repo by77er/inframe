@@ -130,6 +130,10 @@ def expect (condition : Bool) (message : String) : IO Unit :=
   unless condition do
     throw (IO.userError s!"assertion failed: {message}")
 
+/-- Names derived from other names carry their validity proof. -/
+theorem identifier_join :
+    ((Identifier.mk "droplet").join (Identifier.mk "nyc1")).raw = "droplet-nyc1" := by decide
+
 def main : IO Unit := do
   let rendered := (encodeGraph graph).compress
   for needle in ["digitalocean_tag.app", "resource_attr", "required_providers",
