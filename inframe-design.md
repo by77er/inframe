@@ -1199,6 +1199,26 @@ Design decisions specific to Lean:
   string syntax (any `Interpolated` value in braces; all-known text folds to a
   literal). Generated handles carry `Dependable`/`Managed` instances so
   `dependsOn network` and `replaceTriggeredBy network` take the handle itself.
+- **Higher-kinded attribute structures.** Each resource, data source, and nested
+  block shape is emitted once as `structure Attributes (f o : Type → Type)`: required
+  attributes are `f T`, everything else `f (o T)`, because OpenTofu leaves unset
+  optional attributes and blocks and unknown computed attributes as `null`.
+  `Attributes Input Resolved` is the symbolic handle (the generated handle `extends`
+  it and adds the `resource` field, so `network.id : Input String`),
+  `Attributes Resolved Option` (`Resolved α := α`) is resolved state
+  (`ipv4Address : Option String`, `name : String`), and `Attributes Option Resolved`
+  is a fully optional view. Each structure gets a decoder `ofValue [Marshal f o]`
+  written once against the `Marshal` class (`required`/`optional` field access),
+  a `FromValue` instance, and a `ToValue` instance at resolved state, so decoded
+  state round-trips and a decoded field coerces straight back into an input.
+  `Marshal Input Resolved` decodes an object into a record of literal inputs, with
+  absent attributes as OpenTofu `null`.
+- **Marshalling state.** `ShowDocument.parse` reads `tofu show -json`
+  (`inframe show`) and `decode? address` yields a `<Resource>.State`;
+  `OutputsDocument.parse` reads `tofu output -json`, and `value?` refuses outputs
+  flagged sensitive unless `sensitiveValue?` is used deliberately, since anything
+  marshalled into a graph is written to Graph IR and the lowered configuration.
+  The graph stays a pure function: `main` decodes the blob and passes it in.
 - **Dynamic values.** Attributes typed `dynamic` (or as tuples) are `Input Value`.
   Known ones are written with JSON-literal syntax, `value% { team: "core", tags: ["a"] }`
   (with `$term` splices), any typed input upcasts to `Input Value`, and indexing a

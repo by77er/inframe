@@ -312,15 +312,16 @@ private def outputWithSensitivity (sensitive : Bool) (name : String) (value : In
   Infra.modify fun graph =>
     { graph with outputs := Infra.replaceOrAppend name ⟨inputNode value, sensitive⟩ graph.outputs }
 
-/-- Declare a root output. The name is validated at compile time. -/
-def output (name : String) (value : Input α)
+/-- Declare a root output from an input or a plain value. The name is validated at compile
+time. -/
+def output [IntoInput v α] (name : String) (value : v)
     (_valid : validIdentifier name = true := by decide) : Infra Unit :=
-  outputWithSensitivity false name value
+  outputWithSensitivity false name (toInput value : Input α)
 
 /-- Declare a root output that OpenTofu must redact. -/
-def sensitiveOutput (name : String) (value : Input α)
+def sensitiveOutput [IntoInput v α] (name : String) (value : v)
     (_valid : validIdentifier name = true := by decide) : Infra Unit :=
-  outputWithSensitivity true name value
+  outputWithSensitivity true name (toInput value : Input α)
 
 /-- Declare that the node now at `destination` previously lived at `origin`, lowering to an
 OpenTofu `moved` block so the refactor does not replace the object. -/
@@ -391,13 +392,13 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
     (graph : Graph) :
     ((requireProvider localName source version).run graph).2.resources = graph.resources := rfl
 
-@[simp] theorem run_output (name : String) (value : Input α)
+@[simp] theorem run_output [IntoInput v α] (name : String) (value : v)
     (valid : validIdentifier name = true) (graph : Graph) :
-    ((output name value valid).run graph).2.resources = graph.resources := rfl
+    ((output (α := α) name value valid).run graph).2.resources = graph.resources := rfl
 
-@[simp] theorem run_sensitiveOutput (name : String) (value : Input α)
+@[simp] theorem run_sensitiveOutput [IntoInput v α] (name : String) (value : v)
     (valid : validIdentifier name = true) (graph : Graph) :
-    ((sensitiveOutput name value valid).run graph).2.resources = graph.resources := rfl
+    ((sensitiveOutput (α := α) name value valid).run graph).2.resources = graph.resources := rfl
 
 @[simp] theorem run_moved [Dependable h] (origin : Address) (destination : h) (graph : Graph) :
     ((moved origin destination).run graph).2.resources = graph.resources := rfl

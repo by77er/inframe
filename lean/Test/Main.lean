@@ -71,6 +71,21 @@ theorem typed_functions_lower_to_calls :
       == .function "join" [.literal (.string ","), .literal (.array [.string "a", .string "b"])]) = true := by
   decide
 
+/-- Resolved values decode through `FromValue`; `Marshal Option` tolerates nulls where
+`Marshal Resolved` refuses them. -/
+theorem marshalling_decodes_known_values :
+    (fromValue (value% ["a", "b"]) : Except String (List String)) = .ok ["a", "b"] ∧
+    (fromValue (value% { k: 1 }) : Except String (Map Number)) = .ok ⟨[("k", 1)]⟩ ∧
+    (Marshal.optional (f := Resolved) (o := Option) (value% { present: "x", missing: null }) "missing"
+      : Except String (Option String)) = .ok none ∧
+    (Marshal.required (f := Resolved) (o := Option) (value% { present: "x" }) "present"
+      : Except String (Resolved String)) = .ok "x" ∧
+    (Marshal.required (f := Resolved) (o := Option) (value% { present: "x" }) "absent"
+      : Except String (Resolved String)) = .error "attribute `absent` is null or missing" ∧
+    (Marshal.optional (f := Input) (o := Resolved) (value% { present: "x" }) "absent"
+      : Except String (Input String)) = .ok (.known .null) := by
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+
 /-- `value%` builds known values for `dynamic` attributes, with `$` splices. -/
 theorem value_literals (name : String) :
     (value% { team: "core", replicas: 3, tags: ["a", true, null], nested: { deep: -1.5 } })
@@ -128,4 +143,20 @@ def main : IO Unit := do
   expect (tagsAreNamed.holds graph) "policy holds at run time"
   expect (Policy.all "everything" [Policy.validGraph, tagsAreNamed, noProdPurpose] |>.holds graph)
     "combined policy holds"
+  -- A `tofu show -json` document round-trips through the JSON bridge and resource lookup.
+  let shown := "{\"values\": {\"root_module\": {\"resources\": [{\"address\": \"digitalocean_tag.app\", \"type\": \"digitalocean_tag\", \"name\": \"app\", \"values\": {\"id\": \"app\", \"name\": \"app\", \"droplets_count\": 2}}]}}}"
+  match ShowDocument.parse shown with
+  | .error error => throw (IO.userError s!"show document did not parse: {error}")
+  | .ok document =>
+    expect ((document.resource? (.res "digitalocean_tag" "app")).bind (·.field? "droplets_count")
+        == some (.number 2)) "resource values are found by address"
+    expect ((document.decode? (.res "digitalocean_tag" "app") : Except String (Map Value)).toBool)
+      "resource values decode"
+  match OutputsDocument.parse "{\"secret\": {\"sensitive\": true, \"value\": \"s\"}, \"plain\": {\"sensitive\": false, \"value\": [1, 2]}}" with
+  | .error error => throw (IO.userError s!"outputs document did not parse: {error}")
+  | .ok outputs =>
+    expect ((outputs.value? "plain" : Except String (List Number)) == .ok [1, 2]) "plain output decodes"
+    expect (!(outputs.value? "secret" : Except String String).toBool) "sensitive output is refused"
+    expect ((outputs.sensitiveValue? "secret" : Except String String) == .ok "s")
+      "sensitive output is readable deliberately"
   IO.println "inframe core tests passed"

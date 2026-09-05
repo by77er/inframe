@@ -187,6 +187,30 @@ def inputNode : Input α → ExprNode
   | .known value => .literal value
   | .symbolic node => node
 
+/-- Either an input or a plain value that can become one. Combinators whose parameter would
+otherwise be a bare `Input ?α` (where coercions cannot fire) take this instead, so
+`output "ip" web.ipv4Address` works for a decoded `String` as well as for a symbolic input. -/
+class IntoInput (v : Type) (α : outParam Type) where
+  toInput : v → Input α
+
+instance : IntoInput (Input α) α := ⟨id⟩
+instance [ToValue α] : IntoInput α α := ⟨lit⟩
+
+export IntoInput (toInput)
+
+/-- Marshal state straight back into inputs: values become known literals and absent optional
+attributes become an OpenTofu `null`. `Attributes.ofValue (f := Input)` therefore turns a
+`tofu show -json` object into a handle-shaped record of literal inputs. -/
+instance : Marshal Input Resolved where
+  required object name :=
+    match object.field? name with
+    | some .null | none => throw s!"attribute `{name}` is null or missing"
+    | some value => pure (.known value)
+  optional object name :=
+    match object.field? name with
+    | some .null | none => pure (.known .null)
+    | some value => pure (.known value)
+
 /-- Inputs are compared by the expression they denote. -/
 instance : BEq (Input α) := ⟨fun left right => inputNode left == inputNode right⟩
 
@@ -229,8 +253,8 @@ instance : GetElem (Input Value) Nat (Input Value) (fun _ _ => True) :=
 def ifThenElse (condition : Input Bool) (whenTrue whenFalse : Input α) : Input α :=
   .symbolic (.conditional (inputNode condition) (inputNode whenTrue) (inputNode whenFalse))
 
-def unsafeArgument (value : Input α) : UnsafeArgument :=
-  ⟨inputNode value⟩
+def unsafeArgument [IntoInput v α] (value : v) : UnsafeArgument :=
+  ⟨inputNode (toInput value : Input α)⟩
 
 /-- Call an OpenTofu function without a statically checked signature. The caller chooses the
 result type, so prefer the typed `Input.*` functions when one exists. The function name is
@@ -242,8 +266,8 @@ def unsafeCall (name : String) (args : List UnsafeArgument)
 def text (value : String) : TemplatePart :=
   .text value
 
-def interpolate (value : Input α) : TemplatePart :=
-  .interpolation (inputNode value)
+def interpolate [IntoInput v α] (value : v) : TemplatePart :=
+  .interpolation (inputNode (toInput value : Input α))
 
 def template (parts : List TemplatePart) : Input String :=
   .symbolic (.template parts)

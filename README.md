@@ -127,7 +127,11 @@ Graph IR encoder, and generated adapters produced from the same binding model.
 Known values are plain literals (they coerce to provider inputs), handle
 attributes are symbolic inputs, and computed strings are shaped with OpenTofu's
 own functions as dot-notation (`droplet.id.tonumber`, `name.replace " " "-"`)
-or interpolated with `tf!"web-{droplet.id}.internal"`.
+or interpolated with `tf!"web-{droplet.id}.internal"`. Every resource's
+attributes are one higher-kinded structure: the handle instantiates it at
+`Input`, and `Droplet.State` instantiates it at plain values (with `Option` for
+attributes OpenTofu may leave null) and decodes the output of `inframe show`, so
+a stack can be a function of another stack's state.
 It is exercised in CI exactly like the PureScript one: the core library's
 theorems and tests run, every generated DigitalOcean module compiles, the
 integration stack is built and policy-checked through `inframe build` and
