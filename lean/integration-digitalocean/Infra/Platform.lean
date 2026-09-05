@@ -37,20 +37,15 @@ def createDatabases (env : Environment) (network : Vpc.Vpc) :
     List Identifier → Infra (List DatabaseCluster.DatabaseCluster)
   | [] => pure []
   | db :: rest => do
-    let storageAutoscale :=
-      DatabaseCluster.storageAutoscaleArgs { enabled := true }
-        |>.thresholdPercent 80
-        |>.incrementGib 10
     let database ← DatabaseCluster.create db.raw
-      (DatabaseCluster.args
-        { engine := "pg"
-          name := "platform-" ++ db.raw
-          nodeCount := 1
-          region := env.region
-          size := "db-s-1vcpu-1gb" }
-        |>.privateNetworkUuid network.id
-        |>.storageAutoscale [storageAutoscale]
-        |>.version "15")
+      { engine := "pg"
+        name := "platform-" ++ db.raw
+        nodeCount := 1
+        region := env.region
+        size := "db-s-1vcpu-1gb"
+        privateNetworkUuid := network.id
+        storageAutoscale := [{ enabled := true, thresholdPercent := 80, incrementGib := 10 }]
+        version := "15" }
       db.valid
     let databases ← createDatabases env network rest
     pure (database :: databases)
@@ -65,45 +60,32 @@ def outputDatabaseHost : List DatabaseCluster.DatabaseCluster → Infra Unit
   cases clusters <;> rfl
 
 def infrastructureFor (env : Environment) (databases : List Identifier) : Infra Unit := do
-  let provider ← Provider.configure (Provider.args {} |>.token (secretEnv "DIGITALOCEAN_TOKEN"))
+  let provider ← Provider.configure { token := secretEnv "DIGITALOCEAN_TOKEN" }
 
-  let versions ← Data.KubernetesVersions.readWith "available" (Data.KubernetesVersions.args {})
+  let versions ← Data.KubernetesVersions.readWith "available" {}
     (dataSourceOptions |>.withProvider provider)
 
-  let network ← Vpc.create "platform" (Vpc.args
-    { name := "platform"
-      region := env.region })
-
-  let workerPool :=
-    KubernetesCluster.nodePoolArgs
-      { name := "workers"
-        size := "s-2vcpu-4gb" }
-      |>.nodeCount 2
-      |>.autoScale true
-      |>.minNodes 2
-      |>.maxNodes env.workerMax
-      |>.tags ["platform", "workers"]
+  let network ← Vpc.create "platform" { name := "platform", region := env.region }
 
   let cluster ← KubernetesCluster.createWith "platform"
-    (KubernetesCluster.args
-      { name := "platform"
-        nodePool := [workerPool]
-        region := env.region
-        version := versions.latestVersion }
-      |>.autoUpgrade true
-      |>.ha (env == .prod)
-      |>.surgeUpgrade true
-      |>.vpcUuid network.id)
+    { name := "platform"
+      region := env.region
+      version := versions.latestVersion
+      nodePool :=
+        [{ name := "workers", size := "s-2vcpu-4gb", nodeCount := 2, autoScale := true
+           minNodes := 2, maxNodes := env.workerMax, tags := ["platform", "workers"] }]
+      autoUpgrade := true
+      ha := env == .prod
+      surgeUpgrade := true
+      vpcUuid := network.id }
     (resourceOptions
       |>.withProvider provider
       |>.createBeforeDestroy true)
 
-  let versioning := SpacesBucket.versioningArgs {} |>.enabled true
-
   let bucket ← SpacesBucket.create "assets"
-    (SpacesBucket.args { name := "replace-with-a-globally-unique-space-name" }
-      |>.region env.region
-      |>.versioning [versioning])
+    { name := "replace-with-a-globally-unique-space-name"
+      region := env.region
+      versioning := [{ enabled := true }] }
 
   let clusters ← createDatabases env network databases
 

@@ -183,6 +183,11 @@ instance : CoeOut (Input α) (Input Value) :=
 instance : OfNat (Input Number) n := ⟨lit (OfNat.ofNat n)⟩
 instance : OfScientific (Input Number) := ⟨fun m e d => lit (OfScientific.ofScientific m e d)⟩
 
+/-- Numerals also fill optional argument fields, whose type is `Option (Input Number)`. -/
+instance : OfNat (Option (Input Number)) n := ⟨some (lit (OfNat.ofNat n))⟩
+instance : OfScientific (Option (Input Number)) :=
+  ⟨fun m e d => some (lit (OfScientific.ofScientific m e d))⟩
+
 def inputNode : Input α → ExprNode
   | .known value => .literal value
   | .symbolic node => node

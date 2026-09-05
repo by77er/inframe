@@ -265,13 +265,13 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
         "/-- Phantom type tagging handles to configured `{}` providers. -/\ninductive {marker}\n\n",
         provider.source
     );
-    let module = format!("{module_root}.Provider");
     let shapes = Shapes::collect(fields, &[&marker]);
-    output.push_str(&render_shapes(&shapes, &module));
-    output.push_str(&render_args(
-        fields,
-        &format!("the `{}` provider", provider.source),
-        &module,
+    output.push_str(&render_shapes(&shapes));
+    output.push_str(&render_args_structure(
+        "Args",
+        &[],
+        &fields.iter().collect::<Vec<_>>(),
+        &format!("Arguments for the `{}` provider.", provider.source),
         &shapes,
     ));
     let local_name = provider_local_name_from_source(&provider.source);
@@ -280,11 +280,11 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
         output,
         "/-- Configure the default `{local_name}` provider. -/\n\
          def configure (a : Args) : Infra (Inframe.Provider {marker}) :=\n  \
-           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.values\n\n\
+           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.toInputObject\n\n\
          /-- Configure an aliased `{local_name}` provider. The alias is validated at compile time. -/\n\
          def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by decide) :\n    \
            Infra (Inframe.Provider {marker}) :=\n  \
-           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.values\n\n\
+           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.toInputObject\n\n\
          end {module_root}.Provider\n",
         escape_string(&provider.source),
         escape_string(&provider.source)
@@ -327,11 +327,12 @@ fn render_item(
         item.provider_type
     );
     let shapes = Shapes::collect(&item.fields, &[&handle_name, &node]);
-    output.push_str(&render_shapes(&shapes, module));
-    output.push_str(&render_args(
-        &item.fields,
-        &format!("`{}`", item.provider_type),
-        module,
+    output.push_str(&render_shapes(&shapes));
+    output.push_str(&render_args_structure(
+        "Args",
+        &[],
+        &item.fields.iter().collect::<Vec<_>>(),
+        &format!("Arguments for `{}`.", item.provider_type),
         &shapes,
     ));
     let handle_fields: Vec<_> = item.outputs().collect();
@@ -412,7 +413,7 @@ fn render_item(
          def {operation_with} (name : String) (a : Args) (options : {options_type} {module_root}.Provider.{marker})\n    \
            (valid : validIdentifier name = true := by decide) : Infra {handle_name} := do\n  \
            requireProvider (Identifier.mk \"{local_name}\") \"{}\" \"= {}\"\n  \
-           let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.values\n  \
+           let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.toInputObject\n  \
            pure\n    {{ {handle_key} := handle",
         item.provider_type,
         escape_string(&provider.source),
@@ -440,92 +441,112 @@ fn render_item(
     output
 }
 
-fn render_args(
-    fields: &[BindingField],
-    subject: &str,
-    module: &str,
+/// Names that would clash with generated members of an argument record.
+const ARGS_RESERVED: &[&str] = &["mk", "toInputObject", "toExprNode"];
+
+/// One record per argument shape: required attributes are plain fields, optional ones default
+/// to unset, nested blocks are (lists of) nested records. `toInputObject` emits only what was
+/// set, so an untouched optional field never reaches the graph.
+fn render_args_structure(
+    name: &str,
+    parent_path: &[String],
+    fields: &[&BindingField],
+    doc: &str,
     shapes: &Shapes<'_>,
 ) -> String {
-    let required: Vec<_> = fields.iter().filter(|field| field.required).collect();
-    let mut output =
-        format!("/-- Required arguments for {subject}. -/\nstructure Required where\n");
-    render_required_fields(&mut output, &required, &[], shapes);
-    let _ = write!(
-        output,
-        "\n/-- Arguments for {subject}. Build with `args` and refine with `Args.*` setters, for example\n`args {{ .. }} |>.someField (lit value)`. -/\nabbrev Args := Block \"{module}.Args\"\n\n"
-    );
-    let argument = if required.is_empty() { "_" } else { "required" };
-    let _ = write!(
-        output,
-        "def args ({argument} : Required) : Args :=\n  ⟨InputObject.ofList\n    ["
-    );
-    render_required_values(&mut output, &required, &[], shapes);
-    output.push_str("]⟩\n\n");
-    for field in fields.iter().filter(|field| field.optional) {
-        output.push_str(&render_setter("Args", "a", field, &[], shapes));
-    }
-    output
-}
-
-fn render_required_fields(
-    output: &mut String,
-    required: &[&BindingField],
-    parent_path: &[String],
-    shapes: &Shapes<'_>,
-) {
-    for field in required {
-        let path = child_path(parent_path, field);
+    let inputs: Vec<_> = fields
+        .iter()
+        .filter(|field| field.required || field.optional)
+        .collect();
+    let mut output = doc_comment(doc);
+    let _ = writeln!(output, "structure {name} where");
+    for field in &inputs {
         output.push_str(&indent_doc(&field_documentation(field), "  "));
+        let path = child_path(parent_path, field);
+        let field_name = safe_field_name(field, ARGS_RESERVED);
         let _ = writeln!(
             output,
-            "  {} : {}",
-            safe_field_name(field, &[]),
-            render_input_type(&field.r#type, &path, shapes)
+            "  {field_name} : {}",
+            render_args_field_type(field, &path, shapes)
         );
     }
-}
-
-fn render_required_values(
-    output: &mut String,
-    required: &[&BindingField],
-    parent_path: &[String],
-    shapes: &Shapes<'_>,
-) {
-    for (index, field) in required.iter().enumerate() {
+    let _ = write!(
+        output,
+        "\ndef {name}.toInputObject (a : {name}) : InputObject :=\n  ⟨List.filterMap (fun entry => entry) ([",
+    );
+    for (index, field) in inputs.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n    , " };
-        let value = format!("required.{}", safe_field_name(field, &[]));
+        let field_name = safe_field_name(field, ARGS_RESERVED);
         let path = child_path(parent_path, field);
         let _ = write!(
             output,
-            "{separator}(\"{}\", {})",
-            escape_string(&field.provider_name),
-            render_input_node(&value, &field.r#type, &path, shapes)
+            "{separator}{}",
+            render_args_field_entry(field, &field_name, &path, shapes)
         );
     }
-    if !required.is_empty() {
+    if !inputs.is_empty() {
         output.push(' ');
+    }
+    let _ = write!(
+        output,
+        "] : List (Option (String × ExprNode)))⟩\n\n\
+         def {name}.toExprNode (a : {name}) : ExprNode :=\n  a.toInputObject.toExprNode\n\n"
+    );
+    output
+}
+
+/// The field type in an argument record, with the default for optional fields.
+fn render_args_field_type(field: &BindingField, path: &[String], shapes: &Shapes<'_>) -> String {
+    let record = format!("{}Args", shapes.name(path));
+    match (nested_container(&field.r#type), field.required) {
+        (Some(NestedContainer::Single), true) => record,
+        (Some(NestedContainer::Single), false) => format!("Option {record} := none"),
+        (Some(NestedContainer::Array), true) => format!("List {record}"),
+        (Some(NestedContainer::Array), false) => format!("List {record} := []"),
+        (Some(NestedContainer::Map), true) => format!("List (String × {record})"),
+        (Some(NestedContainer::Map), false) => format!("List (String × {record}) := []"),
+        (None, true) => format!(
+            "Input {}",
+            render_type_argument(&field.r#type, path, shapes)
+        ),
+        (None, false) => format!(
+            "Option (Input {}) := none",
+            render_type_argument(&field.r#type, path, shapes)
+        ),
     }
 }
 
-fn render_setter(
-    type_name: &str,
-    receiver: &str,
+/// The `Option (String × ExprNode)` entry a record field contributes to the input object.
+fn render_args_field_entry(
     field: &BindingField,
-    parent_path: &[String],
+    field_name: &str,
+    path: &[String],
     shapes: &Shapes<'_>,
 ) -> String {
-    let name = safe_field_name(field, SETTER_RESERVED);
-    let path = child_path(parent_path, field);
-    let input_type = render_input_type(&field.r#type, &path, shapes);
-    let encoded = render_input_node("value", &field.r#type, &path, shapes);
-    let mut output = field_documentation(field);
-    let _ = write!(
-        output,
-        "def {type_name}.{name} (value : {input_type}) ({receiver} : {type_name}) : {type_name} :=\n  \
-           ⟨{receiver}.values.insert \"{}\" ({encoded})⟩\n\n",
-        escape_string(&field.provider_name)
+    let key = escape_string(&field.provider_name);
+    let record = format!("{}Args", shapes.name(path));
+    let array = format!("ExprNode.array (a.{field_name}.map {record}.toExprNode)");
+    let map = format!(
+        "ExprNode.object (a.{field_name}.map fun (key, block) => (key, {record}.toExprNode block))"
     );
-    output
+    match (nested_container(&field.r#type), field.required) {
+        (Some(NestedContainer::Single), true) => {
+            format!("some (\"{key}\", a.{field_name}.toExprNode)")
+        }
+        (Some(NestedContainer::Single), false) => {
+            format!("a.{field_name}.map fun block => (\"{key}\", block.toExprNode)")
+        }
+        (Some(NestedContainer::Array), true) => format!("some (\"{key}\", {array})"),
+        (Some(NestedContainer::Array), false) => {
+            format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {array})")
+        }
+        (Some(NestedContainer::Map), true) => format!("some (\"{key}\", {map})"),
+        (Some(NestedContainer::Map), false) => {
+            format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {map})")
+        }
+        (None, true) => format!("some (\"{key}\", inputNode a.{field_name})"),
+        (None, false) => format!("a.{field_name}.map fun value => (\"{key}\", inputNode value)"),
+    }
 }
 
 /// A nested object type that gets its own Lean declaration: a builder for an input block or
@@ -673,7 +694,7 @@ fn object_fields(r#type: &BindingType) -> Option<&[BindingField]> {
     }
 }
 
-fn render_shapes(shapes: &Shapes<'_>, module: &str) -> String {
+fn render_shapes(shapes: &Shapes<'_>) -> String {
     let mut output = String::new();
     for nested in &shapes.entries {
         let fields: Vec<_> = nested.fields.iter().collect();
@@ -690,7 +711,17 @@ fn render_shapes(shapes: &Shapes<'_>, module: &str) -> String {
             shapes,
         ));
         if nested.builder {
-            output.push_str(&render_nested_builder(nested, module, shapes));
+            output.push_str(&render_args_structure(
+                &format!("{}Args", nested.name),
+                &nested.path,
+                &fields,
+                &format!(
+                    "Arguments for the `{}` block{}.",
+                    nested.path.join("."),
+                    shared_note(nested.occurrences)
+                ),
+                shapes,
+            ));
         }
     }
     output
@@ -773,76 +804,8 @@ fn render_attributes(
     output
 }
 
-fn render_nested_builder(nested: &NestedType<'_>, module: &str, shapes: &Shapes<'_>) -> String {
-    let type_name = &nested.name;
-    let required_name = format!("{type_name}Required");
-    let constructor_name = format!("{}Args", lower_first(type_name));
-    let provider_path = nested.path.join(".");
-    let required: Vec<_> = nested
-        .fields
-        .iter()
-        .filter(|field| field.required)
-        .collect();
-    let mut output = format!(
-        "/-- Builder for the `{provider_path}` block{}. Start with `{constructor_name}` and refine with\n`{type_name}.*` setters. -/\nabbrev {type_name} := Block \"{module}.{type_name}\"\n\n",
-        shared_note(nested.occurrences)
-    );
-    let _ = write!(
-        output,
-        "/-- Required fields of `{type_name}`. -/\nstructure {required_name} where\n"
-    );
-    render_required_fields(&mut output, &required, &nested.path, shapes);
-    let argument = if required.is_empty() { "_" } else { "required" };
-    let _ = write!(
-        output,
-        "\ndef {constructor_name} ({argument} : {required_name}) : {type_name} :=\n  ⟨InputObject.ofList\n    ["
-    );
-    render_required_values(&mut output, &required, &nested.path, shapes);
-    output.push_str("]⟩\n\n");
-    for field in nested.fields.iter().filter(|field| field.optional) {
-        output.push_str(&render_setter(
-            type_name,
-            "block",
-            field,
-            &nested.path,
-            shapes,
-        ));
-    }
-    let _ = write!(
-        output,
-        "def {type_name}.toExprNode (block : {type_name}) : ExprNode :=\n  block.values.toExprNode\n\n"
-    );
-    output
-}
-
-fn render_input_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
-    match nested_container(r#type) {
-        Some(NestedContainer::Single) => shapes.name(path),
-        Some(NestedContainer::Array) => format!("List {}", shapes.name(path)),
-        Some(NestedContainer::Map) => format!("List (String × {})", shapes.name(path)),
-        None => format!("Input {}", render_type_argument(r#type, path, shapes)),
-    }
-}
-
-fn render_input_node(
-    value: &str,
-    r#type: &BindingType,
-    path: &[String],
-    shapes: &Shapes<'_>,
-) -> String {
-    let type_name = shapes.name(path);
-    match nested_container(r#type) {
-        Some(NestedContainer::Single) => format!("{type_name}.toExprNode {value}"),
-        Some(NestedContainer::Array) => {
-            format!("ExprNode.array ({value}.map {type_name}.toExprNode)")
-        }
-        Some(NestedContainer::Map) => format!(
-            "ExprNode.object ({value}.map fun (key, block) => (key, {type_name}.toExprNode block))"
-        ),
-        None => format!("inputNode {value}"),
-    }
-}
-
+/// The phantom type of an input or attribute: nested objects are their attribute structure at
+/// the handle instantiation, so a handle and its arguments agree on names.
 fn render_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
     match r#type {
         BindingType::String => "String".into(),
@@ -853,7 +816,7 @@ fn render_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> St
         }
         BindingType::Map(item) => format!("Map {}", render_type_argument(item, path, shapes)),
         BindingType::Tuple(_) | BindingType::Dynamic => "Value".into(),
-        BindingType::Object(_) => shapes.name(path),
+        BindingType::Object(_) => format!("{}Attributes Input Resolved", shapes.name(path)),
     }
 }
 
@@ -895,9 +858,11 @@ fn render_type_argument(r#type: &BindingType, path: &[String], shapes: &Shapes<'
         | BindingType::Bool
         | BindingType::Number
         | BindingType::Tuple(_)
-        | BindingType::Dynamic
-        | BindingType::Object(_) => render_type(r#type, path, shapes),
-        BindingType::List(_) | BindingType::Set(_) | BindingType::Map(_) => {
+        | BindingType::Dynamic => render_type(r#type, path, shapes),
+        BindingType::List(_)
+        | BindingType::Set(_)
+        | BindingType::Map(_)
+        | BindingType::Object(_) => {
             format!("({})", render_type(r#type, path, shapes))
         }
     }
@@ -922,14 +887,6 @@ fn nested_type_name(path: &[String], reserved: &[&str]) -> String {
     safe_type_name(&name, reserved, "Block")
 }
 
-fn lower_first(value: &str) -> String {
-    let mut characters = value.chars();
-    characters
-        .next()
-        .map(|first| first.to_ascii_lowercase().to_string() + characters.as_str())
-        .unwrap_or_default()
-}
-
 fn upper_first(value: &str) -> String {
     let mut characters = value.chars();
     characters
@@ -937,9 +894,6 @@ fn upper_first(value: &str) -> String {
         .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
         .unwrap_or_default()
 }
-
-/// Names that would clash with generated members of the same `Args`/block namespace.
-const SETTER_RESERVED: &[&str] = &["values", "mk", "toExprNode"];
 
 /// Type names that generated modules already use, either from the core library (which is
 /// opened) or from Lean's prelude.
@@ -1355,14 +1309,65 @@ mod tests {
             )
         );
         assert!(provider.contains(
-            "addProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\" none a.values"
+            "addProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\" none a.toInputObject"
         ));
-        assert!(provider.contains("def Args.token (value : Input String) (a : Args) : Args"));
+        assert!(provider.contains("structure Args where\n  token : Option (Input String) := none"));
+        assert!(provider.contains("a.token.map fun value => (\"token\", inputNode value)"));
 
         let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
         assert!(source.contains("namespace DigitalOcean.Resource.Tag"));
         assert!(source.contains("inductive TagResource"));
-        assert!(source.contains("structure Required where\n  /-- The tag name.\n  Must be unique within the account. -/\n  name : Input String"));
+        // Attributes: one higher-kinded structure, handle and state instantiate it.
+        assert!(source.contains("structure Attributes (f o : Type → Type) where"));
+        assert!(
+            source.contains("  /-- The provider-assigned tag identifier. -/\n  id : f (o String)")
+        );
+        assert!(source.contains("  name : f String"));
+        assert!(source.contains("nodePool : f (List (NodePoolAttributes f o))"));
+        assert!(source.contains("kubeConfig : f (o (List (KubeConfigAttributes f o)))"));
+        assert!(source.contains("labels : f (o (Map String))"));
+        assert!(source.contains(
+            "structure Tag extends Attributes Input Resolved where\n  resource : Resource TagResource"
+        ));
+        assert!(source.contains("abbrev State := Attributes Resolved Option"));
+        assert!(source.contains(
+            "def Attributes.ofValue [Marshal f o] (value : Value) : Except String (Attributes f o) := do"
+        ));
+        assert!(source.contains("id := (← Marshal.optional (f := f) (o := o) value \"id\")"));
+        assert!(source.contains("name := (← Marshal.required (f := f) (o := o) value \"name\")"));
+        assert!(source.contains(
+            "instance [Marshal f o] : FromValue (Attributes f o) := ⟨Attributes.ofValue⟩"
+        ));
+        assert!(source.contains("instance : ToValue (Attributes Resolved Option) :="));
+        assert!(source.contains("(\"node_pool\", toValue attributes.nodePool)"));
+        assert!(source.contains("structure NodePoolAttributes (f o : Type → Type) where"));
+        assert!(source.contains("taint : f (o (List (NodePoolTaintAttributes f o)))"));
+        assert!(source.contains(
+            "structure KubeConfigAttributes (f o : Type → Type) where\n  rawConfig : f (o String)"
+        ));
+        // Arguments: one record with defaults, nested records for blocks.
+        assert!(source.contains("structure Args where"));
+        assert!(source.contains("  name : Input String\n"));
+        assert!(source.contains("  nodePool : List NodePoolArgs\n"));
+        assert!(source.contains("  end_ : Option (Input String) := none"));
+        assert!(source.contains("  labels : Option (Input (Map String)) := none"));
+        assert!(source.contains("  values : Option (Input (List String)) := none"));
+        assert!(!source.contains("  id : Option (Input String) := none\n  kubeConfig"));
+        assert!(source.contains(
+            "structure NodePoolArgs where\n  name : Input String\n  /-- Whether automatic scaling is enabled. -/\n  autoScale : Option (Input Bool) := none\n  taint : List NodePoolTaintArgs := []"
+        ));
+        assert!(!source.contains("actualNodeCount : Option"));
+        assert!(source.contains("def Args.toInputObject (a : Args) : InputObject :="));
+        assert!(source.contains("some (\"name\", inputNode a.name)"));
+        assert!(source.contains(
+            "some (\"node_pool\", ExprNode.array (a.nodePool.map NodePoolArgs.toExprNode))"
+        ));
+        assert!(source.contains("a.end_.map fun value => (\"end\", inputNode value)"));
+        assert!(source.contains(
+            "if a.taint.isEmpty then none else some (\"taint\", ExprNode.array (a.taint.map NodePoolTaintArgs.toExprNode))"
+        ));
+        assert!(source.contains("def NodePoolArgs.toExprNode (a : NodePoolArgs) : ExprNode :="));
+        // Handle construction and creation.
         assert!(source.contains("def create (name : String) (a : Args) (valid : validIdentifier name = true := by decide)"));
         assert!(source.contains(
             "def createWith (name : String) (a : Args) (options : ResourceOptions DigitalOcean.Provider.DigitalOceanProvider)"
@@ -1371,7 +1376,7 @@ mod tests {
             "requireProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\""
         ));
         assert!(source.contains(
-            "addResource options (Identifier.mk \"digitalocean_tag\") ⟨name, valid⟩ a.values"
+            "addResource options (Identifier.mk \"digitalocean_tag\") ⟨name, valid⟩ a.toInputObject"
         ));
         assert!(source.contains("      id := resourceAttr handle [\"id\"]"));
         assert!(source.contains(
@@ -1382,51 +1387,6 @@ mod tests {
                 "instance : Inframe.Managed Tag := ⟨fun handle => handle.resource.address⟩"
             )
         );
-        assert!(source.contains("structure Attributes (f o : Type → Type) where"));
-        assert!(source.contains(
-            "  /-- The provider-assigned tag identifier. -/
-  id : f (o String)"
-        ));
-        assert!(source.contains(
-            "structure Tag extends Attributes Input Resolved where
-  resource : Resource TagResource"
-        ));
-        assert!(source.contains("abbrev State := Attributes Resolved Option"));
-        assert!(source.contains(
-            "def Attributes.ofValue [Marshal f o] (value : Value) : Except String (Attributes f o) := do"
-        ));
-        assert!(source.contains("id := (← Marshal.optional (f := f) (o := o) value \"id\")"));
-        assert!(source.contains(
-            "instance [Marshal f o] : FromValue (Attributes f o) := ⟨Attributes.ofValue⟩"
-        ));
-        assert!(source.contains("instance : ToValue (Attributes Resolved Option) :="));
-        assert!(source.contains("(\"node_pool\", toValue attributes.nodePool)"));
-        assert!(source.contains("abbrev NodePool := Block \"DigitalOcean.Resource.Tag.NodePool\""));
-        assert!(source.contains("abbrev Args := Block \"DigitalOcean.Resource.Tag.Args\""));
-        assert!(source.contains("structure NodePoolRequired where\n  name : Input String"));
-        assert!(source.contains("def nodePoolArgs (required : NodePoolRequired) : NodePool"));
-        assert!(source.contains("/-- Whether automatic scaling is enabled. -/\ndef NodePool.autoScale (value : Input Bool) (block : NodePool) : NodePool"));
-        assert!(!source.contains("NodePool.actualNodeCount"));
-        assert!(source.contains("nodePool : List NodePool"));
-        assert!(source.contains("nodePool : f (List (NodePoolAttributes f o))"));
-        assert!(source.contains("structure NodePoolAttributes (f o : Type → Type) where"));
-        assert!(source.contains("taint : f (o (List (NodePoolTaintAttributes f o)))"));
-        assert!(source.contains(
-            "(\"node_pool\", ExprNode.array (required.nodePool.map NodePool.toExprNode))"
-        ));
-        assert!(source.contains(
-            "def NodePool.taint (value : List NodePoolTaint) (block : NodePool) : NodePool"
-        ));
-        assert!(source.contains(
-            "structure KubeConfigAttributes (f o : Type → Type) where\n  rawConfig : f (o String)"
-        ));
-        assert!(!source.contains("inductive KubeConfig"));
-        assert!(source.contains("kubeConfig : f (o (List (KubeConfigAttributes f o)))"));
-        assert!(source.contains("def Args.end_ (value : Input String) (a : Args) : Args"));
-        assert!(
-            source.contains("def Args.values_ (value : Input (List String)) (a : Args) : Args")
-        );
-        assert!(source.contains("labels : f (o (Map String))"));
         assert!(source.contains("end DigitalOcean.Resource.Tag"));
 
         let taint_position = source.find("structure NodePoolTaintAttributes").unwrap();
@@ -1437,7 +1397,9 @@ mod tests {
         );
 
         let data = &generated.files[Path::new("DigitalOcean/Data/Tag.lean")];
-        assert!(data.contains("def readWith (name : String) (a : Args) (options : DataSourceOptions DigitalOcean.Provider.DigitalOceanProvider)"));
+        assert!(data.contains(
+            "def readWith (name : String) (a : Args) (options : DataSourceOptions DigitalOcean.Provider.DigitalOceanProvider)"
+        ));
         assert!(data.contains("dataSourceAttr handle [\"name\"]"));
         assert!(data.contains(
             "instance : Inframe.Dependable Tag := ⟨fun handle => handle.dataSource.address⟩"
@@ -1445,7 +1407,9 @@ mod tests {
         assert!(!data.contains("instance : Inframe.Managed Tag"));
 
         let root = &generated.files[Path::new("DigitalOcean.lean")];
-        assert!(root.contains("import DigitalOcean.Provider\nimport DigitalOcean.Resource.Tag\nimport DigitalOcean.Data.Tag\n"));
+        assert!(root.contains(
+            "import DigitalOcean.Provider\nimport DigitalOcean.Resource.Tag\nimport DigitalOcean.Data.Tag\n"
+        ));
 
         let manifest = &generated.files[Path::new("lake-manifest.json")];
         assert!(manifest.contains("\"dir\": \"../..\""));
@@ -1491,15 +1455,13 @@ mod tests {
         ];
         let generated = render_package(&package, "DigitalOcean", "abc", &core()).unwrap();
         let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
-        assert!(source.contains("abbrev Primary := Block"));
+        assert_eq!(source.matches("structure PrimaryArgs where").count(), 1);
         assert!(source.contains("(shared by 2 block paths with the same shape)"));
-        assert!(!source.contains("abbrev Secondary"));
-        assert!(source.contains("primary : List Primary"));
-        assert!(source.contains("def Args.secondary (value : List Primary) (a : Args) : Args"));
+        assert!(!source.contains("structure SecondaryArgs"));
+        assert!(source.contains("  primary : List PrimaryArgs\n"));
+        assert!(source.contains("  secondary : List PrimaryArgs := []"));
         assert!(source.contains("secondary : f (o (List (PrimaryAttributes f o)))"));
-        assert!(source.contains("abbrev Different := Block"));
-        assert!(source.contains("def primaryArgs (required : PrimaryRequired) : Primary"));
-        assert_eq!(source.matches("def Primary.value ").count(), 1);
+        assert!(source.contains("structure DifferentArgs where"));
     }
 
     #[test]

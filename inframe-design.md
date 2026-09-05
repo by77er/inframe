@@ -849,24 +849,29 @@ the target language:
   keys every nested object by its serialized field list and declares each shape once, named
   after the first path where it occurs; later paths reuse that type and the doc comment says
   how many paths share it. This took the generated AWS package from 213 MB to 24 MB and the
-  worst module from 59 MB (unbuildable in 15 GB) to 244 KB (two seconds). `emit-purescript`
+  worst module from 59 MB (unbuildable in 15 GB) to well under 1 MB. `emit-purescript`
   does not share shapes yet and would emit the unrolled form for such providers.
-- **One structure for every argument shape.** `Args` and every nested block builder are
-  `abbrev`s of the core's phantom-tagged `Block "<qualified name>"`, so shapes stay distinct
-  types (a `NodePool` cannot be passed where `Args` is expected) while Lean generates no
-  per-shape constructor, projection, injectivity, or recursor declarations.
-- **Namespaces instead of prefixes.** Each module opens `namespace <Root>.Resource.<Name>`.
-  Optional-argument setters live in the `Args` namespace and nested block setters in
-  the block's namespace, so callers write `args { … } |>.vpcUuid network.id` and
-  `nodePoolArgs { … } |>.nodeCount (lit 2)` rather than `nodePoolNodeCount`.
-- **Declaration order matters.** Nested block builders are emitted children-first
-  because a parent's setter refers to the child's `toExprNode`.
+- **Arguments are one record.** Each shape gets `structure Args` (nested: `<Shape>Args`)
+  whose required attributes are `Input T` fields, optional attributes
+  `Option (Input T) := none`, and nested blocks `<Shape>Args`, `List <Shape>Args := []`, or
+  `List (String × <Shape>Args) := []`. A call is a single record literal,
+  `Droplet.create "web" { image := "…", region := "nyc1", monitoring := true }`; omitting a
+  required field is a compile error and `toInputObject` emits only what was set. Lean
+  structures support this directly, which is why the PureScript constructor-plus-setters
+  shape (`args {..} # setter`) is not mirrored.
+- **Namespaces instead of prefixes.** Each module opens `namespace <Root>.Resource.<Name>`,
+  so a handle is `Droplet.create`, its arguments `Droplet.Args`, and a nested block
+  `Droplet.NodePoolArgs`.
+- **Declaration order matters.** Nested shapes are emitted children-first because a
+  parent's record and decoder refer to the child's.
 - **Compile-time validated names.** `create`, `createWith`, `read`, `readWith`, and
   `configureAs` take a `String` plus an auto-param proof `validIdentifier name = true := by decide`;
   the generated code itself uses `Identifier.mk "digitalocean_tag"`, so generated
   resource types are also proved valid when the package compiles.
-- **Computed-only nested objects** get an empty `inductive` marker whose doc comment
-  lists the shape, so handle fields read `Expr (List KubeConfig)` instead of `Expr Json`.
+- **Computed-only nested objects** get the same `<Shape>Attributes f o` structure as
+  configurable ones (just no `<Shape>Args`), so handle fields read
+  `Input (List (KubeConfigAttributes Input Resolved))` instead of `Input Value`, and the
+  same structure decodes the shape out of remote state.
 - **Escaping.** Lean keywords (including the module-system tokens `public`, `meta`,
   and `module`) and generated member names (`values`, `mk`, `toExprNode`, `resource`,
   `dataSource`) are suffixed with `_`; type names that would shadow the core library
@@ -1191,7 +1196,9 @@ Design decisions specific to Lean:
   and `symbolic`; handle attributes are symbolic inputs. Known values coerce
   (`Coe α (Input α)` for every `ToValue α`, plus `OfNat`/`OfScientific` for
   numbers), so `region := "nyc3"` and `nodeCount := 1` need no `lit`.
-- **A small DSL over inputs.** OpenTofu string and conversion functions are
+- **A small DSL over inputs.** Arguments are record literals with defaults
+  (`{ image := "…", region := "nyc3", nodePool := [{ name := "workers", size := "…" }] }`),
+  OpenTofu string and conversion functions are
   dot-notation on inputs (`Input.tonumber`, `.lower`, `.replace`, `.substr`, `.split`,
   `.join`, `.startswith`, …), `++` concatenates string inputs into one flat
   template, `xs[i]`/`m[k]` index symbolic lists and maps, and

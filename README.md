@@ -124,10 +124,12 @@ databaseUsesManagedVpc resource
 
 The Lean 4 frontend is a Lake package with the same graph semantics, the same
 Graph IR encoder, and generated adapters produced from the same binding model.
-Known values are plain literals (they coerce to provider inputs), handle
-attributes are symbolic inputs, and computed strings are shaped with OpenTofu's
-own functions as dot-notation (`droplet.id.tonumber`, `name.replace " " "-"`)
-or interpolated with `tf!"web-{droplet.id}.internal"`. Every resource's
+A resource's arguments are one record: required attributes are plain fields,
+optional ones default to unset, nested blocks are lists of records, and known
+values are plain literals (they coerce to provider inputs). Handle attributes
+are symbolic inputs, and computed strings are shaped with OpenTofu's own
+functions as dot-notation (`droplet.id.tonumber`, `name.replace " " "-"`) or
+interpolated with `tf!"web-{droplet.id}.internal"`. Every resource's
 attributes are one higher-kinded structure: the handle instantiates it at
 `Input`, and `Droplet.State` instantiates it at plain values (with `Option` for
 attributes OpenTofu may leave null) and decodes the output of `inframe show`, so
@@ -140,32 +142,21 @@ above, written in Lean, renders byte-identical Graph IR:
 
 ```lean
 def infrastructureFor (env : Environment) (databases : List Identifier) : Infra Unit := do
-  let provider ← Provider.configure (Provider.args {} |>.token (secretEnv "DIGITALOCEAN_TOKEN"))
+  let provider ← Provider.configure { token := secretEnv "DIGITALOCEAN_TOKEN" }
 
-  let versions ← Data.KubernetesVersions.readWith "available" (Data.KubernetesVersions.args {})
+  let versions ← Data.KubernetesVersions.readWith "available" {}
     (dataSourceOptions |>.withProvider provider)
 
-  let network ← Vpc.create "platform" (Vpc.args
-    { name := "platform"
-      region := env.region })
-
-  let workerPool :=
-    KubernetesCluster.nodePoolArgs
-      { name := "workers"
-        size := "s-2vcpu-4gb" }
-      |>.nodeCount 2
-      |>.autoScale true
-      |>.minNodes 2
-      |>.maxNodes env.workerMax
+  let network ← Vpc.create "platform" { name := "platform", region := env.region }
 
   let cluster ← KubernetesCluster.createWith "platform"
-    (KubernetesCluster.args
-      { name := "platform"
-        nodePool := [workerPool]
-        region := env.region
-        version := versions.latestVersion }
-      |>.autoUpgrade true
-      |>.vpcUuid network.id)
+    { name := "platform"
+      region := env.region
+      version := versions.latestVersion
+      nodePool := [{ name := "workers", size := "s-2vcpu-4gb", nodeCount := 2, autoScale := true
+                     minNodes := 2, maxNodes := env.workerMax }]
+      autoUpgrade := true
+      vpcUuid := network.id }
     (resourceOptions
       |>.withProvider provider
       |>.createBeforeDestroy true)

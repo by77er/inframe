@@ -89,9 +89,7 @@ theorem createDatabases_ok (env : Environment) (network : Vpc.Vpc) (databases : 
     · exact before r member
     · intro _
       simp [databaseRule, ResourceSpec.argumentRefersTo, ResourceSpec.argument?, resourceSpecOf,
-        DatabaseCluster.args, DatabaseCluster.Args.privateNetworkUuid,
-        DatabaseCluster.Args.storageAutoscale, DatabaseCluster.Args.version,
-        InputObject.replaceOrAppend, List.lookup, vpc, ExprNode.refersTo]
+        DatabaseCluster.Args.toInputObject, List.filterMap, List.lookup, vpc, ExprNode.refersTo]
 
 /-- The database policy holds for every environment and every list of databases. -/
 theorem databases_use_managed_vpc (env : Environment) (databases : List Identifier) :
