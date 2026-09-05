@@ -201,7 +201,10 @@ theorem databases_use_managed_vpc (env : Environment) (databases : List Identifi
   `lake build` (and `inframe test`) fail on a violating stack. A stack that is
   a function of its inputs is proved for all of them: finite parameters by
   `cases … <;> decide`, and unbounded ones such as a list of databases by
-  induction. A test only ever samples instantiations.
+  induction. A test only ever samples instantiations. Policies name arguments
+  through the generated `names` records (`DatabaseCluster.names.privateNetworkUuid`
+  is `"private_network_uuid"`), as does `ignoreChanges`, so a provider schema
+  change breaks the build instead of leaving a rule that matches nothing.
 - **The graph is valid before the CLI sees it.** Logical names, aliases,
   outputs, and secret variable names carry validity proofs discharged from
   their literals, and the reference validator (duplicate addresses, dangling
@@ -213,6 +216,28 @@ Everything goes through kernel `decide`, never `native_decide`, so the trusted
 base is the Lean kernel plus the Rust validator that still runs on the emitted
 document. The emitter has been run against the DigitalOcean, Google, and AWS
 providers; see [lean-stress-test.md](lean-stress-test.md).
+
+### What a green build proves, and what it does not
+
+- **Graph structure.** `Graph.Valid` is the reference validator as a theorem:
+  names, references, provider selection, replacement triggers, moves, and
+  acyclicity. The Rust validator re-checks the same rules on the emitted
+  document, so the two never disagree about a graph.
+- **Provider schema, as far as it is in the types.** Required arguments,
+  attribute types, and how many entries a nested block may have are in the
+  generated records. Value-level rules (allowed strings, formats, "exactly one
+  of these") are not; `inframe validate` runs OpenTofu's own validation with the
+  provider installed and no credentials.
+- **Policies.** A theorem proves the properties you stated about the graphs
+  your program can produce, for the inputs you quantified over, and nothing
+  else. It says nothing about the account: quotas, permissions, drift, and what
+  the provider does at apply time are what `plan` and `apply` are for.
+- **Serialization.** Lowering Graph IR to OpenTofu JSON is Rust code outside
+  the kernel. It is covered by golden files and by a round trip
+  (`scripts/check-template-escapes.sh`) that applies a graph with OpenTofu and
+  compares the resolved values with the literals the graph wrote.
+
+A green proof plus a green plan is the evidence; neither is on its own.
 
 ## How to use it
 

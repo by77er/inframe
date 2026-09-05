@@ -92,6 +92,12 @@ this auto-param therefore accepts both a string literal and an `Identifier`. -/
 macro "valid_identifier" : tactic =>
   `(tactic| first | exact Inframe.Identifier.valid _ | decide)
 
+/-- `parent-suffix`, with the suffix's validity discharged from its literal: `site.child "network"`
+names the network of a site whose identifier is a run-time value. -/
+def Identifier.child (parent : Identifier) (suffix : String)
+    (valid : validIdentifier suffix = true := by valid_identifier) : Identifier :=
+  parent.join ⟨suffix, valid⟩
+
 /-- The address of a graph node. Addresses are structural so that policies and proofs can
 match on them without parsing strings. -/
 inductive Address where

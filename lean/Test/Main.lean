@@ -154,7 +154,11 @@ def expect (condition : Bool) (message : String) : IO Unit :=
 
 /-- Names derived from other names carry their validity proof. -/
 theorem identifier_join :
-    ((Identifier.mk "droplet").join (Identifier.mk "nyc1")).raw = "droplet-nyc1" := by decide
+    ((Identifier.mk "droplet").join (Identifier.mk "nyc1")).raw = "droplet-nyc1" ∧
+    ((Identifier.mk "east").child "network").raw = "east-network" := by decide
+
+/-- A child name of a run-time identifier needs no proof at the call site. -/
+example (site : Identifier) : Identifier := site.child "network"
 
 /-- A name carried by an `Identifier` needs no `decide`: the auto-param reuses its proof. -/
 example (name : Identifier) : Address := .res "digitalocean_tag" name

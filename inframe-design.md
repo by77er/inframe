@@ -1191,6 +1191,23 @@ Design decisions specific to Lean:
   Handles (`Resource r`, `DataSource r`) keep the validated identifiers, so a
   combinator can derive a further resource's name from a handle (an assignment
   named after the resource it assigns) without re-validating strings at run time.
+  Identifiers compose without proofs at the call site: `a.join b` and
+  `site.child "network"` (the suffix's validity discharged from its literal).
+- **Attribute names are values.** Every generated attribute structure comes with
+  `names`, the same structure at `fun _ => String` (`Droplet.names.size = "size"`,
+  `KubernetesNodePool.names.nodeCount = "node_count"`), so policies
+  (`resource.argument? DatabaseCluster.names.privateNetworkUuid`) and
+  `ignoreChanges [KubernetesNodePool.names.nodeCount]` name attributes through the
+  schema instead of spelling provider strings; a rename is a compile error.
+- **What a proof covers.** `Graph.Valid` and a policy theorem are statements about
+  the graph value: structure, and the properties the author stated, for the inputs
+  they quantified over. The generated records carry the schema as far as types go
+  (required arguments, attribute types, block cardinality) but not its value-level
+  rules, which OpenTofu's `validate` checks with the provider; and nothing in the
+  kernel speaks for the account (quotas, permissions, drift) or for the Rust
+  lowering, which golden files and the OpenTofu round trip in
+  `scripts/check-template-escapes.sh` cover. See the README's "What a green build
+  proves" for the user-facing statement.
 - **`Infra` is a private state transformer**, not `StateM`, so programs cannot
   read or overwrite the graph; only the builder primitives extend it. The one
   introspection primitive is `Infra.capture`, which runs a sub-program and also

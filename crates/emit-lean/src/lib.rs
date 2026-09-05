@@ -378,6 +378,7 @@ fn render_item(
     };
     output.push_str(&render_attributes(
         "Attributes",
+        "names",
         &[],
         &handle_fields,
         handle_reserved,
@@ -838,6 +839,7 @@ fn render_shapes(shapes: &Shapes<'_>, ranged: &mut HashSet<String>) -> String {
         let fields: Vec<_> = nested.fields.iter().collect();
         output.push_str(&render_attributes(
             &format!("{}Attributes", nested.name),
+            &format!("{}Attributes.names", nested.name),
             &nested.path,
             &fields,
             &[],
@@ -873,10 +875,12 @@ fn always_present(field: &BindingField) -> bool {
     field.required
 }
 
-/// A higher-kinded attribute structure plus its decoder (for any `Marshal f o`) and its
-/// encoder at resolved state, so state round-trips through `Value`.
+/// A higher-kinded attribute structure plus its decoder (for any `Marshal f o`), its encoder
+/// at resolved state, so state round-trips through `Value`, and `names_name`: the same
+/// structure instantiated at `fun _ => String`, holding each attribute's provider name.
 fn render_attributes(
     name: &str,
+    names_name: &str,
     parent_path: &[String],
     fields: &[&BindingField],
     reserved: &[&str],
@@ -940,6 +944,32 @@ fn render_attributes(
         );
     }
     output.push_str(" ]⟩\n\n");
+    // Attribute names as a record shaped like the attributes: `names.nodePool = "node_pool"`.
+    // Policies (`resource.argument? names.size`) and `ignoreChanges [names.nodeCount]` then name
+    // attributes through the generated record, so a schema rename is a compile error rather
+    // than a silently unmatched string.
+    let _ = write!(
+        output,
+        "/-- The provider-side name of every attribute, as a record shaped like the attributes \
+         themselves, so policies and `ignoreChanges` never spell provider names as raw strings. \
+         `@[simp]` so that proofs by `simp` see the strings behind the record. -/\n\
+         @[simp] def {names_name} : {name} (fun _ => String) (fun _ => String) :=\n  "
+    );
+    if fields.is_empty() {
+        output.push_str("{}\n\n");
+    } else {
+        output.push('{');
+        for (index, field) in fields.iter().enumerate() {
+            let separator = if index == 0 { " " } else { "\n    " };
+            let _ = write!(
+                output,
+                "{separator}{} := \"{}\"",
+                safe_field_name(field, reserved),
+                escape_string(&field.provider_name)
+            );
+        }
+        output.push_str(" }\n\n");
+    }
     output
 }
 
@@ -1566,6 +1596,14 @@ mod tests {
         ));
         assert!(source.contains("instance : ToValue (Attributes Resolved Option) :="));
         assert!(source.contains("(\"node_pool\", toValue attributes.nodePool)"));
+        // Attribute names as values, for policies and `ignoreChanges`.
+        assert!(source.contains(
+            "@[simp] def names : Attributes (fun _ => String) (fun _ => String) :=\n  { end_ := \"end\"\n    id := \"id\""
+        ));
+        assert!(source.contains("nodePool := \"node_pool\""));
+        assert!(source.contains(
+            "@[simp] def NodePoolAttributes.names : NodePoolAttributes (fun _ => String) (fun _ => String) :="
+        ));
         assert!(source.contains("structure NodePoolAttributes (f o : Type → Type) where"));
         assert!(source.contains("taint : f (o (List (NodePoolTaintAttributes f o)))"));
         assert!(source.contains(

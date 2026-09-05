@@ -13,9 +13,12 @@ open Inframe
 open DigitalOcean
 open DigitalOcean.Resource
 
-/-- The rule for one database: it must sit on the managed VPC, referenced symbolically. -/
+/-- The rule for one database: it must sit on the managed VPC, referenced symbolically. The
+argument and the referenced attribute are named through the generated `names` records, so a
+schema rename is a compile error here rather than a rule that silently matches nothing. -/
 def databaseRule (database : ResourceSpec) : Option String :=
-  if database.argumentRefersTo "private_network_uuid" (.res "digitalocean_vpc" "platform") ["id"]
+  if database.argumentRefersTo DatabaseCluster.names.privateNetworkUuid
+      (.res "digitalocean_vpc" "platform") [Vpc.names.id]
   then none
   else some "private_network_uuid must reference digitalocean_vpc.platform.id"
 
