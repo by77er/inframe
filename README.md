@@ -1,21 +1,13 @@
 # Inframe
 
-Inframe is an infrastructure-as-code interface that's actually good, I hope. I'm
+Inframe is an infrastructure-as-code interface that's actually nice to use, I hope. I'm
 not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a
 functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
 and state management to OpenTofu, and generates typed adapters for Terraform
-providers in two frontend languages:
+providers in two frontend languages: LEAN 4 and PureScript. Both provide a pure functional interface, but LEAN 4 allows deeper valuation and improved ergonomics.
 
-- **PureScript**: infrastructure is a pure `Infra` value; policies are ordinary
-  tests over the graph.
-- **Lean 4**: the same pure graph, plus compile-time proofs. Resource names are
-  validated when the module compiles, the reference validator is a theorem,
-  and policies are decidable propositions that the Lean kernel checks, for
-  every parameterization of a stack at once.
-
-Both frontends render the same Graph IR document for the same stack (CI diffs
-them), and both are driven by the same `inframe` CLI.
+Both frontends render the same intermediate representation
 
 > Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
 it's mostly data plumbing, be wary and look at your plans before applying if you
@@ -122,28 +114,6 @@ databaseUsesManagedVpc resource
 
 ## The same stack in Lean 4
 
-The Lean 4 frontend is a Lake package with the same graph semantics, the same
-Graph IR encoder, and generated adapters produced from the same binding model.
-A resource's arguments are one record: required attributes are plain fields,
-optional ones default to unset, nested blocks are records held as the schema
-allows (a block allowed exactly once is a plain field, at most once an `Option`,
-otherwise a `List`, with any bound on the list's length a proof obligation that
-is discharged automatically whenever the number of blocks is literal, whatever
-their values refer to), and known values are plain literals (they coerce to
-provider inputs). Handle attributes
-are symbolic inputs, and computed strings are shaped with OpenTofu's own
-functions as dot-notation (`droplet.id.tonumber`, `name.replace " " "-"`) or
-interpolated with `tf!"web-{droplet.id}.internal"`. Every resource's
-attributes are one higher-kinded structure: the handle instantiates it at
-`Input`, and `Droplet.State` instantiates it at plain values (with `Option` for
-attributes OpenTofu may leave null) and decodes the output of `inframe show`, so
-a stack can be a function of another stack's state.
-It is exercised in CI exactly like the PureScript one: the core library's
-theorems and tests run, every generated DigitalOcean module compiles, the
-integration stack is built and policy-checked through `inframe build` and
-`inframe test`, and its output is validated by the Rust CLI. The platform stack
-above, written in Lean, renders byte-identical Graph IR:
-
 ```lean
 def infrastructureFor (env : Environment) (databases : List Identifier) : Infra Unit := do
   let provider ← Provider.configure { token := secretEnv "DIGITALOCEAN_TOKEN" }
@@ -212,33 +182,6 @@ theorem databases_use_managed_vpc (env : Environment) (databases : List Identifi
   references, provider selection, replacement triggers, moves, dependency
   cycles) is a theorem about the concrete graph rather than a later error from
   `inframe graph validate`.
-
-Everything goes through kernel `decide`, never `native_decide`, so the trusted
-base is the Lean kernel plus the Rust validator that still runs on the emitted
-document. The emitter has been run against the DigitalOcean, Google, and AWS
-providers; see [lean-stress-test.md](lean-stress-test.md).
-
-### What a green build proves, and what it does not
-
-- **Graph structure.** `Graph.Valid` is the reference validator as a theorem:
-  names, references, provider selection, replacement triggers, moves, and
-  acyclicity. The Rust validator re-checks the same rules on the emitted
-  document, so the two never disagree about a graph.
-- **Provider schema, as far as it is in the types.** Required arguments,
-  attribute types, and how many entries a nested block may have are in the
-  generated records. Value-level rules (allowed strings, formats, "exactly one
-  of these") are not; `inframe validate` runs OpenTofu's own validation with the
-  provider installed and no credentials.
-- **Policies.** A theorem proves the properties you stated about the graphs
-  your program can produce, for the inputs you quantified over, and nothing
-  else. It says nothing about the account: quotas, permissions, drift, and what
-  the provider does at apply time are what `plan` and `apply` are for.
-- **Serialization.** Lowering Graph IR to OpenTofu JSON is Rust code outside
-  the kernel. It is covered by golden files and by a round trip
-  (`scripts/check-template-escapes.sh`) that applies a graph with OpenTofu and
-  compares the resolved values with the literals the graph wrote.
-
-A green proof plus a green plan is the evidence; neither is on its own.
 
 ## How to use it
 
