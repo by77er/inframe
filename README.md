@@ -1,11 +1,12 @@
 # Inframe
 
 Inframe is an infrastructure-as-code interface that's actually nice to use, I hope. I'm
-not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a
+not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a pure
 functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
 and state management to OpenTofu, and generates typed adapters for Terraform
-providers in two frontend languages: LEAN 4 and PureScript. Both provide a pure functional interface, but LEAN 4 allows deeper valuation and improved ergonomics.
+providers in two frontend languages: LEAN 4 and PureScript. Both provide a pure
+functional interface, but LEAN 4 allows more sophisticated validation and improved ergonomics.
 
 Both frontends render the same intermediate representation
 
@@ -144,9 +145,7 @@ def infrastructureFor (env : Environment) (databases : List Identifier) : Infra 
 
 The policy from the PureScript test becomes a theorem about every stack this
 program can produce, not about one graph. The stack is a function of its
-database list, so the proof is an induction over that list; the core's `run`
-lemmas compute what each builder step adds to the graph. `lake build` (and
-therefore `inframe test`) fails if the stack stops satisfying it:
+database list, so the proof is an induction over that list.
 
 ```lean
 def databaseRule (database : ResourceSpec) : Option String :=
@@ -167,21 +166,8 @@ theorem databases_use_managed_vpc (env : Environment) (databases : List Identifi
 
 ### What Lean adds over PureScript
 
-- **Policies are checked by the compiler, for every input.** A policy is a
-  decidable proposition over the graph, so `theorem … := by decide` makes
-  `lake build` (and `inframe test`) fail on a violating stack. A stack that is
-  a function of its inputs is proved for all of them: finite parameters by
-  `cases … <;> decide`, and unbounded ones such as a list of databases by
-  induction. A test only ever samples instantiations. Policies name arguments
-  through the generated `names` records (`DatabaseCluster.names.privateNetworkUuid`
-  is `"private_network_uuid"`), as does `ignoreChanges`, so a provider schema
-  change breaks the build instead of leaving a rule that matches nothing.
-- **The graph is valid before the CLI sees it.** Logical names, aliases,
-  outputs, and secret variable names carry validity proofs discharged from
-  their literals, and the reference validator (duplicate addresses, dangling
-  references, provider selection, replacement triggers, moves, dependency
-  cycles) is a theorem about the concrete graph rather than a later error from
-  `inframe graph validate`.
+A policy is a decidable proposition over the graph, so an invalid infrastructure
+configuration will refuse to compile before even making it to OpenTofu.
 
 ## How to use it
 
