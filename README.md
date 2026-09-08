@@ -8,7 +8,7 @@ and state management to OpenTofu, and generates typed adapters for Terraform
 providers in two frontend languages: LEAN 4 and PureScript. Both provide a pure
 functional interface, but LEAN 4 allows more sophisticated validation and improved ergonomics.
 
-Both frontends render the same intermediate representation
+Both frontends render the same intermediate representation.
 
 > Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
 it's mostly data plumbing, be wary and look at your plans before applying if you
