@@ -7,7 +7,7 @@ import Data.String.Pattern (Pattern(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Test.Assert (assert)
-import Inframe.Builder (Infra, createBeforeDestroy, dependsOn, output, replaceTriggeredBy, resourceOptions, sensitiveOutput)
+import Inframe.Builder (Infra, adopt, createBeforeDestroy, dependsOn, output, replaceTriggeredBy, resourceOptions, sensitiveOutput)
 import Inframe.Core (ExprNode, Input, attribute, computed, ifThenElse, index, interpolate, lit, secretEnv, splat, template, text, unsafeArgument, unsafeCall)
 import Inframe.Internal.Builder (InputObject, addResource, inputObject, insertInputField, requireProvider)
 import Inframe.Internal.Core (inputNode, resourceAttr)
@@ -39,6 +39,7 @@ program = do
   output "first_ip" (attribute (index interfaces (lit 1.0)) "network_ip" :: Input String)
   output "all_ips" (attribute (splat interfaces) "network_ip" :: Input (Array String))
   output "team" (attribute (computed (resourceAttr tag [ "meta" ]) :: Input String) "team" :: Input String)
+  adopt tag "existing-tag-id"
 
 main :: Effect Unit
 main = do
@@ -58,6 +59,7 @@ main = do
   assert $ contains (Pattern "\"name\": \"network_ip\"") rendered
   -- A plain reference keeps the attribute in its path rather than wrapping it.
   assert $ contains (Pattern "\"team\"\n") rendered
+  assert $ contains (Pattern "\"id\": \"existing-tag-id\"") rendered
 
 appendField :: String -> ExprNode -> InputObject -> InputObject
 appendField = insertInputField

@@ -9,6 +9,7 @@ import Inframe.Internal.Builder
   , Graph
   , Infra
   , LifecycleOptions
+  , ImportSpec
   , MoveSpec
   , NodeOptions
   , OutputSpec
@@ -18,6 +19,7 @@ import Inframe.Internal.Builder
   , ResourceScope
   , ResourceSpec
   , DataSourceSpec
+  , adopt
   , buildGraph
   , createBeforeDestroy
   , dataSourceOptions

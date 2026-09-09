@@ -30,6 +30,10 @@ inductive ValidationError where
   | invalidReplaceTriggeredBy (owner : Address) (target : Address)
   | missingMoveTarget (target : Address)
   | duplicateMoveTarget (target : Address)
+  | missingImportTarget (target : Address)
+  | invalidImportTarget (target : Address)
+  | duplicateImportTarget (target : Address)
+  | emptyImportId (target : Address)
   /-- The nodes along a dependency cycle, first node repeated at the end: `[a, b, a]` means
   `a` depends on `b`, which depends on `a`. -/
   | cycle (nodes : List Address)
@@ -50,6 +54,11 @@ def message : ValidationError → String
       s!"`{owner}` lists non-resource `{target}` in replace_triggered_by"
   | .missingMoveTarget target => s!"move target `{target}` does not exist"
   | .duplicateMoveTarget target => s!"duplicate move target `{target}`"
+  | .missingImportTarget target => s!"import target `{target}` does not exist"
+  | .invalidImportTarget target =>
+      s!"import target `{target}` is a data source; only managed resources can be imported"
+  | .duplicateImportTarget target => s!"duplicate import target `{target}`"
+  | .emptyImportId target => s!"import into `{target}` has an empty id"
   | .cycle nodes => s!"dependency cycle: {" -> ".intercalate (nodes.map toString)}"
 
 instance : ToString ValidationError := ⟨message⟩
@@ -127,6 +136,15 @@ def references? (expression : ExprNode) (address : Address) : Bool :=
   expression.references.contains address
 
 end ExprNode
+
+/-- Whether `argument` mentions `address` anywhere in its expression: inside a template
+(`handle.id ++ ".example.com"`), a function call, an index, or a nested object, where
+`argumentRefersTo` (a direct reference only) says `false`. -/
+def ResourceSpec.argumentMentions (resource : ResourceSpec) (argument : String) (address : Address) : Bool :=
+  match resource.argument? argument with
+  | some expression => expression.references? address
+  | none => false
+
 
 private def validateIdentifier (path value : String) : Except ValidationError Unit :=
   if validIdentifier value then .ok () else throw (.invalidIdentifier path value)
@@ -397,6 +415,18 @@ private def validateMoves (addresses : List Address) (targets : List Address) :
     else if targets.contains move.destination then throw (.duplicateMoveTarget move.destination)
     else validateMoves addresses (move.destination :: targets) rest
 
+private def validateImports (addresses : List Address) (targets : List Address) :
+    List ImportSpec → Except ValidationError Unit
+  | [] => .ok ()
+  | import_ :: rest =>
+    if !import_.destination.isResource then throw (.invalidImportTarget import_.destination)
+    else if !addresses.contains import_.destination then
+      throw (.missingImportTarget import_.destination)
+    else if import_.id.toList.all Char.isWhitespace then throw (.emptyImportId import_.destination)
+    else if targets.contains import_.destination then
+      throw (.duplicateImportTarget import_.destination)
+    else validateImports addresses (import_.destination :: targets) rest
+
 /-- The reference validation rules, ported from the Rust `GraphDocument::validate`: names,
 references, provider selection, replacement triggers, moves, and finally that the dependency
 edges form a DAG. -/
@@ -411,6 +441,7 @@ def validate (graph : Graph) : Except ValidationError Unit := do
   validateOutputs addresses graph.outputs
   validateProviderArguments 0 addresses graph.providerConfigs
   validateMoves addresses [] graph.moves
+  validateImports addresses [] graph.imports
   validateAcyclic graph
 
 /-- The graph passes every validation rule. Decidable, so `by decide` proves it for a

@@ -27,6 +27,10 @@ pub struct GraphDocument {
     pub outputs: BTreeMap<String, OutputSpec>,
     #[serde(default)]
     pub moves: Vec<MoveSpec>,
+    /// Existing objects to adopt into managed resources on the next apply, lowered to
+    /// `import` blocks so a whole account can be taken over in one plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<ImportSpec>,
 }
 
 impl Default for GraphDocument {
@@ -39,6 +43,7 @@ impl Default for GraphDocument {
             data_sources: Vec::new(),
             outputs: BTreeMap::new(),
             moves: Vec::new(),
+            imports: Vec::new(),
         }
     }
 }
@@ -142,6 +147,15 @@ pub struct OutputSpec {
 pub struct MoveSpec {
     pub from: Address,
     pub to: Address,
+}
+
+/// Adopt the existing object identified by `id` (in the provider's import-id syntax) as the
+/// managed resource `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportSpec {
+    pub to: Address,
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -432,6 +446,14 @@ pub enum ValidationError {
     InvalidReplaceTriggeredBy { owner: Address, target: Address },
     #[error("dependency cycle: {}", render_cycle(.0))]
     Cycle(Vec<Address>),
+    #[error("import target `{0}` is not present in this graph")]
+    MissingImportTarget(Address),
+    #[error("import target `{0}` is a data source; only managed resources can be imported")]
+    InvalidImportTarget(Address),
+    #[error("duplicate import target `{0}`")]
+    DuplicateImportTarget(Address),
+    #[error("import into `{0}` has an empty id")]
+    EmptyImportId(Address),
     #[error("move target `{0}` is not present in this graph")]
     MissingMoveTarget(Address),
     #[error("duplicate move target `{0}`")]
@@ -536,8 +558,31 @@ impl GraphDocument {
             }
         }
 
+        self.validate_imports(&addresses)?;
+
         if let Some(cycle) = find_cycle(&self.edges()) {
             return Err(ValidationError::Cycle(cycle));
+        }
+        Ok(())
+    }
+
+    /// Imports adopt existing objects into managed resources that are in the graph, each
+    /// at most once, with a non-empty id.
+    fn validate_imports(&self, addresses: &BTreeSet<Address>) -> Result<(), ValidationError> {
+        let mut targets = BTreeSet::new();
+        for import in &self.imports {
+            if !import.to.is_resource() {
+                return Err(ValidationError::InvalidImportTarget(import.to.clone()));
+            }
+            if !addresses.contains(&import.to) {
+                return Err(ValidationError::MissingImportTarget(import.to.clone()));
+            }
+            if import.id.trim().is_empty() {
+                return Err(ValidationError::EmptyImportId(import.to.clone()));
+            }
+            if !targets.insert(import.to.clone()) {
+                return Err(ValidationError::DuplicateImportTarget(import.to.clone()));
+            }
         }
         Ok(())
     }
@@ -1056,6 +1101,55 @@ mod tests {
             graph.validate(),
             Err(ValidationError::InvalidIdentifier { value, .. }) if value == "bad name"
         ));
+    }
+
+    #[test]
+    fn imports_target_existing_managed_resources_once() {
+        let mut graph = tag_graph();
+        let tag = Address::parse("digitalocean_tag.app").unwrap();
+        graph.imports.push(ImportSpec {
+            to: tag.clone(),
+            id: "app".into(),
+        });
+        graph.validate().unwrap();
+        // Round-trips, and is absent from documents that adopt nothing.
+        let text = graph.to_canonical_json().unwrap();
+        assert!(text.contains("\"imports\""));
+        assert_eq!(
+            serde_json::from_str::<GraphDocument>(&text)
+                .unwrap()
+                .imports,
+            graph.imports
+        );
+        assert!(!tag_graph().to_canonical_json().unwrap().contains("imports"));
+
+        graph.imports.push(ImportSpec {
+            to: tag.clone(),
+            id: "again".into(),
+        });
+        assert_eq!(
+            graph.validate(),
+            Err(ValidationError::DuplicateImportTarget(tag.clone()))
+        );
+        graph.imports.pop();
+        graph.imports[0].id = " ".into();
+        assert_eq!(graph.validate(), Err(ValidationError::EmptyImportId(tag)));
+
+        let missing = Address::parse("digitalocean_tag.missing").unwrap();
+        graph.imports[0] = ImportSpec {
+            to: missing.clone(),
+            id: "x".into(),
+        };
+        assert_eq!(
+            graph.validate(),
+            Err(ValidationError::MissingImportTarget(missing))
+        );
+        let data = Address::parse("data.digitalocean_tag.app").unwrap();
+        graph.imports[0].to = data.clone();
+        assert_eq!(
+            graph.validate(),
+            Err(ValidationError::InvalidImportTarget(data))
+        );
     }
 
     #[test]

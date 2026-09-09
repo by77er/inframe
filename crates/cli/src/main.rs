@@ -199,6 +199,10 @@ struct RunArgs {
     /// before `OpenTofu` runs.
     #[arg(long)]
     skip_tests: bool,
+    /// Print only errors from Inframe itself (no build, test, or skip notes); `OpenTofu`'s
+    /// own output is unaffected.
+    #[arg(short, long)]
+    quiet: bool,
     /// Arguments passed directly to `OpenTofu` after `--`.
     #[arg(last = true)]
     tofu_args: Vec<OsString>,
@@ -639,8 +643,15 @@ fn run_graph(
     } else {
         let project = Project::load(project_path)?;
         let (graph, path) = project.build(&arguments.stack, None)?;
-        eprintln!("built stack `{}` to {}", arguments.stack, path.display());
-        check_stack(&project, &arguments.stack, arguments.skip_tests)?;
+        if !arguments.quiet {
+            eprintln!("built stack `{}` to {}", arguments.stack, path.display());
+        }
+        check_stack(
+            &project,
+            &arguments.stack,
+            arguments.skip_tests,
+            arguments.quiet,
+        )?;
         let base = arguments
             .workspace
             .clone()
@@ -673,13 +684,17 @@ fn needs_credentials(command: &str) -> bool {
 /// point has passed, so a policy suite kept in a separate executable gates `plan` and
 /// `apply` as well as `inframe test`. Both the override and the absence of a suite are said
 /// out loud: a green build of the main executable is not evidence that any policy holds.
-fn check_stack(project: &Project, stack: &str, skip: bool) -> Result<()> {
+fn check_stack(project: &Project, stack: &str, skip: bool, quiet: bool) -> Result<()> {
     if skip {
-        eprintln!("skipping the tests of stack `{stack}` (--skip-tests)");
+        if !quiet {
+            eprintln!("skipping the tests of stack `{stack}` (--skip-tests)");
+        }
         return Ok(());
     }
     if project.test_entry_point(stack)?.is_none() {
-        eprintln!("note: stack `{stack}` has no test entry point, so no policies were checked");
+        if !quiet {
+            eprintln!("note: stack `{stack}` has no test entry point, so no policies were checked");
+        }
         return Ok(());
     }
     let status = project.test(stack)?;
@@ -688,7 +703,9 @@ fn check_stack(project: &Project, stack: &str, skip: bool) -> Result<()> {
             "tests for stack `{stack}` failed ({status}); fix the violations, or pass --skip-tests to run OpenTofu regardless"
         );
     }
-    eprintln!("tests for stack `{stack}` passed");
+    if !quiet {
+        eprintln!("tests for stack `{stack}` passed");
+    }
     Ok(())
 }
 

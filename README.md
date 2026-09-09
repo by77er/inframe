@@ -145,7 +145,10 @@ def infrastructureFor (env : Environment) (databases : List Identifier) : Infra 
 
 The policy from the PureScript test becomes a theorem about every stack this
 program can produce, not about one graph. The stack is a function of its
-database list, so the proof is an induction over that list.
+database list, so the proof is an induction over that list. Two helpers ask
+whether an argument points at a resource: `argumentRefersTo` matches a direct
+reference only, `argumentMentions` also finds one inside a template
+(`handle.id ++ ".example.com"`), a function call, an index, or a nested object.
 
 ```lean
 def databaseRule (database : ResourceSpec) : Option String :=
@@ -222,7 +225,61 @@ are gitignored build artifacts. Module names drop the provider's type prefix
 (`google_compute_instance` becomes `ComputeInstance`); the prefix is inferred
 from the provider name and its resource types, so a `google-beta` provider
 strips `google_` rather than stuttering, and `strip_prefix = "google_"` in the
-provider table (or `--strip-prefix`) pins it explicitly. Select one provider with `inframe provider
+provider table (or `--strip-prefix`) pins it explicitly.
+
+If a provider's schema does not decode, `--schema-json` is the escape hatch:
+acquire the raw document yourself (`tofu providers schema -json` in a temporary
+directory whose configuration pins the provider in `required_providers`), fix
+or trim it, and pass it in; raw and normalized documents are both accepted.
+
+### Reading a generated Lean module
+
+Each resource is one module (`Cloudflare.Resource.Zone`) that is a namespace, so
+`open Cloudflare.Resource` and then `Zone.create`; `open Cloudflare.Resource (Zone)`
+does not work because `Zone` is a namespace, not a declaration. Resources have
+`create`/`createWith`, data sources `read`/`readWith`, and the provider
+`configure`/`configureAs`. The `Args` record follows the schema:
+
+| Schema | `Args` field |
+| --- | --- |
+| required attribute | `Input T` |
+| optional attribute | `Option (Input T) := none` |
+| nested block, exactly once | `XArgs` |
+| nested block, at most once | `Option XArgs := none` |
+| nested block, list | `List XArgs := []`, and an empty list is not written |
+| nested attribute (plugin-framework providers), single | `Option XArgs := none` |
+| nested attribute, list or set | `Option (List XArgs) := none`: `none` leaves it unset, `some []` writes `[]` |
+| nested attribute, map | `Option (List (String × XArgs)) := none` |
+| `dynamic` or tuple | `Input Value`, written with `value% { team: "core", tags: ["a"] }` |
+
+Known values coerce, so `type := "full"` and `paused := spec.paused` are enough;
+an `if` expression does not coerce inside an optional field, so write
+`some (lit (if … then "a" else "b"))`. `Number` is `Lean.JsonNumber`: numerals
+elaborate directly, and a `Nat` variable becomes one with
+`Lean.JsonNumber.fromNat`. A field whose name is a Lean keyword gets a trailing
+underscore (`include_`, `private_`, `meta_`, `end_`).
+
+A handle is `Attributes Input Resolved`, so every attribute is a symbolic input
+(`zone.id : Input String`), and handles of different resource types are
+different types: a function that accepts several kinds of resource takes the
+`Input String` it needs rather than a handle. The same structure at
+`Resolved Option` is the resolved state (`Zone.State`, decoded from `inframe show`)
+and at `Option Resolved` a fully tolerant view. Names come from data as easily
+as from literals: an `Identifier` is accepted wherever a literal name is and its
+proof is reused, so `Zone.create (site.indexed 3) { … }` and
+`Record.create (zone.slug host) { … }` need no proof at the call site
+(`Identifier.mk "…"` itself needs a literal; `slug` maps anything an identifier
+cannot contain, such as `.` or `/`, to `-`).
+
+When a generated argument record cannot express what the provider needs, the
+graph primitives are the supported escape hatch: build the record's
+`toInputObject`, `insert` the extra argument as an `ExprNode`, and call
+`addResource` with the resource's phantom type:
+
+```lean
+let values := args.toInputObject |>.insert "extra" (.literal (.string "value"))
+let _ ← addResource (r := Zone.ZoneResource) resourceOptions (Identifier.mk "cloudflare_zone") name values
+``` Select one provider with `inframe provider
 generate digitalocean` and one frontend with `--frontend purescript|lean`;
 `--source`, `--version`, `--module-root`, and `--output` are available for ad
 hoc generation or overrides. `--schema-json` accepts a raw or normalized schema
@@ -251,6 +308,11 @@ path = ".."
 name = "generated-digitalocean"
 path = ".generated/digitalocean"
 ```
+
+A project that points `[lean.core]` at the repository instead writes the same
+dependency as `[[require]] name = "inframe" git = "https://github.com/by77er/inframe" rev = "…" subDir = "lean"`.
+Its `lean-toolchain` must pin the toolchain the core is built with (the one in
+`lean/lean-toolchain`); `inframe build` warns when it does not.
 
 Generated adapters are ordinary PureScript source, so the PureScript language
 server provides completion, inferred signatures, hover types, and navigation
@@ -335,9 +397,15 @@ artifact was written. A frontend tool that fails is reported with its command
 line, exit status, and stderr verbatim, and a tool that is missing from `PATH`
 is named along with how to install it.
 `inspect` prints a tree of provider pins, configured arguments, resources, data
-sources, symbolic outputs, moves, and dependency edges. An explicit JSON path
-or `-` for stdin remains available for debugging. `build` does not invoke
-OpenTofu or contact the cloud. `test` runs the stack's configured test entry
+sources, symbolic outputs, moves, imports, and dependency edges. An explicit
+JSON path or `-` for stdin remains available for debugging. `build` does not
+invoke OpenTofu or contact the cloud. For a Lean stack it runs
+`lake -q exe <main>`, which compiles only that executable's import tree: a
+broken test module does not break `build`, and the first `inframe test` after a
+run of builds compiles the rest. `inframe graph schema` prints the Graph IR
+JSON Schema, the reference for the wire format (references serialize as
+`resource_attr`, secrets as `secret_env`, whatever the frontend constructors
+are called). `test` runs the stack's configured test entry
 point and preserves its exit status; the test library and structure remain the
 project's choice. For a Lean stack the policy theorems in the test executable's
 modules are checked by the compiler before the executable runs, so a violated
@@ -362,8 +430,9 @@ OpenTofu JSON into `.inframe/stacks/<stack>/`. When the stack configures a
 run it after building and stop if it fails, so a policy suite kept in its own
 executable gates deployment and not only `inframe test`; `--skip-tests`
 overrides that and says so on stderr, and a stack without a test entry point is
-pointed out every time. A graph passed with `--graph` bypasses the project and
-only the reference validator runs on it.
+pointed out every time (`--quiet` silences those notes and the build line,
+never errors). A graph passed with `--graph` bypasses the project and only the
+reference validator runs on it.
 
 Secrets referenced with `secretEnv` are required only for the subcommands that
 contact providers (`plan`, `apply`, `destroy`, and `refresh`, `import`, and
@@ -374,6 +443,23 @@ Anything else OpenTofu can do in the workspace goes through the same prepared
 configuration with `inframe tofu --stack <name> -- <subcommand>`, for example
 `-- state list`, `-- import digitalocean_droplet.web 12345`, or
 `-- force-unlock <id>`.
+
+#### Adopting existing infrastructure
+
+Objects that already exist are adopted from the program, not one command at a
+time: `adopt handle "<id>"` (the id in the provider's import syntax, the string
+`tofu import` takes) records an `import` block for the handle's resource, so the
+next `inframe plan` shows every adoption at once and `apply` performs them in
+one run. Delete the `adopt` calls once the state holds the objects.
+
+```lean
+let zone ← Zone.create "example" { account := { id := accountId }, name := "example.com" }
+adopt zone "023e105f4ecef8ad9ca31a8372d0c353"
+```
+
+`inframe tofu --stack <name> -- import <address> <id>` still works for a single
+object; it rebuilds and re-runs the tests on every call, so a loop over many of
+them wants `--skip-tests --quiet`.
 
 ### 6. Configure remote state
 

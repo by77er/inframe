@@ -108,9 +108,12 @@ def encodeOutput (output : OutputSpec) : Json :=
 def encodeMove (move : MoveSpec) : Json :=
   Json.mkObj [("from", .str move.origin.toString), ("to", .str move.destination.toString)]
 
+def encodeImport (import_ : ImportSpec) : Json :=
+  Json.mkObj [("to", .str import_.destination.toString), ("id", .str import_.id)]
+
 /-- Encode a completed graph as a Graph IR 1.0 document. -/
 def encodeGraph (graph : Graph) : Json :=
-  Json.mkObj
+  Json.mkObj <|
     [ ("format_version", .str "1.0")
     , ("required_providers",
         Json.mkObj (graph.requiredProviders.map fun (name, requirement) =>
@@ -120,6 +123,9 @@ def encodeGraph (graph : Graph) : Json :=
     , ("data_sources", .arr (graph.dataSources.map encodeDataSource).toArray)
     , ("outputs", Json.mkObj (graph.outputs.map fun (name, output) => (name, encodeOutput output)))
     , ("moves", .arr (graph.moves.map encodeMove).toArray) ]
+    ++ match graph.imports with
+      | [] => []
+      | imports => [("imports", Json.arr (imports.map encodeImport).toArray)]
 
 instance : Lean.ToJson Graph := ⟨encodeGraph⟩
 

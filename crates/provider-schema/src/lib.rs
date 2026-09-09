@@ -151,6 +151,9 @@ struct RawAttribute {
 #[derive(Debug, Deserialize)]
 struct RawNestedAttribute {
     nesting_mode: String,
+    /// Absent for an empty object type; plugin-framework providers emit a `nesting_mode`
+    /// with no attribute map for those.
+    #[serde(default)]
     attributes: BTreeMap<String, RawAttribute>,
 }
 
@@ -506,6 +509,40 @@ mod tests {
             source: "digitalocean/digitalocean".into(),
             version: "2.100.0".into(),
         }
+    }
+
+    /// Plugin-framework providers emit empty object types as a `nested_type` with a
+    /// `nesting_mode` and no `attributes` map.
+    #[test]
+    fn tolerates_nested_types_without_attributes() {
+        let fixture = br#"{
+          "format_version": "1.0",
+          "provider_schemas": {
+            "registry.opentofu.org/cloudflare/cloudflare": {
+              "provider": { "block": { "attributes": {} } },
+              "resource_schemas": {
+                "cloudflare_pages_project": { "block": { "attributes": {
+                  "bindings": {
+                    "nested_type": { "nesting_mode": "list" },
+                    "optional": true
+                  }
+                } } }
+              }
+            }
+          }
+        }"#;
+        let request = ProviderRequest {
+            source: "cloudflare/cloudflare".into(),
+            version: "5.24.0".into(),
+        };
+        let schema = normalize_schema(fixture, &request).unwrap();
+        let bindings = &schema.resources["cloudflare_pages_project"]
+            .block
+            .attributes["bindings"];
+        assert_eq!(
+            bindings.r#type,
+            SchemaType::List(Box::new(SchemaType::Object(BTreeMap::new())))
+        );
     }
 
     #[test]

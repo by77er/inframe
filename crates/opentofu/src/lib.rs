@@ -181,6 +181,24 @@ pub fn lower(graph: &GraphDocument) -> Result<Value, LowerError> {
         );
     }
 
+    if !graph.imports.is_empty() {
+        document.insert(
+            "import".into(),
+            Value::Array(
+                graph
+                    .imports
+                    .iter()
+                    .map(|import| {
+                        json!({
+                            "to": import.to.to_string(),
+                            "id": escape_template(&import.id),
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+
     let mut value = Value::Object(document);
     sort_json(&mut value);
     Ok(value)
@@ -591,7 +609,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use inframe_graph_ir::{
-        Address, DataSourceSpec, OutputSpec, ProviderRequirement, ResourceSpec,
+        Address, DataSourceSpec, ImportSpec, OutputSpec, ProviderRequirement, ResourceSpec,
     };
     use tempfile::tempdir;
 
@@ -682,6 +700,26 @@ mod tests {
         assert_eq!(
             lower_expr(&splat).unwrap(),
             Value::String("${google_compute_instance.web.network_interface[*].network_ip}".into())
+        );
+    }
+
+    #[test]
+    fn lowers_imports_to_import_blocks() {
+        let mut graph = graph();
+        graph.imports.push(ImportSpec {
+            to: Address::parse("digitalocean_tag.app").unwrap(),
+            id: "app-${literal}".into(),
+        });
+        let lowered = lower(&graph).unwrap();
+        assert_eq!(
+            lowered["import"],
+            json!([{ "to": "digitalocean_tag.app", "id": "app-$${literal}" }])
+        );
+        assert!(
+            lower(&self::tests::graph())
+                .unwrap()
+                .get("import")
+                .is_none()
         );
     }
 

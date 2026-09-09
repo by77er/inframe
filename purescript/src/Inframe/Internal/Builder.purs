@@ -8,6 +8,7 @@ module Inframe.Internal.Builder
   , OutputSpec
   , LifecycleOptions
   , MoveSpec
+  , ImportSpec
   , class OutputValue
   , outputValueNode
   , InputObject
@@ -32,6 +33,7 @@ module Inframe.Internal.Builder
   , addResource
   , addDataSource
   , output
+  , adopt
   , sensitiveOutput
   , buildGraph
   ) where
@@ -125,6 +127,13 @@ type MoveSpec =
   , to :: String
   }
 
+-- | Adopt the existing object `id` (in the provider's import-id syntax) as the
+-- | managed resource `to` on the next apply; lowered to an OpenTofu `import` block.
+type ImportSpec =
+  { to :: String
+  , id :: String
+  }
+
 type Graph =
   { requiredProviders :: Object ProviderRequirement
   , providerConfigs :: Array ProviderConfigSpec
@@ -132,6 +141,7 @@ type Graph =
   , dataSources :: Array DataSourceSpec
   , outputs :: Object OutputSpec
   , moves :: Array MoveSpec
+  , imports :: Array ImportSpec
   }
 
 newtype Infra a = Infra (Graph -> Tuple a Graph)
@@ -203,10 +213,19 @@ initialGraph =
   , dataSources: []
   , outputs: Object.empty
   , moves: []
+  , imports: []
   }
 
 modify :: (Graph -> Graph) -> Infra Unit
 modify transform = Infra \graph -> Tuple unit (transform graph)
+
+-- | Adopt an existing object into a managed resource: on the next apply OpenTofu
+-- | imports the object with `id` (the same string `tofu import` takes) as the
+-- | handle's address instead of creating one, so a whole account is taken over
+-- | in one plan. Once the state holds it, the call can go.
+adopt :: forall resource. Resource resource -> String -> Infra Unit
+adopt handle id =
+  modify \graph -> graph { imports = graph.imports <> [ { to: dependencyAddress handle, id } ] }
 
 requireProvider :: String -> String -> String -> Infra Unit
 requireProvider localName source version =

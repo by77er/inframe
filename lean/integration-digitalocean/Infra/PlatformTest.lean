@@ -134,6 +134,20 @@ theorem cluster_version_comes_from_data_source :
 theorem secrets : (buildGraph infrastructure).secretEnvironmentNames = ["DIGITALOCEAN_TOKEN"] := by
   decide
 
+
+/-- Names from data: an `Identifier` is accepted wherever a literal name is, and its proof is
+reused, so `create` takes `site.indexed 3` or `site.slug cidr` directly. -/
+example (site : Identifier) (index : Nat) : Infra Vpc.Vpc :=
+  Vpc.create (site.indexed index) { name := "platform", region := "nyc3" }
+
+example (site : Identifier) : Infra Vpc.Vpc :=
+  Vpc.create site { name := "platform", region := "nyc3" }
+
+/-- Adoption of an existing VPC into the graph: one `import` block, one plan. -/
+example : Infra Unit := do
+  let network ← Vpc.create "existing" { name := "existing", region := "nyc3" }
+  adopt network "a1b2c3d4-0000-4000-8000-000000000000"
+
 def main : IO Unit := do
   for env in [Environment.dev, Environment.prod] do
     IO.println s!"environment {repr env}:"

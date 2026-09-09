@@ -1075,3 +1075,62 @@ type = "local"
         .success();
     assert!(generated.join("Instance.purs").is_file());
 }
+
+/// `--quiet` keeps Inframe's own notes off stderr; a mismatched Lean toolchain pin is named.
+#[cfg(unix)]
+#[test]
+fn quiet_lifecycle_runs_and_toolchain_pins_are_checked() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(&project, LEAN_PROJECT).unwrap();
+    let path = fake_lake(
+        directory.path(),
+        &format!("#!/bin/sh\ncat <<'GRAPH'\n{GRAPH}\nGRAPH\n"),
+    );
+
+    let run = |quiet: bool| {
+        let mut command = Command::cargo_bin("inframe").unwrap();
+        command.arg("--project").arg(&project).args([
+            "--tofu-binary",
+            "true",
+            "init",
+            "--stack",
+            "dev",
+            "--skip-tests",
+        ]);
+        if quiet {
+            command.arg("--quiet");
+        }
+        command.env("PATH", &path);
+        command
+    };
+    run(false)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("built stack `dev`"))
+        .stderr(predicate::str::contains(
+            "skipping the tests of stack `dev`",
+        ));
+    run(true)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("built stack").not())
+        .stderr(predicate::str::contains("skipping the tests").not());
+
+    fs::write(
+        directory.path().join("lean/lean-toolchain"),
+        "leanprover/lean4:v4.0.0\n",
+    )
+    .unwrap();
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args(["build", "--stack", "dev"])
+        .env("PATH", &path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning:"))
+        .stderr(predicate::str::contains("pins `leanprover/lean4:v4.0.0`"));
+}

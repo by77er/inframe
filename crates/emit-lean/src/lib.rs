@@ -612,9 +612,15 @@ fn block_constraints(
             (NestedContainer::Single, true, _) | (NestedContainer::Array, _, Multiplicity::One) => {
                 format!("{record}.blocksInRange a.{field_name}")
             }
+            (NestedContainer::Array, false, Multiplicity::Many { .. }) if nullable_list(field) => {
+                format!("a.{field_name}.all fun items => items.all {record}.blocksInRange")
+            }
             (NestedContainer::Single, false, _) | (NestedContainer::Array, _, _) => {
                 format!("a.{field_name}.all {record}.blocksInRange")
             }
+            (NestedContainer::Map, false, _) if nullable_list(field) => format!(
+                "a.{field_name}.all fun entries => entries.all fun (_, block) => {record}.blocksInRange block"
+            ),
             (NestedContainer::Map, _, _) => {
                 format!("a.{field_name}.all fun (_, block) => {record}.blocksInRange block")
             }
@@ -622,6 +628,17 @@ fn block_constraints(
         constraints.push((format!("`{}` entries in range", field.provider_name), check));
     }
     constraints
+}
+
+/// Whether an optional nested list or map is a plugin-framework *attribute* rather than a
+/// legacy block. For a block, "no entries" and "unset" are the same configuration, so an
+/// empty list is simply not written. For a nested attribute they differ: `null` leaves the
+/// attribute unset (a computed one is then filled in by the provider), `[]` asserts that it
+/// is empty, and a provider that reads an absent list back as `[]` plans a change forever if
+/// the configuration keeps saying `null`. The field is therefore `Option (List …)`: `none`
+/// is unset, `some []` is empty.
+fn nullable_list(field: &BindingField) -> bool {
+    !field.block && !field.required
 }
 
 /// The field type in an argument record, with the default for optional fields.
@@ -634,9 +651,15 @@ fn render_args_field_type(field: &BindingField, path: &[String], shapes: &Shapes
             Multiplicity::One => record,
             Multiplicity::AtMostOne => format!("Option {record} := none"),
             Multiplicity::Many { .. } if required => format!("List {record}"),
+            Multiplicity::Many { .. } if nullable_list(field) => {
+                format!("Option (List {record}) := none")
+            }
             Multiplicity::Many { .. } => format!("List {record} := []"),
         },
         (Some(NestedContainer::Map), true) => format!("List (String × {record})"),
+        (Some(NestedContainer::Map), false) if nullable_list(field) => {
+            format!("Option (List (String × {record})) := none")
+        }
         (Some(NestedContainer::Map), false) => format!("List (String × {record}) := []"),
         (None, true) => format!(
             "Input {}",
@@ -677,11 +700,17 @@ fn render_args_field_entry(
                 "a.{field_name}.map fun block => (\"{key}\", ExprNode.array [block.toExprNode])"
             ),
             Multiplicity::Many { .. } if required => format!("some (\"{key}\", {array})"),
+            Multiplicity::Many { .. } if nullable_list(field) => format!(
+                "a.{field_name}.map fun items => (\"{key}\", ExprNode.array (items.map {record}.toExprNode))"
+            ),
             Multiplicity::Many { .. } => {
                 format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {array})")
             }
         },
         (Some(NestedContainer::Map), true) => format!("some (\"{key}\", {map})"),
+        (Some(NestedContainer::Map), false) if nullable_list(field) => format!(
+            "a.{field_name}.map fun entries => (\"{key}\", ExprNode.object (entries.map fun (key, block) => (key, {record}.toExprNode block)))"
+        ),
         (Some(NestedContainer::Map), false) => {
             format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {map})")
         }
@@ -909,7 +938,8 @@ fn render_attributes(
     // Lean's structure-instance parser wants newline-separated fields aligned in one column.
     let _ = write!(
         output,
-        "\ndef {name}.ofValue [Marshal f o] (value : Value) : Except String ({name} f o) := do\n  pure"
+        "\ndef {name}.ofValue [Marshal f o] ({} : Value) : Except String ({name} f o) := do\n  pure",
+        if fields.is_empty() { "_value" } else { "value" }
     );
     if fields.is_empty() {
         output.push_str(" {}\n\n");
@@ -934,7 +964,8 @@ fn render_attributes(
     let _ = write!(
         output,
         "instance [Marshal f o] : FromValue ({name} f o) := ⟨{name}.ofValue⟩\n\n\
-         instance : ToValue ({name} Resolved Option) :=\n  ⟨fun attributes => .object\n    ["
+         instance : ToValue ({name} Resolved Option) :=\n  ⟨fun {} => .object\n    [",
+        if fields.is_empty() { "_" } else { "attributes" }
     );
     for (index, field) in fields.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n    , " };
@@ -986,10 +1017,11 @@ fn render_symbolic_fields(name: &str, fields: &[&BindingField], reserved: &[&str
         "/-- The typed attributes of a symbolic `{name}` value, behind `Input.fields`: \
          `value.fields.<attribute>` for an element of a computed list, and the projection \
          `Input.splat` maps over every element. -/\n\
-         def {name}.ofInput (value : Input ({name} Input Resolved)) : {name} Input Resolved :=\n  "
+         def {name}.ofInput ({} : Input ({name} Input Resolved)) : {name} Input Resolved :=\n  ",
+        if fields.is_empty() { "_value" } else { "value" }
     );
     if fields.is_empty() {
-        output.push_str("let _ := value\n  {}\n\n");
+        output.push_str("{}\n\n");
     } else {
         output.push('{');
         for (index, field) in fields.iter().enumerate() {
@@ -1667,7 +1699,7 @@ mod tests {
         assert!(source.contains("  values : Option (Input (List String)) := none"));
         assert!(!source.contains("  id : Option (Input String) := none\n  kubeConfig"));
         assert!(source.contains(
-            "structure NodePoolArgs where\n  name : Input String\n  /-- Whether automatic scaling is enabled. -/\n  autoScale : Option (Input Bool) := none\n  taint : List NodePoolTaintArgs := []"
+            "structure NodePoolArgs where\n  name : Input String\n  /-- Whether automatic scaling is enabled. -/\n  autoScale : Option (Input Bool) := none\n  taint : Option (List NodePoolTaintArgs) := none"
         ));
         assert!(!source.contains("actualNodeCount : Option"));
         assert!(source.contains("def Args.toInputObject (a : Args) : InputObject :="));
@@ -1676,8 +1708,11 @@ mod tests {
             "some (\"node_pool\", ExprNode.array (a.nodePool.map NodePoolArgs.toExprNode))"
         ));
         assert!(source.contains("a.end_.map fun value => (\"end\", inputNode value)"));
+        // `taint` is a nested attribute (not a block) in this fixture: `none` is unset and
+        // `some []` is an empty list, so an empty list is written as `[]`.
+        assert!(source.contains("taint : Option (List NodePoolTaintArgs) := none"));
         assert!(source.contains(
-            "if a.taint.isEmpty then none else some (\"taint\", ExprNode.array (a.taint.map NodePoolTaintArgs.toExprNode))"
+            "a.taint.map fun items => (\"taint\", ExprNode.array (items.map NodePoolTaintArgs.toExprNode))"
         ));
         assert!(source.contains("def NodePoolArgs.toExprNode (a : NodePoolArgs) : ExprNode :="));
         // Handle construction and creation.
@@ -1772,7 +1807,7 @@ mod tests {
         assert!(source.contains("(shared by 2 block paths with the same shape)"));
         assert!(!source.contains("structure SecondaryArgs"));
         assert!(source.contains("  primary : List PrimaryArgs\n"));
-        assert!(source.contains("  secondary : List PrimaryArgs := []"));
+        assert!(source.contains("  secondary : Option (List PrimaryArgs) := none"));
         assert!(source.contains("secondary : f (o (List (PrimaryAttributes f o)))"));
         assert!(source.contains("structure DifferentArgs where"));
     }
@@ -1806,6 +1841,52 @@ mod tests {
         let first = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
         let second = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
         assert_eq!(first, second);
+    }
+
+    /// A legacy block list drops its empty value (unset and empty are one configuration);
+    /// an empty attribute structure binds no unused names.
+    #[test]
+    fn optional_block_lists_are_dropped_when_empty() {
+        let mut package = package();
+        let mut rule = field(
+            "rule",
+            "rule",
+            BindingType::List(Box::new(BindingType::Object(vec![field(
+                "port",
+                "port",
+                BindingType::String,
+                false,
+                true,
+                false,
+            )]))),
+            false,
+            true,
+            false,
+        );
+        rule.block = true;
+        let mut empty = field(
+            "empty",
+            "empty",
+            BindingType::List(Box::new(BindingType::Object(Vec::new()))),
+            false,
+            true,
+            false,
+        );
+        empty.block = true;
+        package.resources[0].fields.push(rule);
+        package.resources[0].fields.push(empty);
+        let generated = render_package(&package, "DigitalOcean", "abc", &core()).unwrap();
+        let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
+        assert!(source.contains("rule : List RuleArgs := []"));
+        assert!(source.contains(
+            "if a.rule.isEmpty then none else some (\"rule\", ExprNode.array (a.rule.map RuleArgs.toExprNode))"
+        ));
+        assert!(source.contains("def EmptyAttributes.ofValue [Marshal f o] (_value : Value)"));
+        assert!(source.contains("⟨fun _ => .object\n    [ ]⟩"));
+        assert!(source.contains(
+            "def EmptyAttributes.ofInput (_value : Input (EmptyAttributes Input Resolved))"
+        ));
+        assert!(!source.contains("(value : Value) : Except String (EmptyAttributes"));
     }
 
     #[test]

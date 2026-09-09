@@ -38,6 +38,7 @@ pub fn render(graph: &GraphDocument) -> Result<String, ValidationError> {
     render_section(&mut output, "Data sources", &data_source_nodes(graph));
     render_section(&mut output, "Outputs", &output_nodes(graph));
     render_section(&mut output, "Moves", &move_nodes(graph));
+    render_section(&mut output, "Imports", &import_nodes(graph));
     render_section(
         &mut output,
         "Dependencies",
@@ -223,6 +224,21 @@ fn move_nodes(graph: &GraphDocument) -> Vec<TreeNode> {
     moves
         .into_iter()
         .map(|movement| TreeNode::leaf(format!("{} -> {}", movement.from, movement.to)))
+        .collect()
+}
+
+fn import_nodes(graph: &GraphDocument) -> Vec<TreeNode> {
+    let mut imports: Vec<_> = graph.imports.iter().collect();
+    imports.sort_by_key(|import| import.to.to_string());
+    imports
+        .into_iter()
+        .map(|import| {
+            TreeNode::leaf(format!(
+                "{} <- {}",
+                import.to,
+                format_json(&Value::String(import.id.clone()))
+            ))
+        })
         .collect()
 }
 

@@ -97,6 +97,7 @@ OpenTofu/Terraform already solve the operationally difficult parts of infrastruc
 - state;
 - import;
 - moves;
+- imports (adoption of existing objects, lowered to `import` blocks);
 - replacement behavior;
 - remote backends;
 - locking;
@@ -554,6 +555,7 @@ pub struct GraphDocument {
     pub data_sources: Vec<DataSourceSpec>,
     pub outputs: BTreeMap<String, Expr>,
     pub moves: Vec<MoveSpec>,
+    pub imports: Vec<ImportSpec>,
 }
 ```
 
@@ -1175,6 +1177,7 @@ Inframe.Json         Graph IR 1.0 encoder, renderGraph (compact), emitGraph
 Inframe.Validate     Graph.validate (port of the Rust validator), dependencies
 Inframe.Policy       Policy, Violation, Policy.Holds, reports
 Inframe.RemoteState  terraform_remote_state per backend, typed outputs
+                     (Builder also has `adopt`: imports as graph data)
 Inframe.Assert       #assert_policy / #assert_valid (evaluation, not reduction)
 ```
 

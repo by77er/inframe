@@ -7,7 +7,7 @@ use std::process::{Command, ExitStatus, Output};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use inframe_emit_lean::CoreDependency;
+use inframe_emit_lean::{CoreDependency, LEAN_TOOLCHAIN};
 use inframe_graph_ir::GraphDocument;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -459,6 +459,7 @@ impl Project {
             Frontend::Lean => {
                 let config = self.lean_config()?;
                 let main = stack_config.main.as_deref().unwrap_or(&config.main);
+                warn_toolchain_mismatch(&self.root.join(&config.directory));
                 (self.lake(config, main), main)
             }
         };
@@ -599,6 +600,23 @@ fn frontend_tool(frontend: Frontend) -> &'static str {
     match frontend {
         Frontend::PureScript => "spago",
         Frontend::Lean => "lake",
+    }
+}
+
+/// The core library is built with one Lean toolchain; a project pinning another gets a
+/// Lake build against mismatched `.olean`s, which fails in ways that do not name the cause.
+fn warn_toolchain_mismatch(directory: &Path) {
+    let path = directory.join("lean-toolchain");
+    let Ok(pinned) = fs::read_to_string(&path) else {
+        return;
+    };
+    let pinned = pinned.trim();
+    if !pinned.is_empty() && pinned != LEAN_TOOLCHAIN {
+        eprintln!(
+            "warning: {} pins `{pinned}` but the inframe core library is built with `{LEAN_TOOLCHAIN}`; \
+             pin the same toolchain to build against the core's compiled modules",
+            path.display()
+        );
     }
 }
 

@@ -8,7 +8,7 @@ import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
-import Inframe.Builder (DataSourceSpec, Graph, Infra, LifecycleOptions, MoveSpec, OutputSpec, ProviderConfigSpec, ProviderRequirement, ResourceSpec, buildGraph)
+import Inframe.Builder (DataSourceSpec, Graph, Infra, LifecycleOptions, ImportSpec, MoveSpec, OutputSpec, ProviderConfigSpec, ProviderRequirement, ResourceSpec, buildGraph)
 import Inframe.Internal.Core (ExprNode(..), TemplatePart(..))
 
 encodeGraph :: Graph -> Json
@@ -20,6 +20,7 @@ encodeGraph graph = fromObject $ Object.fromFoldable
   , Tuple "data_sources" (fromArray (map encodeDataSource graph.dataSources))
   , Tuple "outputs" (fromObject (map encodeOutput graph.outputs))
   , Tuple "moves" (fromArray (map encodeMove graph.moves))
+  , Tuple "imports" (fromArray (map encodeImport graph.imports))
   ]
 
 renderGraph :: forall a. Infra a -> String
@@ -76,6 +77,12 @@ encodeMove :: MoveSpec -> Json
 encodeMove movement = fromObject $ Object.fromFoldable
   [ Tuple "from" (fromString movement.from)
   , Tuple "to" (fromString movement.to)
+  ]
+
+encodeImport :: ImportSpec -> Json
+encodeImport import_ = fromObject $ Object.fromFoldable
+  [ Tuple "to" (fromString import_.to)
+  , Tuple "id" (fromString import_.id)
   ]
 
 encodeArguments :: Object ExprNode -> Json

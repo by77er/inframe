@@ -211,6 +211,35 @@ theorem identifier_suffixes :
 example (site : Identifier) (index : Nat) : Identifier := site.indexed index
 example (site : Identifier) (cidr : String) : Identifier := site.slug cidr
 
+/-- Adoption: `adopt` records an `import` for an existing managed resource, once, with an id. -/
+def adopting : Infra Unit := do
+  let existing : Resource Unit ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "legacy") InputObject.empty
+  adopt existing "legacy-tag-id"
+
+theorem adoption_is_validated :
+    (buildGraph adopting).Valid ∧
+    (buildGraph adopting).imports = [⟨.res "digitalocean_tag" "legacy", "legacy-tag-id"⟩] ∧
+    (buildGraph (do adopting; adopt (resourceHandle (Identifier.mk "digitalocean_tag") (Identifier.mk "legacy") : Resource Unit) "twice")).validate
+      = .error (.duplicateImportTarget (.res "digitalocean_tag" "legacy")) ∧
+    ({ imports := [⟨.res "digitalocean_tag" "ghost", "x"⟩] } : Graph).validate
+      = .error (.missingImportTarget (.res "digitalocean_tag" "ghost")) ∧
+    ({ imports := [⟨.data "digitalocean_tag" "ghost", "x"⟩] } : Graph).validate
+      = .error (.invalidImportTarget (.data "digitalocean_tag" "ghost")) := by
+  refine ⟨by decide, by decide, by decide, by decide, by decide⟩
+
+/-- `argumentRefersTo` sees only a direct reference; `argumentMentions` sees one inside a
+template or call as well. -/
+def templated : ResourceSpec :=
+  { resourceType := "digitalocean_tag", name := "app"
+    arguments := [("host", inputNode (tf!"{(resourceAttr tagHandle ["id"] : Input String)}.internal"))]
+    dependsOn := [], provider := none, lifecycle := none }
+
+theorem mentions_versus_refers :
+    templated.argumentRefersTo "host" (.res "digitalocean_tag" "app") ["id"] = false ∧
+    templated.argumentMentions "host" (.res "digitalocean_tag" "app") = true := by
+  decide
+
 /-- A stack that consumes another stack's outputs through `terraform_remote_state`. -/
 def consumer : Infra Unit := do
   let platform ← RemoteState.read "platform" (.gcs "acme-state" (prefix_ := "platform"))
@@ -259,6 +288,9 @@ error: policy is violated:
 
 def main : IO Unit := do
   let rendered := (encodeGraph graph).compress
+  expect (contains (renderGraph adopting) "\"imports\":[{\"id\":\"legacy-tag-id\",\"to\":\"digitalocean_tag.legacy\"}]")
+    "imports are encoded"
+  expect (!contains rendered "imports") "a graph that adopts nothing has no imports key"
   for needle in ["digitalocean_tag.app", "resource_attr", "required_providers",
       "create_before_destroy", "replace_triggered_by", "secret_env", "conditional",
       "\"function\"", "\"sensitive\":true", "known-now", "\"count\":{\"kind\":\"literal\",\"value\":2}"] do

@@ -153,6 +153,13 @@ structure MoveSpec where
   destination : Address
   deriving DecidableEq, Repr
 
+/-- Adopt the existing object `id` (in the provider's import-id syntax) as the managed
+resource at `destination` on the next apply; lowered to an OpenTofu `import` block. -/
+structure ImportSpec where
+  destination : Address
+  id : String
+  deriving DecidableEq, Repr
+
 /-- The completed desired-infrastructure graph. -/
 structure Graph where
   requiredProviders : List (String × ProviderRequirement) := []
@@ -161,6 +168,7 @@ structure Graph where
   dataSources : List DataSourceSpec := []
   outputs : List (String × OutputSpec) := []
   moves : List MoveSpec := []
+  imports : List ImportSpec := []
   deriving Repr
 
 namespace ProviderConfigSpec
@@ -334,6 +342,14 @@ def moved (origin : Address) [Dependable h] (destination : h) : Infra Unit :=
   Infra.modify fun graph =>
     { graph with moves := graph.moves ++ [⟨origin, Dependable.dependencyAddress destination⟩] }
 
+/-- Adopt an existing object into a managed resource: on the next apply OpenTofu imports the
+object with `id` (the provider's import-id syntax, the same string `tofu import` takes) as
+`destination` instead of creating one, so a whole account is taken over in one plan rather
+than one `inframe tofu -- import` per resource. Once the state holds it, the call can go. -/
+def adopt [Managed h] (destination : h) (id : String) : Infra Unit :=
+  Infra.modify fun graph =>
+    { graph with imports := graph.imports ++ [⟨Managed.resourceAddress destination, id⟩] }
+
 /-- Run `program` and also return the managed resources it added, in creation order. This is
 the primitive for scope combinators that post-process everything created inside a block, for
 example assigning it all to a cloud project. -/
@@ -407,6 +423,9 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
 
 @[simp] theorem run_moved [Dependable h] (origin : Address) (destination : h) (graph : Graph) :
     ((moved origin destination).run graph).2.resources = graph.resources := rfl
+
+@[simp] theorem run_adopt [Managed h] (destination : h) (id : String) (graph : Graph) :
+    ((adopt destination id).run graph).2.resources = graph.resources := rfl
 
 @[simp] theorem run_capture (program : Infra α) (graph : Graph) :
     (Infra.capture program).run graph

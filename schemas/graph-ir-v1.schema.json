@@ -47,6 +47,13 @@
         "$ref": "#/$defs/MoveSpec"
       },
       "default": []
+    },
+    "imports": {
+      "description": "Existing objects to adopt into managed resources on the next apply, lowered to\n`import` blocks so a whole account can be taken over in one plan.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ImportSpec"
+      }
     }
   },
   "additionalProperties": false,
@@ -549,6 +556,23 @@
       "required": [
         "from",
         "to"
+      ]
+    },
+    "ImportSpec": {
+      "description": "Adopt the existing object identified by `id` (in the provider's import-id syntax) as the\nmanaged resource `to`.",
+      "type": "object",
+      "properties": {
+        "to": {
+          "$ref": "#/$defs/Address"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "to",
+        "id"
       ]
     }
   }
