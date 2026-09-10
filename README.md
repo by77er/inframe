@@ -5,14 +5,17 @@ not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a pur
 functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
 and state management to OpenTofu, and generates typed adapters for Terraform
-providers in two frontend languages: LEAN 4 and PureScript. Both provide a pure
-functional interface, but LEAN 4 allows more sophisticated validation and improved ergonomics.
+providers in two frontend languages: Lean 4 and PureScript. Both provide a pure
+functional interface, but Lean 4 allows more sophisticated validation and improved ergonomics.
 
 Both frontends render the same intermediate representation.
 
 > Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
 it's mostly data plumbing, be wary and look at your plans before applying if you
 use this tool. It's quite experimental.
+
+This file is the tour and the quick start. [GUIDE.md](GUIDE.md) is the reference
+for everything past that, and [inframe-design.md](inframe-design.md) is the design.
 
 ## Example in PureScript
 
@@ -45,6 +48,7 @@ infrastructure = do
         # Kubernetes.nodePoolAutoScale (lit true)
         # Kubernetes.nodePoolMinNodes (lit 2.0)
         # Kubernetes.nodePoolMaxNodes (lit 6.0)
+        # Kubernetes.nodePoolTags (lit [ "platform", "workers" ])
 
   cluster <- Kubernetes.createWith "platform"
     ( Kubernetes.args
@@ -54,6 +58,8 @@ infrastructure = do
         , version: computed versions.latestVersion
         }
         # Kubernetes.autoUpgrade (lit true)
+        # Kubernetes.ha (lit true)
+        # Kubernetes.surgeUpgrade (lit true)
         # Kubernetes.vpcUuid (computed network.id)
     )
     ( resourceOptions
@@ -116,43 +122,67 @@ databaseUsesManagedVpc resource
 ## The same stack in Lean 4
 
 ```lean
-def infrastructureFor (env : Environment) (databases : List Identifier) : Infra Unit := do
+def infrastructure : Infra Unit := do
   let provider ← Provider.configure { token := secretEnv "DIGITALOCEAN_TOKEN" }
 
   let versions ← Data.KubernetesVersions.readWith "available" {}
     (dataSourceOptions |>.withProvider provider)
 
-  let network ← Vpc.create "platform" { name := "platform", region := env.region }
+  let network ← Vpc.create "platform" { name := "platform", region := "nyc3" }
 
   let cluster ← KubernetesCluster.createWith "platform"
     { name := "platform"
-      region := env.region
+      region := "nyc3"
       version := versions.latestVersion
-      nodePool := { name := "workers", size := "s-2vcpu-4gb", nodeCount := 2, autoScale := true
-                    minNodes := 2, maxNodes := env.workerMax }
+      nodePool :=
+        { name := "workers", size := "s-2vcpu-4gb", nodeCount := 2, autoScale := true
+          minNodes := 2, maxNodes := 6, tags := ["platform", "workers"] }
       autoUpgrade := true
+      ha := true
+      surgeUpgrade := true
       vpcUuid := network.id }
     (resourceOptions
       |>.withProvider provider
       |>.createBeforeDestroy true)
 
-  -- One cluster per requested database, each on the VPC (plain recursion over the list).
-  let clusters ← createDatabases env network databases
+  let bucket ← SpacesBucket.create "assets"
+    { name := "replace-with-a-globally-unique-space-name"
+      region := "nyc3"
+      versioning := some { enabled := true } }
+
+  let database ← DatabaseCluster.create "postgres"
+    { engine := "pg"
+      name := "platform-postgres"
+      nodeCount := 1
+      region := "nyc3"
+      size := "db-s-1vcpu-1gb"
+      privateNetworkUuid := network.id
+      storageAutoscale := some { enabled := true, thresholdPercent := 80, incrementGib := 10 }
+      version := "15" }
 
   output "cluster_endpoint" cluster.endpoint
-  outputDatabaseHost clusters
+  output "bucket_endpoint" bucket.endpoint
+  output "database_host" database.host
 ```
 
-The policy from the PureScript test becomes a theorem about every stack this
-program can produce, not about one graph. The stack is a function of its
-database list, so the proof is an induction over that list. Two helpers ask
-whether an argument points at a resource: `argumentRefersTo` matches a direct
-reference only, `argumentMentions` also finds one inside a template
-(`handle.id ++ ".example.com"`), a function call, an index, or a nested object.
+The two programs render byte-identical Graph IR; `make conformance` checks that
+on every change. Note what the types did along the way: `nodePool` is a single
+record because the schema requires exactly one, `versioning` is an `Option`
+because it allows at most one, and `network.id` is an `Input String` that
+carries the dependency edge with it.
+
+### Policies become theorems
+
+In the repository this stack is a function, `infrastructureFor env databases`,
+and the `infrastructure` above is `infrastructureFor .prod [postgres]`. The
+policy from the PureScript test then becomes a theorem about every stack the
+function can produce, not a check of one graph. The stack is built by recursion
+over the database list, so the proof is an induction over it:
 
 ```lean
 def databaseRule (database : ResourceSpec) : Option String :=
-  if database.argumentRefersTo "private_network_uuid" (.res "digitalocean_vpc" "platform") ["id"]
+  if database.argumentRefersTo DatabaseCluster.names.privateNetworkUuid
+      (.res "digitalocean_vpc" "platform") [Vpc.names.id]
   then none
   else some "private_network_uuid must reference digitalocean_vpc.platform.id"
 
@@ -162,361 +192,121 @@ def databaseUsesManagedVpc : Policy :=
 theorem databases_use_managed_vpc (env : Environment) (databases : List Identifier) :
     databaseUsesManagedVpc.Holds (buildGraph (infrastructureFor env databases)) := by
   rw [databaseUsesManagedVpc, Policy.resourcesOfType_holds_iff]
-  simp only [buildGraph, infrastructureFor, Infra.run_bind, Infra.run_pure, run_output, ...]
-  apply createDatabases_ok   -- induction on `databases`, see Infra/PlatformTest.lean
-  ...
+  simp only [buildGraph, infrastructureFor, Infra.run_bind, Infra.run_pure, run_output, …]
+  apply createDatabases_ok   -- induction over `databases`; see Infra/PlatformTest.lean
+  …
 ```
+
+The compiler checks the theorems, so `inframe test --stack lean-example` fails
+on a violation, and so does every `plan` and `apply`, which run the tests
+first. The full proof is in `lean/integration-digitalocean/Infra/PlatformTest.lean`.
 
 ### What Lean adds over PureScript
 
-A policy is a decidable proposition over the graph, so an invalid infrastructure
-configuration will refuse to compile before even making it to OpenTofu.
+- A policy is a decidable proposition over the graph, so
+  `theorem valid : (buildGraph infrastructure).Valid := by decide` is checked at
+  compile time. For graphs too large for kernel `decide`, `#assert_valid` and
+  `#assert_policy` evaluate the same checks at compile time instead.
+- The schema's block-count rules are types: a block allowed at most once is an
+  `Option`, one required exactly once is a plain record. Two `versioning` blocks
+  or an empty `nodePool` do not type-check.
+- Argument and attribute names come from generated `names` records, so a schema
+  rename is a compile error rather than a policy that silently matches nothing.
+- Names derived from data carry their proofs: `site.indexed 3` and
+  `zone.slug host` are accepted wherever a literal name is.
 
-Kernel `decide` is a proof, and its cost grows with the graph: forty instances
-each carrying a four-kilobyte startup script take about nine seconds to
-validate. For deployed graphs beyond that, `#assert_policy policy graph` and
-`#assert_valid graph` evaluate the same checks with the compiled evaluator while
-the module compiles and fail the build with the report. That is a check rather
-than a proof, but it is the same gate: keep theorems for statements over every
-input of a parameterized stack, and the assertions for the concrete instance.
+## Quick start
 
-Elements of computed nested blocks are traversed with the schema's types
-(`instance.networkInterface[1].fields.networkIp`,
-`instance.networkInterface.splat (·.networkIp)`), and names derived from data
-carry their proofs (`site.indexed 3`, `net.slug "10.192.0.0/16"`,
-`rule.append "22-tcp"`).
+You need Rust 1.85+, OpenTofu 1.10+, and a frontend toolchain: `elan` for
+Lean 4 (it installs the version pinned in `lean/lean-toolchain`), or PureScript
+0.15.16 with Spago 1.x.
 
-## How to use it
-
-### 1. Install and build
-
-You need Rust 1.85+, OpenTofu 1.10+, and one frontend toolchain: PureScript
-0.15.16 with Spago 1.x, or the Lean 4 toolchain pinned in `lean/lean-toolchain`
-(install `elan`, which reads that file). From this repository:
+Build the CLI and run the bundled DigitalOcean stack. `build`, `test`, and
+`inspect` never run OpenTofu or contact the cloud.
 
 ```bash
-cargo build -p inframe-cli
+cargo build -p inframe-cli             # or use `cargo run -q -p inframe-cli --` as `inframe`
+inframe provider generate              # typed DigitalOcean adapters for both frontends
+
+inframe build --stack lean-example     # Graph IR into .inframe/graphs/
+inframe test --stack lean-example      # policy proofs and assertions
+inframe graph inspect --stack lean-example
+
+export DIGITALOCEAN_TOKEN='…'
+inframe init --stack lean-example -- -input=false
+inframe plan --stack lean-example
+inframe apply --stack lean-example     # creates billable resources
+inframe destroy --stack lean-example
 ```
 
-Use `cargo run -q -p inframe-cli --` in place of `inframe` below if the binary
-is not on your `PATH`.
+`--stack example` is the PureScript twin of the same stack.
 
-### 2. Configure and generate providers
+### Your own project
 
-Declare each pin once in `inframe.toml`:
+`inframe project init` writes a starter `inframe.toml`. Pin each provider once,
+and declare a frontend and a stack:
 
 ```toml
 [providers.digitalocean]
 source = "digitalocean/digitalocean"
 version = "2.100.0"
 module_root = "DigitalOcean"
+
+[lean]
+directory = "lean"
+main = "infra"          # Lake executables: `lake exe infra` prints the graph,
+test = "infra-test"     # `lake exe infra-test` checks the policies
+core = { git = "https://github.com/by77er/inframe", rev = "main", subdir = "lean" }
+
+[stacks.dev.backend]
+type = "local"
 ```
 
-Then generate every configured provider:
-
-```bash
-inframe provider generate
-```
-
-This emits one package per configured frontend. By convention the PureScript
-package above goes to `<purescript.directory>/.generated/digitalocean` and the
-Lean package to `<lean.directory>/.generated/digitalocean`. Generated adapters
-are gitignored build artifacts. Module names drop the provider's type prefix
-(`google_compute_instance` becomes `ComputeInstance`); the prefix is inferred
-from the provider name and its resource types, so a `google-beta` provider
-strips `google_` rather than stuttering, and `strip_prefix = "google_"` in the
-provider table (or `--strip-prefix`) pins it explicitly.
-
-If a provider's schema does not decode, `--schema-json` is the escape hatch:
-acquire the raw document yourself (`tofu providers schema -json` in a temporary
-directory whose configuration pins the provider in `required_providers`), fix
-or trim it, and pass it in; raw and normalized documents are both accepted.
-
-### Reading a generated Lean module
-
-Each resource is one module (`Cloudflare.Resource.Zone`) that is a namespace, so
-`open Cloudflare.Resource` and then `Zone.create`; `open Cloudflare.Resource (Zone)`
-does not work because `Zone` is a namespace, not a declaration. Resources have
-`create`/`createWith`, data sources `read`/`readWith`, and the provider
-`configure`/`configureAs`. The `Args` record follows the schema:
-
-| Schema | `Args` field |
-| --- | --- |
-| required attribute | `Input T` |
-| optional attribute | `Option (Input T) := none` |
-| nested block, exactly once | `XArgs` |
-| nested block, at most once | `Option XArgs := none` |
-| nested block, list | `List XArgs := []`, and an empty list is not written |
-| nested attribute (plugin-framework providers), single | `Option XArgs := none` |
-| nested attribute, list or set | `Option (List XArgs) := none`: `none` leaves it unset, `some []` writes `[]` |
-| nested attribute, map | `Option (List (String × XArgs)) := none` |
-| `dynamic` or tuple | `Input Value`, written with `value% { team: "core", tags: ["a"] }` |
-
-Known values coerce, so `type := "full"` and `paused := spec.paused` are enough;
-an `if` expression does not coerce inside an optional field, so write
-`some (lit (if … then "a" else "b"))`. `Number` is `Lean.JsonNumber`: numerals
-elaborate directly, and a `Nat` variable becomes one with
-`Lean.JsonNumber.fromNat`. A field whose name is a Lean keyword gets a trailing
-underscore (`include_`, `private_`, `meta_`, `end_`).
-
-A handle is `Attributes Input Resolved`, so every attribute is a symbolic input
-(`zone.id : Input String`), and handles of different resource types are
-different types: a function that accepts several kinds of resource takes the
-`Input String` it needs rather than a handle. The same structure at
-`Resolved Option` is the resolved state (`Zone.State`, decoded from `inframe show`)
-and at `Option Resolved` a fully tolerant view. Names come from data as easily
-as from literals: an `Identifier` is accepted wherever a literal name is and its
-proof is reused, so `Zone.create (site.indexed 3) { … }` and
-`Record.create (zone.slug host) { … }` need no proof at the call site
-(`Identifier.mk "…"` itself needs a literal; `slug` maps anything an identifier
-cannot contain, such as `.` or `/`, to `-`).
-
-When a generated argument record cannot express what the provider needs, the
-graph primitives are the supported escape hatch: build the record's
-`toInputObject`, `insert` the extra argument as an `ExprNode`, and call
-`addResource` with the resource's phantom type:
-
-```lean
-let values := args.toInputObject |>.insert "extra" (.literal (.string "value"))
-let _ ← addResource (r := Zone.ZoneResource) resourceOptions (Identifier.mk "cloudflare_zone") name values
-``` Select one provider with `inframe provider
-generate digitalocean` and one frontend with `--frontend purescript|lean`;
-`--source`, `--version`, `--module-root`, and `--output` are available for ad
-hoc generation or overrides. `--schema-json` accepts a raw or normalized schema
-fixture for reproducible offline builds.
-
-Point a Spago `extraPackages` entry at the conventional directory and depend on
-the generated package:
-
-```yaml
-workspace:
-  extraPackages:
-    generated-digitalocean:
-      path: .generated/digitalocean
-```
-
-A Lean project requires the generated package and the core library from its
-`lakefile.toml`; the generated package's own lakefile already points at the
-core library configured in `[lean.core]`:
+`inframe provider generate` emits a package per configured frontend at
+`<directory>/.generated/<provider>`; gitignore it. The frontend package requires
+it and the core, and pins the same toolchain as the core (copy
+`lean/lean-toolchain`):
 
 ```toml
+# lean/lakefile.toml
 [[require]]
 name = "inframe"
-path = ".."
+git = "https://github.com/by77er/inframe"
+rev = "main"
+subDir = "lean"
 
 [[require]]
 name = "generated-digitalocean"
 path = ".generated/digitalocean"
+
+[[lean_lib]]
+name = "Infra"
+globs = ["Infra.+"]
+
+[[lean_exe]]
+name = "infra"
+root = "Infra.Main"
+
+[[lean_exe]]
+name = "infra-test"
+root = "Infra.Test"
 ```
 
-A project that points `[lean.core]` at the repository instead writes the same
-dependency as `[[require]] name = "inframe" git = "https://github.com/by77er/inframe" rev = "…" subDir = "lean"`.
-Its `lean-toolchain` must pin the toolchain the core is built with (the one in
-`lean/lean-toolchain`); `inframe build` warns when it does not.
+A stack's `main` builds an `Infra Unit` and prints it, and that is the whole of
+it: `def main : IO Unit := emitGraph infrastructure`. The test executable holds
+the policies. From there the commands are the ones above with `--stack dev`.
 
-Generated adapters are ordinary PureScript source, so the PureScript language
-server provides completion, inferred signatures, hover types, and navigation
-after `spago build`. Open the configured `purescript` directory as the editor
-workspace (or add it as a workspace folder) so the language server finds its
-`spago.yaml`. Provider attribute descriptions are emitted as PureScript `-- |`
-documentation on generated setters and as field catalogs on `Required` and
-symbolic handle types. Those declarations appear in language-server hovers and
-generated compiler documentation; direct record-field hovers may show only the
-field type, depending on editor support.
+For PureScript, the project table is `[purescript]` with `directory`, `package`,
+and `main` (a module whose `main` is `log (renderGraph infrastructure)`), the
+stack says `frontend = "purescript"`, and Spago sees the generated package
+through an `extraPackages` entry. [GUIDE.md](GUIDE.md) has both wirings in full,
+the `inframe.toml` reference, how to read a generated module, remote state, and
+adopting resources that already exist.
 
-### 3. Configure the project and stacks
-
-`inframe project init` creates a starter `inframe.toml`. A project connects its
-PureScript package and entry points to named OpenTofu stacks:
-
-```toml
-[purescript]
-directory = "purescript"
-package = "integration-digitalocean"
-main = "Infra.Main"
-
-[workspace]
-directory = ".inframe"
-graph_directory = ".inframe/graphs"
-
-[stacks.smoke.backend]
-type = "local"
-
-[stacks.platform]
-main = "Infra.Platform"
-test = "Infra.PlatformTest"
-
-[stacks.platform.backend]
-type = "local"
-```
-
-Each stack main prints one Graph IR document: in PureScript
-`log (renderGraph infrastructure)`, in Lean `def main : IO Unit := emitGraph infrastructure`.
-`emitGraph` renders compact JSON and writes it with `putStr`; it is the one
-printing path the core's scale test exercises, and it is the whole of a stack's
-`main`. Its optional test entry point runs assertions over the same pure
-infrastructure value.
-Reusable infrastructure is just ordinary pure functions called while
-constructing its `Infra` value.
-
-A project may instead, or additionally, declare a Lean frontend. For Lean
-stacks `main` and `test` name Lake executables (`lake exe <name>`) whose root
-modules print the graph and check policies; when both frontends are configured
-each stack picks one:
-
-```toml
-[lean]
-directory = "lean/integration-digitalocean"
-main = "infra"
-core = { path = "lean" }   # or { git = "https://github.com/by77er/inframe", rev = "...", subdir = "lean" }
-
-[stacks.platform]
-frontend = "lean"
-main = "platform"
-test = "platform-test"
-```
-
-This repository configures both: the `example` stack is PureScript and the
-`lean-example` stack is Lean, and `make conformance` checks that they build the
-same document.
-
-### 4. Build, test, and inspect the graph
+## Development
 
 ```bash
-inframe build --stack platform
-inframe test --stack platform
-inframe graph inspect --stack platform
-inframe graph validate --stack platform
-```
-
-Every command that takes `--stack` builds the stack first, so `inspect`,
-`validate`, `plan`, and `apply` always reflect the current source; pass
-`--no-build` to the graph commands to look at the last built artifact instead,
-which warns when any source under the stack's package changed after the
-artifact was written. A frontend tool that fails is reported with its command
-line, exit status, and stderr verbatim, and a tool that is missing from `PATH`
-is named along with how to install it.
-`inspect` prints a tree of provider pins, configured arguments, resources, data
-sources, symbolic outputs, moves, imports, and dependency edges. An explicit
-JSON path or `-` for stdin remains available for debugging. `build` does not
-invoke OpenTofu or contact the cloud. For a Lean stack it runs
-`lake -q exe <main>`, which compiles only that executable's import tree: a
-broken test module does not break `build`, and the first `inframe test` after a
-run of builds compiles the rest. `inframe graph schema` prints the Graph IR
-JSON Schema, the reference for the wire format (references serialize as
-`resource_attr`, secrets as `secret_env`, whatever the frontend constructors
-are called). `test` runs the stack's configured test entry
-point and preserves its exit status; the test library and structure remain the
-project's choice. For a Lean stack the policy theorems in the test executable's
-modules are checked by the compiler before the executable runs, so a violated
-policy fails the build.
-
-### 5. Initialize, validate, and apply
-
-```bash
-inframe init --stack platform -- -input=false
-inframe validate --stack platform
-
-export DIGITALOCEAN_TOKEN='...'
-inframe plan --stack platform
-inframe apply --stack platform
-inframe output --stack platform
-inframe destroy --stack platform
-```
-
-Lifecycle commands rebuild the configured entry point and write deterministic
-OpenTofu JSON into `.inframe/stacks/<stack>/`. When the stack configures a
-`test` entry point, `init`, `validate`, `plan`, `apply`, `destroy`, and `tofu`
-run it after building and stop if it fails, so a policy suite kept in its own
-executable gates deployment and not only `inframe test`; `--skip-tests`
-overrides that and says so on stderr, and a stack without a test entry point is
-pointed out every time (`--quiet` silences those notes and the build line,
-never errors). A graph passed with `--graph` bypasses the project and only the
-reference validator runs on it.
-
-Secrets referenced with `secretEnv` are required only for the subcommands that
-contact providers (`plan`, `apply`, `destroy`, and `refresh`, `import`, and
-`console` through `inframe tofu`); Inframe passes them to OpenTofu as sensitive
-variables without writing their values to Graph IR or OpenTofu configuration.
-
-Anything else OpenTofu can do in the workspace goes through the same prepared
-configuration with `inframe tofu --stack <name> -- <subcommand>`, for example
-`-- state list`, `-- import digitalocean_droplet.web 12345`, or
-`-- force-unlock <id>`.
-
-#### Adopting existing infrastructure
-
-Objects that already exist are adopted from the program, not one command at a
-time: `adopt handle "<id>"` (the id in the provider's import syntax, the string
-`tofu import` takes) records an `import` block for the handle's resource, so the
-next `inframe plan` shows every adoption at once and `apply` performs them in
-one run. Delete the `adopt` calls once the state holds the objects.
-
-```lean
-let zone ← Zone.create "example" { account := { id := accountId }, name := "example.com" }
-adopt zone "023e105f4ecef8ad9ca31a8372d0c353"
-```
-
-`inframe tofu --stack <name> -- import <address> <id>` still works for a single
-object; it rebuilds and re-runs the tests on every call, so a loop over many of
-them wants `--skip-tests --quiet`.
-
-### 6. Configure remote state
-
-Inframe uses OpenTofu's built-in backends rather than vendoring a state server.
-Select any backend per stack and keep only non-secret settings in
-`inframe.toml`:
-
-```toml
-[stacks.prod.backend]
-type = "http"
-
-[stacks.prod.backend.config]
-address = "https://state.example.com/states/prod"
-lock_address = "https://state.example.com/states/prod/lock"
-unlock_address = "https://state.example.com/states/prod/lock"
-```
-
-Supply credentials through that backend's standard environment variables—for
-example, `TF_HTTP_USERNAME` and `TF_HTTP_PASSWORD`. Inframe rejects
-secret-looking backend keys because OpenTofu may persist backend configuration
-in its working directory.
-
-### 7. Compose stacks through remote state
-
-`terraform_remote_state` belongs to OpenTofu's builtin provider, which no
-provider schema describes, so the Lean core ships it directly: `RemoteState.read`
-adds the data source for a backend and exposes the other stack's outputs as
-typed inputs. The backend and its non-secret configuration are the same values
-the producing stack's `[stacks.<name>.backend]` table holds.
-
-```lean
-def infrastructure : Infra Unit := do
-  let platform ← RemoteState.read "platform" (.gcs "acme-state" (prefix_ := "platform"))
-  let cluster : Input String := platform.output "cluster_endpoint"
-  let region : Input String := platform.outputOr "region" "nyc3"   -- `try` with a default
-  …
-```
-
-`RemoteBackend` has constructors for `localFile`, `gcs`, `s3`, `azurerm`,
-`http`, `kubernetes`, and `consul`, and `other` for any backend with its
-configuration as known values. The type of an output is the consumer's claim
-about what the producer exports; a policy over the consumer can still see the
-reference as `data.terraform_remote_state.platform.outputs.<name>`.
-
-### 8. Run the checks
-
-```bash
-cargo fmt --all -- --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-
-cd purescript
-spago test
-
-cd lean
-lake -q exe inframe-test
-lake -q exe inframe-scale-test | inframe graph validate -
-cd integration-digitalocean
-lake build
+make check         # fmt, clippy, and both frontend packages build
+make test          # Rust, PureScript, and Lean suites, plus the negative Lean cases
+make conformance   # both frontends render byte-identical Graph IR for the platform stack
 ```
