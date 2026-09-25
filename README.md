@@ -14,112 +14,10 @@ Both frontends render the same intermediate representation.
 it's mostly data plumbing, be wary and look at your plans before applying if you
 use this tool. It's quite experimental.
 
-This file is the tour and the quick start. [GUIDE.md](GUIDE.md) is the reference
-for everything past that, and [inframe-design.md](inframe-design.md) is the design.
+## Example
 
-## Example in PureScript
-
-This stack creates a shared VPC, an autoscaling managed Kubernetes cluster, a
-versioned Spaces bucket, and an autoscaling PostgreSQL database.
-
-```purescript
-infrastructure :: Infra Unit
-infrastructure = do
-  provider <- DigitalOcean.configure $
-    DigitalOcean.args {}
-      # DigitalOcean.token (secretEnv "DIGITALOCEAN_TOKEN")
-
-  versions <- KubernetesVersions.readWith "available"
-    (KubernetesVersions.args {})
-    (dataSourceOptions # withProvider provider)
-
-  network <- Vpc.create "platform" $ Vpc.args
-    { name: lit "platform"
-    , region: lit "nyc3"
-    }
-
-  let
-    workers =
-      Kubernetes.nodePoolArgs
-        { name: lit "workers"
-        , size: lit "s-2vcpu-4gb"
-        }
-        # Kubernetes.nodePoolNodeCount (lit 2.0)
-        # Kubernetes.nodePoolAutoScale (lit true)
-        # Kubernetes.nodePoolMinNodes (lit 2.0)
-        # Kubernetes.nodePoolMaxNodes (lit 6.0)
-        # Kubernetes.nodePoolTags (lit [ "platform", "workers" ])
-
-  cluster <- Kubernetes.createWith "platform"
-    ( Kubernetes.args
-        { name: lit "platform"
-        , nodePool: [ workers ]
-        , region: lit "nyc3"
-        , version: computed versions.latestVersion
-        }
-        # Kubernetes.autoUpgrade (lit true)
-        # Kubernetes.ha (lit true)
-        # Kubernetes.surgeUpgrade (lit true)
-        # Kubernetes.vpcUuid (computed network.id)
-    )
-    ( resourceOptions
-        # withProvider provider
-        # createBeforeDestroy true
-    )
-
-  let
-    versioning =
-      Spaces.versioningArgs {}
-        # Spaces.versioningEnabled (lit true)
-
-  bucket <- Spaces.create "assets" $
-    Spaces.args { name: lit "replace-with-a-globally-unique-space-name" }
-      # Spaces.region (lit "nyc3")
-      # Spaces.versioning [ versioning ]
-
-  let
-    storageAutoscale =
-      Database.storageAutoscaleArgs { enabled: lit true }
-        # Database.storageAutoscaleThresholdPercent (lit 80.0)
-        # Database.storageAutoscaleIncrementGib (lit 10.0)
-
-  database <- Database.create "postgres" $
-    Database.args
-      { engine: lit "pg"
-      , name: lit "platform-postgres"
-      , nodeCount: lit 1.0
-      , region: lit "nyc3"
-      , size: lit "db-s-1vcpu-1gb"
-      }
-      # Database.privateNetworkUuid (computed network.id)
-      # Database.storageAutoscale [ storageAutoscale ]
-      # Database.version (lit "15")
-
-  output "cluster_endpoint" cluster.endpoint
-  output "bucket_endpoint" bucket.endpoint
-  output "database_host" database.host
-```
-
-The graph is an ordinary PureScript value before it is serialized, so tests can
-enforce policies across every resource. This test fails if any DigitalOcean
-database in the stack is not connected to the managed VPC:
-
-```purescript
-main :: Effect Unit
-main = do
-  let graph = buildGraph infrastructure
-  assert $ all databaseUsesManagedVpc graph.resources
-
-databaseUsesManagedVpc :: ResourceSpec -> Boolean
-databaseUsesManagedVpc resource
-  | resource.resourceType /= "digitalocean_database_cluster" = true
-  | otherwise = case Object.lookup "private_network_uuid" resource.arguments of
-      Just (ResourceAttribute address path) ->
-        address == "digitalocean_vpc.platform" && path == [ "id" ]
-      _ -> false
-```
-
-## The same stack in Lean 4
+This Lean 4 stack creates a private network (VPC), a Kubernetes cluster, a
+storage bucket, and a PostgreSQL database on DigitalOcean:
 
 ```lean
 def infrastructure : Infra Unit := do
@@ -165,19 +63,24 @@ def infrastructure : Infra Unit := do
   output "database_host" database.host
 ```
 
-The two programs render byte-identical Graph IR; `make conformance` checks that
-on every change. Note what the types did along the way: `nodePool` is a single
-record because the schema requires exactly one, `versioning` is an `Option`
-because it allows at most one, and `network.id` is an `Input String` that
-carries the dependency edge with it.
+`network.id` is a reference, not a copied string, so Inframe knows the cluster
+and database depend on the VPC. The types come from the provider's schema: the
+cluster needs exactly one node pool, so `nodePool` is a plain record, and the
+bucket allows at most one `versioning` block, so it's an `Option`. Get either
+wrong and it won't compile.
 
-### Policies become theorems
+PureScript is also available as a simpler option. It produces the same output
+for the same stack, but it can't check as much at compile time or do the proofs
+below.
 
-In the repository this stack is a function, `infrastructureFor env databases`,
-and the `infrastructure` above is `infrastructureFor .prod [postgres]`. The
-policy from the PureScript test then becomes a theorem about every stack the
-function can produce, not a check of one graph. The stack is built by recursion
-over the database list, so the proof is an induction over it:
+## Proofs, not just tests
+
+Policy tools like OPA and Sentinel check one plan at a time. If your stack takes
+inputs, like an environment or a list of databases, the most they can tell you
+is that today's inputs are fine.
+
+With Lean, you can prove a rule holds for every input the stack could ever be
+given. Take this rule, which says every database must be on the VPC:
 
 ```lean
 def databaseRule (database : ResourceSpec) : Option String :=
@@ -188,125 +91,67 @@ def databaseRule (database : ResourceSpec) : Option String :=
 
 def databaseUsesManagedVpc : Policy :=
   Policy.resourcesOfType "database-uses-managed-vpc" "digitalocean_database_cluster" databaseRule
+```
 
+In this repository, the stack above is a function of an environment and a list
+of databases. This theorem says the rule holds for every environment and every
+list, including lists nobody has written yet:
+
+```lean
 theorem databases_use_managed_vpc (env : Environment) (databases : List Identifier) :
     databaseUsesManagedVpc.Holds (buildGraph (infrastructureFor env databases)) := by
-  rw [databaseUsesManagedVpc, Policy.resourcesOfType_holds_iff]
-  simp only [buildGraph, infrastructureFor, Infra.run_bind, Infra.run_pure, run_output, …]
-  apply createDatabases_ok   -- induction over `databases`; see Infra/PlatformTest.lean
   …
 ```
 
-The compiler checks the theorems, so `inframe test --stack lean-example` fails
-on a violation, and so does every `plan` and `apply`, which run the tests
-first. The full proof is in `lean/integration-digitalocean/Infra/PlatformTest.lean`.
+If a change would let even one possible input put a database off the VPC, the
+proof stops compiling. Inframe checks it before every `plan` and `apply`, so
+that change never reaches the cloud. The full proof is in
+[`PlatformTest.lean`](lean/integration-digitalocean/Infra/PlatformTest.lean).
 
-### What Lean adds over PureScript
+## Getting started
 
-- A policy is a decidable proposition over the graph, so
-  `theorem valid : (buildGraph infrastructure).Valid := by decide` is checked at
-  compile time. For graphs too large for kernel `decide`, `#assert_valid` and
-  `#assert_policy` evaluate the same checks at compile time instead.
-- The schema's block-count rules are types: a block allowed at most once is an
-  `Option`, one required exactly once is a plain record. Two `versioning` blocks
-  or an empty `nodePool` do not type-check.
-- Argument and attribute names come from generated `names` records, so a schema
-  rename is a compile error rather than a policy that silently matches nothing.
-- Names derived from data carry their proofs: `site.indexed 3` and
-  `zone.slug host` are accepted wherever a literal name is.
+You'll need Rust 1.85+, OpenTofu 1.10+, and
+[`elan`](https://github.com/leanprover/elan), which installs the Lean version
+this project pins. For PureScript, you'll need PureScript 0.15.16 and Spago 1.x
+instead.
 
-## Quick start
-
-You need Rust 1.85+, OpenTofu 1.10+, and a frontend toolchain: `elan` for
-Lean 4 (it installs the version pinned in `lean/lean-toolchain`), or PureScript
-0.15.16 with Spago 1.x.
-
-Build the CLI and run the bundled DigitalOcean stack. `build`, `test`, and
-`inspect` never run OpenTofu or contact the cloud.
+Install the CLI and build the example stack. These commands don't run OpenTofu
+or touch the cloud:
 
 ```bash
-cargo build -p inframe-cli             # or use `cargo run -q -p inframe-cli --` as `inframe`
-inframe provider generate              # typed DigitalOcean adapters for both frontends
+cargo install --path crates/cli        # installs `inframe`
+inframe provider generate              # generate typed DigitalOcean bindings
+inframe build --stack lean-example     # render the stack
+inframe test --stack lean-example      # check its policies
+```
 
-inframe build --stack lean-example     # Graph IR into .inframe/graphs/
-inframe test --stack lean-example      # policy proofs and assertions
-inframe graph inspect --stack lean-example
+To deploy it:
 
+```bash
 export DIGITALOCEAN_TOKEN='…'
-inframe init --stack lean-example -- -input=false
+inframe init --stack lean-example
 inframe plan --stack lean-example
-inframe apply --stack lean-example     # creates billable resources
+inframe apply --stack lean-example     # creates real, billable resources
 inframe destroy --stack lean-example
 ```
 
-`--stack example` is the PureScript twin of the same stack.
+For your own project, run `inframe project init` to create an `inframe.toml`,
+then see the [guide](GUIDE.md).
 
-### Your own project
+## Documentation
 
-`inframe project init` writes a starter `inframe.toml`. Pin each provider once,
-and declare a frontend and a stack:
-
-```toml
-[providers.digitalocean]
-source = "digitalocean/digitalocean"
-version = "2.100.0"
-module_root = "DigitalOcean"
-
-[lean]
-directory = "lean"
-main = "infra"          # Lake executables: `lake exe infra` prints the graph,
-test = "infra-test"     # `lake exe infra-test` checks the policies
-core = { git = "https://github.com/by77er/inframe", rev = "main", subdir = "lean" }
-
-[stacks.dev.backend]
-type = "local"
-```
-
-`inframe provider generate` emits a package per configured frontend at
-`<directory>/.generated/<provider>`; gitignore it. The frontend package requires
-it and the core, and pins the same toolchain as the core (copy
-`lean/lean-toolchain`):
-
-```toml
-# lean/lakefile.toml
-[[require]]
-name = "inframe"
-git = "https://github.com/by77er/inframe"
-rev = "main"
-subDir = "lean"
-
-[[require]]
-name = "generated-digitalocean"
-path = ".generated/digitalocean"
-
-[[lean_lib]]
-name = "Infra"
-globs = ["Infra.+"]
-
-[[lean_exe]]
-name = "infra"
-root = "Infra.Main"
-
-[[lean_exe]]
-name = "infra-test"
-root = "Infra.Test"
-```
-
-A stack's `main` builds an `Infra Unit` and prints it, and that is the whole of
-it: `def main : IO Unit := emitGraph infrastructure`. The test executable holds
-the policies. From there the commands are the ones above with `--stack dev`.
-
-For PureScript, the project table is `[purescript]` with `directory`, `package`,
-and `main` (a module whose `main` is `log (renderGraph infrastructure)`), the
-stack says `frontend = "purescript"`, and Spago sees the generated package
-through an `extraPackages` entry. [GUIDE.md](GUIDE.md) has both wirings in full,
-the `inframe.toml` reference, how to read a generated module, remote state, and
-adopting resources that already exist.
+- [GUIDE.md](GUIDE.md): project setup, generated bindings, remote state, and
+  importing existing resources
+- [inframe-design.md](inframe-design.md): the design
 
 ## Development
 
 ```bash
-make check         # fmt, clippy, and both frontend packages build
-make test          # Rust, PureScript, and Lean suites, plus the negative Lean cases
-make conformance   # both frontends render byte-identical Graph IR for the platform stack
+make check         # formatting, lints, and builds
+make test          # all test suites
+make conformance   # Lean and PureScript produce identical output
 ```
+
+## License
+
+[MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
