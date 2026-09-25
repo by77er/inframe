@@ -855,8 +855,12 @@ the target language:
   does not share shapes yet and would emit the unrolled form for such providers.
 - **Arguments are one record.** Each shape gets `structure Args` (nested: `<Shape>Args`)
   whose required attributes are `Input T` fields, optional attributes
-  `Option (Input T) := none`, and nested blocks `<Shape>Args`, `List <Shape>Args := []`, or
-  `List (String × <Shape>Args) := []`. A call is a single record literal,
+  `Option (Input T) := none`, and nested blocks `<Shape>Args` (exactly once),
+  `Option <Shape>Args := none` (at most once), or `List <Shape>Args := []`; nested
+  *attributes* of plugin-framework providers are `Option <Shape>Args := none` when single,
+  and `Option (List <Shape>Args) := none` or `Option (List (String × <Shape>Args)) := none`
+  for lists, sets and maps, where `none` leaves them unset and `some []` writes `[]`
+  (§8.5, "Block cardinality is in the types"). A call is a single record literal,
   `Droplet.create "web" { image := "…", region := "nyc1", monitoring := true }`; omitting a
   required field is a compile error and `toInputObject` emits only what was set. Lean
   structures support this directly, which is why the PureScript constructor-plus-setters
@@ -972,29 +976,34 @@ The workspace layer can cache provider initialization safely.
 
 **Owns:** orchestration and UX only.
 
-Suggested command tree:
+Command tree:
 
 ```text
 inframe
+├── project
+│   └── init
+├── build            # run a stack's frontend entry point to Graph IR
+├── test             # run a stack's test entry point
 ├── provider
 │   ├── generate
 │   └── inspect
 ├── graph
 │   ├── validate
 │   ├── inspect
-│   └── render
+│   └── schema
+├── render           # Graph IR -> OpenTofu JSON, without running OpenTofu
 ├── init
 ├── validate
 ├── plan
 ├── apply
 ├── destroy
+├── tofu             # any other tofu subcommand in the stack's workspace
 ├── show
-├── output
-└── state
-    ├── history      # when first-party remote state is configured
-    ├── lock
-    └── restore
+└── output
 ```
+
+A `state` group (`history`, `lock`, `restore`) belongs with the first-party
+remote state service (section 18, Milestone 10) and does not exist yet.
 
 The CLI should contain very little domain logic.
 
@@ -1218,8 +1227,8 @@ Design decisions specific to Lean:
   rules, which OpenTofu's `validate` checks with the provider; and nothing in the
   kernel speaks for the account (quotas, permissions, drift) or for the Rust
   lowering, which golden files and the OpenTofu round trip in
-  `scripts/check-template-escapes.sh` cover. See the README's "What a green build
-  proves" for the user-facing statement.
+  `scripts/check-template-escapes.sh` cover. See "What a proof covers" in
+  GUIDE.md for the user-facing statement.
 - **`Infra` is a private state transformer**, not `StateM`, so programs cannot
   read or overwrite the graph; only the builder primitives extend it. The one
   introspection primitive is `Infra.capture`, which runs a sub-program and also
@@ -1804,9 +1813,11 @@ does not modify the desired infrastructure graph.
 
 # 16. OpenTofu convenience wrappers
 
-The same Rust binary should make the generated configuration convenient to execute.
-
-Suggested commands:
+The same Rust binary makes the generated configuration convenient to execute.
+Given `--stack`, it builds the stack from the project (running Spago or Lake),
+runs the stack's test entry point, and only then runs OpenTofu; see
+[GUIDE.md](GUIDE.md). `--graph` is the language-neutral path below, which
+bypasses the project and its tests.
 
 ```bash
 # provider binding generation from inframe.toml
@@ -1819,7 +1830,7 @@ inframe graph inspect --stack prod
 # lower without executing
 inframe render \
   --graph build/prod.graph.json \
-  --out .inframe/stacks/prod/main.tofu.json
+  --output .inframe/stacks/prod/main.tofu.json
 
 # lower + OpenTofu
 inframe init     --stack prod --graph build/prod.graph.json
@@ -1851,7 +1862,8 @@ This is a good language-neutral contract:
 
 > A frontend program may emit Graph IR JSON to stdout.
 
-The CLI does not need to know how to build/run PureScript.
+Building PureScript and Lean stacks from `inframe.toml` is a convenience layered
+on top of it: any program that prints Graph IR can drive the same lowering.
 
 ---
 
@@ -2517,6 +2529,11 @@ This requires no cloud mutation.
 
 ## 20.7 Credentialed DigitalOcean E2E
 
+**Status:** not yet automated. CI covers the path up to OpenTofu without
+credentials: its `opentofu` job runs `tofu init` and `tofu validate` on a
+lowered `digitalocean_tag` graph (locally, `make validate-fixture`). The
+credentialed lifecycle below is still to be added.
+
 Use an isolated DigitalOcean account/project token in CI.
 
 Prefer a no-cost/minimal-risk resource.
@@ -2654,6 +2671,9 @@ Important rules:
 
 # 24. Implementation milestones
 
+Milestones 0–7 and 9 are delivered. Milestone 8's credentialed test is not
+automated yet (section 20.7), and Milestone 10 is not started.
+
 ## Milestone 0 — repository skeleton
 
 Deliver:
@@ -2680,7 +2700,7 @@ Deliver:
 Acceptance:
 
 ```text
-inframe provider inspect digitalocean/digitalocean@2.100.0
+inframe provider inspect --source digitalocean/digitalocean --version 2.100.0
 ```
 
 prints normalized resource/data-source counts and deterministic hash.

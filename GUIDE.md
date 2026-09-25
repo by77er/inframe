@@ -402,3 +402,25 @@ than a proof, but it is the same gate: keep theorems for statements over every
 input of a parameterized stack, and the assertions for the concrete instance.
 `lean/integration-digitalocean/Infra/PlatformTest.lean` shows both side by
 side, including a proof by induction over an arbitrary database list.
+
+### What a proof covers, and what it does not
+
+- **Graph structure.** `Graph.Valid` is the reference validator as a theorem:
+  names, references, provider selection, replacement triggers, moves, and
+  acyclicity. The Rust validator re-checks the same rules on the emitted
+  document.
+- **The provider schema, as far as it is in the types.** Required arguments,
+  attribute types, and how many entries a nested block may have are in the
+  generated records. Value-level rules (allowed strings, formats, "exactly one
+  of these") are not; `inframe validate` runs OpenTofu's own validation with the
+  provider installed and no credentials.
+- **Policies.** A theorem proves the properties you stated about the graphs
+  your program can produce, for the inputs you quantified over, and nothing
+  else. It says nothing about the account: quotas, permissions, drift, and what
+  the provider does at apply time are what `plan` and `apply` are for.
+- **Serialization.** Lowering Graph IR to OpenTofu JSON is Rust code outside
+  the kernel, covered by golden files and by a round trip
+  (`scripts/check-template-escapes.sh`) that applies a graph with OpenTofu and
+  compares the resolved values with the literals the graph wrote.
+
+A green proof plus a green plan is the evidence; neither is enough on its own.
