@@ -403,6 +403,22 @@ input of a parameterized stack, and the assertions for the concrete instance.
 `lean/integration-digitalocean/Infra/PlatformTest.lean` shows both side by
 side, including a proof by induction over an arbitrary database list.
 
+A policy sees the graph, not the plan: a value read from a data source or
+another resource is a reference until OpenTofu plans. A rule over values has to
+say so rather than skip it, and `Policy.argumentValues` does: it hands the rule
+the literal values of one argument and reports every other one as unknown at
+its resource. Nothing evaluates unknowns against the plan yet, so an unknown
+fails the policy like a violation and the report names it apart:
+
+```text
+policy `platform` cannot be decided from the graph:
+  [single-region] digitalocean_spaces_bucket.assets: unknown until plan: region is data.digitalocean_region.here.slug
+```
+
+Programs extend the graph only through the builder primitives: `Infra`'s
+constructor is private, so a stack cannot write a step that reads or replaces
+the graph, and the `run` lemmas the proofs use cover everything a stack can do.
+
 ### What a proof covers, and what it does not
 
 - **Graph structure.** `Graph.Valid` is the reference validator as a theorem:
@@ -416,8 +432,10 @@ side, including a proof by induction over an arbitrary database list.
   provider installed and no credentials.
 - **Policies.** A theorem proves the properties you stated about the graphs
   your program can produce, for the inputs you quantified over, and nothing
-  else. It says nothing about the account: quotas, permissions, drift, and what
-  the provider does at apply time are what `plan` and `apply` are for.
+  else. A value only the plan knows is not proved either way; a policy built
+  on `Policy.argumentValues` fails on it as unknown. It says nothing about the
+  account: quotas, permissions, drift, and what the provider does at apply
+  time are what `plan` and `apply` are for.
 - **Serialization.** Lowering Graph IR to OpenTofu JSON is Rust code outside
   the kernel, covered by golden files and by a round trip
   (`scripts/check-template-escapes.sh`) that applies a graph with OpenTofu and

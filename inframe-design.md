@@ -1184,7 +1184,7 @@ Inframe.Core         ExprNode, Expr α, Input α, handles, combinators
 Inframe.Builder      InputObject, NodeOptions, specs, Graph, Infra, buildGraph
 Inframe.Json         Graph IR 1.0 encoder, renderGraph (compact), emitGraph
 Inframe.Validate     Graph.validate (port of the Rust validator), dependencies
-Inframe.Policy       Policy, Violation, Policy.Holds, reports
+Inframe.Policy       Policy, Violation (violated or unknown), Policy.Holds, reports
 Inframe.RemoteState  terraform_remote_state per backend, typed outputs
                      (Builder also has `adopt`: imports as graph data)
 Inframe.Assert       #assert_policy / #assert_valid (evaluation, not reduction)
@@ -1230,7 +1230,12 @@ Design decisions specific to Lean:
   `scripts/check-template-escapes.sh` cover. See "What a proof covers" in
   GUIDE.md for the user-facing statement.
 - **`Infra` is a private state transformer**, not `StateM`, so programs cannot
-  read or overwrite the graph; only the builder primitives extend it. The one
+  read or overwrite the graph; only the builder primitives extend it. Its
+  constructor is private (`⟨fun graph => …⟩` and `{ run := … }` do not compile
+  outside the core, which `scripts/lean-negative.sh` checks), so the `run`
+  lemmas cover every way a stack changes the graph. `Infra.run` stays public:
+  it observes a program rather than being a step of one, and it is how
+  `buildGraph` renders a stack and how proofs state what a program adds. The one
   introspection primitive is `Infra.capture`, which runs a sub-program and also
   returns the resources it added, so a stack can define scope combinators such as
   "assign everything created in this block to a project" without leaving `Infra`.
@@ -2466,7 +2471,16 @@ either executable.
 
 Policies over symbolic expressions need three outcomes: pass, violation, and
 unknown. Unknown rules can be evaluated against machine-readable OpenTofu plan
-JSON once provider defaults and computed values are available.
+JSON once provider defaults and computed values are available. That evaluation
+is not built yet; what is built is the outcome. In Lean a finding is `violated`
+or `unknown`, and `Policy.argumentValues` reports every resource whose argument
+is not a literal (a data source's or another resource's attribute, a function
+of one, a secret) as unknown at its address, so a rule over values never passes
+a value it cannot see. Until rules are evaluated against the plan, an unknown
+finding fails the policy exactly as a violation does (`Policy.Holds` is false,
+`#assert_policy` fails the build, the test executable exits non-zero), and the
+report names it apart: `[single-region] digitalocean_spaces_bucket.assets:
+unknown until plan: region is data.digitalocean_region.here.slug`.
 
 In Lean the same policy is a proposition. `Policy.Holds policy graph` unfolds to
 `policy.check graph = []`, which is decidable, so `theorem … := by decide` makes

@@ -20,8 +20,9 @@ namespace Inframe
 open Lean Elab Command Term Meta
 
 /-- `#assert_policy policy graph` fails the build with the report if `policy` is violated by
-`graph`. Both are ordinary terms (`#assert_policy policies (buildGraph infrastructure)`); they
-are evaluated, not reduced by the kernel, so the check scales to real graphs. -/
+`graph`, or finds a value it checks unknown until plan. Both are ordinary terms
+(`#assert_policy policies (buildGraph infrastructure)`); they are evaluated, not reduced by the
+kernel, so the check scales to real graphs. -/
 syntax (name := assertPolicy) "#assert_policy " term:max term:max : command
 
 /-- `#assert_valid graph` fails the build with the validation error if the reference validator
@@ -46,7 +47,7 @@ private def evaluate (α : Type) (type : Expr) (term : Syntax) : TermElabM (Opti
     match ← evaluate (List Violation) type term with
     | some [] | none => pure ()
     | some violations =>
-      throwError "policy is violated:\n{"\n".intercalate (violations.map fun v => "  " ++ v.render)}"
+      throwError "policy {Violation.heading violations}:\n{"\n".intercalate (violations.map fun v => "  " ++ v.render)}"
   | _ => throwUnsupportedSyntax
 
 @[command_elab assertValid] def elabAssertValid : CommandElab

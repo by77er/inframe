@@ -1,4 +1,5 @@
 import Infra.Platform
+import DigitalOcean.Data.Region
 
 /-!
 Policies for the platform stack.
@@ -33,15 +34,13 @@ def clustersReplaceSafely : Policy :=
     | some lifecycle => if lifecycle.createBeforeDestroy then none else some "set createBeforeDestroy"
     | none => some "set createBeforeDestroy"
 
-/-- Regional resources must all live in the same region as the VPC. -/
+/-- Regional resources must all live in the same region as the VPC. A region read from a data
+source or another resource is known only once OpenTofu plans, so `argumentValues` reports it as
+unknown rather than letting it pass; the rule compares the literal regions. -/
 def singleRegion : Policy :=
-  Policy.graph "single-region" fun graph =>
-    let regions := graph.resources.filterMap fun resource =>
-      match resource.argument? "region" with
-      | some (.literal (.string region)) => some region
-      | _ => none
-    match regions.eraseDups with
-    | [] => some "no regional resources"
+  Policy.argumentValues "single-region" "region" fun regions =>
+    match (regions.map (·.2)).eraseDups with
+    | [] => some "no resource has a known region"
     | [_] => none
     | many => some s!"resources span regions {many}"
 
@@ -116,6 +115,24 @@ theorem databases_use_managed_vpc (env : Environment) (databases : List Identifi
       run_addProvider_resources, List.mem_append, List.mem_singleton, List.not_mem_nil,
       false_or, or_assoc] at member
     rcases member with rfl | rfl | rfl <;> simp [resourceSpecOf]
+
+/-- A stack whose regions the graph cannot see: the VPC is in `nyc3`, a second VPC follows the
+first one's `region` attribute, and the bucket takes the slug of a `digitalocean_region` data
+source that OpenTofu resolves to `sfo3`. -/
+def regionsFromTheGraph : Infra Unit := do
+  let here ← Data.Region.read "here" { slug := "sfo3" }
+  let network ← Vpc.create "platform" { name := "platform", region := "nyc3" }
+  let _ ← Vpc.create "mirror" { name := "mirror", region := network.region }
+  let _ ← SpacesBucket.create "assets" { name := "assets", region := here.slug }
+  pure ()
+
+/-- Neither region passes silently: each is an unknown finding at its resource, and the policy
+does not hold. -/
+theorem regions_from_the_graph_are_unknown :
+    (singleRegion.violations (buildGraph regionsFromTheGraph)).map (fun v => (v.address, v.outcome))
+      = [("digitalocean_vpc.mirror", .unknown), ("digitalocean_spaces_bucket.assets", .unknown)] ∧
+    ¬ singleRegion.Holds (buildGraph regionsFromTheGraph) := by
+  decide
 
 /-- Structural facts about the graph are theorems too: the database depends on the VPC through a
 reference, and the cluster version flows in from the data source. -/

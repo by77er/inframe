@@ -62,7 +62,9 @@ def noProdPurpose : Policy :=
 
 theorem tags_are_named : tagsAreNamed.Holds graph := by decide
 
-/-- The conditional is symbolic, so the literal check does not fire. -/
+/-- The conditional is symbolic, so the literal check does not fire. `argumentIs` asks only
+whether the argument is that literal; a rule about the value itself is `neverProd` below, which
+cannot pass the conditional. -/
 theorem purpose_is_symbolic : noProdPurpose.Holds graph := by decide
 
 theorem typed_functions_lower_to_calls :
@@ -277,6 +279,37 @@ error: policy is violated:
 #guard_msgs in
 #assert_policy noProdPurpose prodGraph
 
+/-- The rule about the value: no resource's purpose is `prod`. The graph knows a purpose only
+when it is a literal, so the conditional in `graph` (which OpenTofu resolves to `prod`) is
+reported as unknown until plan instead of passing. -/
+def neverProd : Policy :=
+  Policy.argumentValues "never-prod" "purpose" fun purposes =>
+    if purposes.any (·.2 == .string "prod") then some "purpose must not be prod" else none
+
+def purposeGraph (purpose : ExprNode) : Graph := buildGraph do
+  let _ : Resource Unit ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "tagged")
+    (InputObject.ofList [("purpose", purpose)])
+  pure ()
+
+theorem values_the_graph_does_not_know_are_unknown :
+    (neverProd.violations graph).map (fun v => (v.address, v.outcome))
+      = [("digitalocean_tag.app", .unknown)] ∧
+    ¬ neverProd.Holds graph ∧
+    ¬ neverProd.Holds (purposeGraph (.dataSourceAttribute (.data "digitalocean_tag" "x") ["purpose"])) ∧
+    (neverProd.violations prodGraph).map (fun v => (v.address, v.outcome))
+      = [("graph", .violated)] ∧
+    neverProd.Holds (purposeGraph (.literal (.string "dev"))) ∧
+    neverProd.Holds (purposeGraph (.literal .null)) := by
+  decide
+
+/--
+error: policy cannot be decided from the graph:
+  [never-prod] digitalocean_tag.app: unknown until plan: purpose is (true ? "prod" : "dev")
+-/
+#guard_msgs in
+#assert_policy neverProd graph
+
 /-- error: graph is invalid: duplicate address `digitalocean_tag.twice` -/
 #guard_msgs in
 #assert_valid (buildGraph (do
@@ -306,6 +339,8 @@ def main : IO Unit := do
   expect (tagsAreNamed.holds graph) "policy holds at run time"
   expect (Policy.all "everything" [Policy.validGraph, tagsAreNamed, noProdPurpose] |>.holds graph)
     "combined policy holds"
+  expect (!neverProd.holds graph && contains (neverProd.report graph) "cannot be decided")
+    "a value the graph does not know is reported, not passed"
   -- A `tofu show -json` document round-trips through the JSON bridge and resource lookup.
   let shown := "{\"values\": {\"root_module\": {\"resources\": [{\"address\": \"digitalocean_tag.app\", \"type\": \"digitalocean_tag\", \"name\": \"app\", \"values\": {\"id\": \"app\", \"name\": \"app\", \"droplets_count\": 2}}]}}}"
   match ShowDocument.parse shown with

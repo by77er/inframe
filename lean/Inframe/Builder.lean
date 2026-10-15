@@ -237,8 +237,14 @@ def addresses (graph : Graph) : List Address :=
 
 end Graph
 
-/-- A pure infrastructure program: a state transformer over `Graph`. -/
+/-- A pure infrastructure program: a state transformer over `Graph`. The constructor is private:
+outside this module a program is built only from `pure`, `bind`, and the builder primitives
+below, so it can neither read the graph it extends nor replace it, and the `run` lemmas describe
+every way a stack can change the graph. `run` stays public because it observes a program rather
+than being a step of one: `buildGraph` renders a stack with it and proofs state with it what a
+program adds. -/
 structure Infra (α : Type) where
+  private mk ::
   run : Graph → α × Graph
 
 namespace Infra
