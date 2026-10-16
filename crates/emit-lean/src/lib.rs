@@ -7,37 +7,24 @@
 //! of entries a nested block may have is in the record's types (exactly one, at most one) or
 //! in a `blocksInRange` obligation the caller discharges by `decide`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Write as _;
-use std::fs;
+use std::collections::HashSet;
+use std::collections::hash_map::{Entry, HashMap};
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use inframe_binding_model::emit::{self, FileJob, Output};
 use inframe_binding_model::{
-    BindingField, BindingItem, BindingPackage, BindingProvider, BindingType,
+    BindingField, BindingItem, BindingPackage, BindingProvider, BindingType, Fields, object_fields,
+    path_count,
 };
+use rustc_hash::FxBuildHasher;
 use serde::Serialize;
 use thiserror::Error;
 
+pub use inframe_binding_model::emit::GeneratedPackage;
+
 /// The Lean toolchain pinned by generated packages and by the core library.
 pub const LEAN_TOOLCHAIN: &str = "leanprover/lean4:v4.33.1";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedPackage {
-    pub files: BTreeMap<PathBuf, String>,
-}
-
-impl GeneratedPackage {
-    pub fn write_to(&self, output: &Path) -> Result<(), EmitError> {
-        for (relative_path, contents) in &self.files {
-            let path = output.join(relative_path);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(path, contents)?;
-        }
-        Ok(())
-    }
-}
 
 /// How the generated Lake package locates the `inframe` core library.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,42 +60,72 @@ pub enum EmitError {
     Json(#[from] serde_json::Error),
 }
 
+/// Renders the whole package in memory.
 pub fn render_package(
     package: &BindingPackage,
     module_root: &str,
     schema_sha256: &str,
     core: &CoreDependency,
 ) -> Result<GeneratedPackage, EmitError> {
+    let files = package_files(package, module_root, schema_sha256, core)?;
+    Ok(GeneratedPackage::render(&files))
+}
+
+/// Renders the package straight into `output`, every module streamed to its file and the
+/// modules spread over all cores. The files are those of [`render_package`], byte for byte.
+pub fn write_package(
+    package: &BindingPackage,
+    module_root: &str,
+    schema_sha256: &str,
+    core: &CoreDependency,
+    output: &Path,
+) -> Result<(), EmitError> {
+    let files = package_files(package, module_root, schema_sha256, core)?;
+    emit::write_files(files, output)?;
+    Ok(())
+}
+
+fn package_files<'a>(
+    package: &'a BindingPackage,
+    module_root: &'a str,
+    schema_sha256: &str,
+    core: &CoreDependency,
+) -> Result<Vec<FileJob<'a>>, EmitError> {
     if !valid_module_root(module_root) {
         return Err(EmitError::InvalidModuleRoot(module_root.to_owned()));
     }
-    let mut files = BTreeMap::new();
+    let mut files = Vec::with_capacity(package.resources.len() + package.data_sources.len() + 7);
     let mut modules = vec![format!("{module_root}.Provider")];
-    files.insert(
-        module_path(&format!("{module_root}.Provider")),
-        render_provider(package, module_root),
-    );
-    for resource in &package.resources {
-        let module = format!("{module_root}.Resource.{}", resource.public_name);
-        files.insert(
-            module_path(&module),
-            render_item(resource, &module, module_root, &package.provider, false),
-        );
-        modules.push(module);
-    }
-    for data_source in &package.data_sources {
-        let module = format!("{module_root}.Data.{}", data_source.public_name);
-        files.insert(
-            module_path(&module),
-            render_item(data_source, &module, module_root, &package.provider, true),
-        );
-        modules.push(module);
+    files.push(FileJob::new(
+        module_path(&modules[0]),
+        path_count(&package.provider.fields),
+        move |out| render_provider(out, package, module_root),
+    ));
+    for (items, kind, data_source) in [
+        (&package.resources, "Resource", false),
+        (&package.data_sources, "Data", true),
+    ] {
+        for item in items {
+            let module = format!("{module_root}.{kind}.{}", item.public_name);
+            let path = module_path(&module);
+            modules.push(module.clone());
+            files.push(FileJob::new(path, path_count(&item.fields), move |out| {
+                render_item(
+                    out,
+                    item,
+                    &module,
+                    module_root,
+                    &package.provider,
+                    data_source,
+                );
+            }));
+        }
     }
     let mut root = header_comment(&package.provider);
     for module in &modules {
         let _ = writeln!(root, "import {module}");
     }
-    files.insert(module_path(module_root), root);
+    files.push(FileJob::text(module_path(module_root), root));
     let manifest = Manifest {
         provider_source: &package.provider.source,
         provider_version: &package.provider.version,
@@ -120,29 +137,29 @@ pub fn render_package(
     };
     let mut manifest = serde_json::to_string_pretty(&manifest)?;
     manifest.push('\n');
-    files.insert(PathBuf::from("provider-manifest.json"), manifest);
-    files.insert(
-        PathBuf::from("README.md"),
+    files.push(FileJob::text("provider-manifest.json", manifest));
+    files.push(FileJob::text(
+        "README.md",
         format!(
             "# {module_root}\n\nGenerated Lean 4 bindings for `{}` `{}`. Do not edit by hand.\n",
             package.provider.source, package.provider.version
         ),
-    );
-    files.insert(
-        PathBuf::from("lean-toolchain"),
+    ));
+    files.push(FileJob::text(
+        "lean-toolchain",
         format!("{LEAN_TOOLCHAIN}\n"),
-    );
-    files.insert(
-        PathBuf::from("lakefile.toml"),
+    ));
+    files.push(FileJob::text(
+        "lakefile.toml",
         render_lakefile(package, module_root, core),
-    );
+    ));
     if let CoreDependency::Path(path) = core {
-        files.insert(
-            PathBuf::from("lake-manifest.json"),
+        files.push(FileJob::text(
+            "lake-manifest.json",
             render_manifest(&package.provider, path),
-        );
+        ));
     }
-    Ok(GeneratedPackage { files })
+    Ok(files)
 }
 
 /// Lake's manifest for a package whose only dependency is a local checkout of the core
@@ -252,36 +269,37 @@ fn provider_local_name_from_source(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
 }
 
-fn render_provider(package: &BindingPackage, module_root: &str) -> String {
+fn render_provider(out: &mut Output<'_>, package: &BindingPackage, module_root: &str) {
     let provider = &package.provider;
     let fields = &provider.fields;
     let marker = provider_marker(module_root);
-    let mut output = header_comment(provider);
+    out.push_str(&header_comment(provider));
     let _ = write!(
-        output,
+        out,
         "import Inframe\n\nnamespace {module_root}.Provider\n\nopen Inframe\n\n"
     );
     let _ = write!(
-        output,
+        out,
         "/-- Phantom type tagging handles to configured `{}` providers. -/\ninductive {marker}\n\n",
         provider.source
     );
     let shapes = Shapes::collect(fields, &[&marker]);
     let mut ranged = HashSet::new();
-    output.push_str(&render_shapes(&shapes, &mut ranged));
-    output.push_str(&render_args_structure(
+    render_shapes(out, &shapes, &mut ranged);
+    render_args_structure(
+        out,
         "Args",
-        &[],
-        &fields.iter().collect::<Vec<_>>(),
+        ROOT,
+        fields,
         &format!("Arguments for the `{}` provider.", provider.source),
         &shapes,
         &mut ranged,
-    ));
+    );
     let obligation = block_obligation(&ranged);
     let local_name = provider_local_name_from_source(&provider.source);
     let version = format!("= {}", provider.version);
     let _ = write!(
-        output,
+        out,
         "/-- Configure the default `{local_name}` provider. -/\n\
          def configure (a : Args){} : Infra (Inframe.Provider {marker}) :=\n  \
            addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.toInputObject\n\n\
@@ -291,11 +309,10 @@ fn render_provider(package: &BindingPackage, module_root: &str) -> String {
            addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.toInputObject\n\n\
          end {module_root}.Provider\n",
         obligation.consumed,
-        escape_string(&provider.source),
+        Escaped(&provider.source),
         obligation.consumed,
-        escape_string(&provider.source)
+        Escaped(&provider.source)
     );
-    output
 }
 
 /// The extra parameter of a builder whose `Args` carry a `blocksInRange` obligation: a record
@@ -327,12 +344,13 @@ fn block_obligation(ranged: &HashSet<String>) -> BlockObligation {
 
 #[allow(clippy::too_many_lines)]
 fn render_item(
+    out: &mut Output<'_>,
     item: &BindingItem,
     module: &str,
     module_root: &str,
     provider: &BindingProvider,
     data_source: bool,
-) -> String {
+) {
     let marker = provider_marker(module_root);
     let node = format!(
         "{}{}",
@@ -349,39 +367,41 @@ fn render_item(
     } else {
         "resource"
     };
-    let mut output = header_comment(provider);
+    out.push_str(&header_comment(provider));
     let _ = write!(
-        output,
+        out,
         "import Inframe\nimport {module_root}.Provider\n\nnamespace {module}\n\nopen Inframe\n\n"
     );
     let _ = write!(
-        output,
+        out,
         "/-- Phantom type tagging handles to `{}` {kind}s. -/\ninductive {node}\n\n",
         item.provider_type
     );
     let shapes = Shapes::collect(&item.fields, &[&handle_name, &node]);
     let mut ranged = HashSet::new();
-    output.push_str(&render_shapes(&shapes, &mut ranged));
-    output.push_str(&render_args_structure(
+    render_shapes(out, &shapes, &mut ranged);
+    render_args_structure(
+        out,
         "Args",
-        &[],
-        &item.fields.iter().collect::<Vec<_>>(),
+        ROOT,
+        &item.fields,
         &format!("Arguments for `{}`.", item.provider_type),
         &shapes,
         &mut ranged,
-    ));
+    );
     let obligation = block_obligation(&ranged);
-    let handle_fields: Vec<_> = item.outputs().collect();
+    let handle_fields = &item.fields;
     let handle_reserved: &[&str] = if data_source {
         &["dataSource"]
     } else {
         &["resource"]
     };
-    output.push_str(&render_attributes(
+    render_attributes(
+        out,
         "Attributes",
         "names",
-        &[],
-        &handle_fields,
+        ROOT,
+        handle_fields,
         handle_reserved,
         &format!(
             "The attributes of `{}`, held in `f`, with non-required attributes wrapped in `o`: \
@@ -390,19 +410,19 @@ fn render_item(
             item.provider_type
         ),
         &shapes,
-    ));
+    );
     let _ = write!(
-        output,
+        out,
         "/-- A symbolic handle to `{}`. Every attribute is a symbolic input resolved by OpenTofu. -/\nstructure {handle_name} extends Attributes Input Resolved where\n",
         item.provider_type
     );
     if data_source {
-        let _ = writeln!(output, "  dataSource : DataSource {node}\n");
+        let _ = writeln!(out, "  dataSource : DataSource {node}\n");
     } else {
-        let _ = writeln!(output, "  resource : Resource {node}\n");
+        let _ = writeln!(out, "  resource : Resource {node}\n");
     }
     let _ = write!(
-        output,
+        out,
         "/-- The resolved attributes of `{}`, decoded from `tofu show -json` with\n`ShowDocument.decode?`: required attributes are plain values, the rest `Option`. -/\nabbrev State := Attributes Resolved Option\n\n\
          /-- Every attribute optional. -/\nabbrev Partial := Attributes Option Resolved\n\n",
         item.provider_type
@@ -411,12 +431,12 @@ fn render_item(
     // the core class inside this namespace.
     if data_source {
         let _ = write!(
-            output,
+            out,
             "instance : Inframe.Dependable {handle_name} := ⟨fun handle => handle.dataSource.address⟩\n\n"
         );
     } else {
         let _ = write!(
-            output,
+            out,
             "instance : Inframe.Dependable {handle_name} := ⟨fun handle => handle.resource.address⟩\n\
              instance : Inframe.Managed {handle_name} := ⟨fun handle => handle.resource.address⟩\n\n"
         );
@@ -445,7 +465,7 @@ fn render_item(
         };
     let local_name = provider_local_name_from_source(&provider.source);
     let _ = write!(
-        output,
+        out,
         "/-- Add `{}.<name>` to the graph with explicit options. The logical name is validated at\ncompile time. -/\n\
          def {operation_with} (name : String) (a : Args) (options : {options_type} {module_root}.Provider.{marker})\n    \
            (valid : validIdentifier name = true := by valid_identifier){} : Infra {handle_name} := do\n  \
@@ -454,20 +474,20 @@ fn render_item(
            pure\n    {{ {handle_key} := handle",
         item.provider_type,
         obligation.consumed,
-        escape_string(&provider.source),
-        escape_string(&provider.version),
+        Escaped(&provider.source),
+        Escaped(&provider.version),
         item.provider_type
     );
-    for field in &handle_fields {
+    for field in handle_fields.iter() {
         let _ = write!(
-            output,
+            out,
             "\n      {} := {attr} handle [\"{}\"]",
             safe_field_name(field, handle_reserved),
-            escape_string(&field.provider_name)
+            Escaped(&field.provider_name)
         );
     }
     let _ = write!(
-        output,
+        out,
         " }}\n\n\
          /-- Add `{}.<name>` to the graph with default options. -/\n\
          def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier){} :\n    \
@@ -476,11 +496,15 @@ fn render_item(
          end {module}\n",
         item.provider_type, obligation.forwarded, obligation.discharge
     );
-    output
 }
 
 /// Names that would clash with generated members of an argument record.
 const ARGS_RESERVED: &[&str] = &["mk", "toInputObject", "toExprNode"];
+
+/// Whether a field is an argument (required or optional) rather than computed-only.
+fn is_input(field: &BindingField) -> bool {
+    field.required || field.optional
+}
 
 /// One record per argument shape: required attributes are plain fields, optional ones default
 /// to unset, nested blocks are nested records held according to how many the schema allows
@@ -489,62 +513,50 @@ const ARGS_RESERVED: &[&str] = &["mk", "toInputObject", "toExprNode"];
 /// nested record has one, the record also gets `blocksInRange`, and `ranged` records the
 /// record names that have it so that parents and builders can require it.
 fn render_args_structure(
+    out: &mut Output<'_>,
     name: &str,
-    parent_path: &[String],
-    fields: &[&BindingField],
+    parent: PathNode,
+    fields: &[BindingField],
     doc: &str,
     shapes: &Shapes<'_>,
     ranged: &mut HashSet<String>,
-) -> String {
-    let inputs: Vec<_> = fields
-        .iter()
-        .filter(|field| field.required || field.optional)
-        .collect();
-    let mut output = doc_comment(doc);
-    let _ = writeln!(output, "structure {name} where");
-    for field in &inputs {
-        output.push_str(&indent_doc(&field_documentation(field), "  "));
-        let path = child_path(parent_path, field);
-        let field_name = safe_field_name(field, ARGS_RESERVED);
-        let _ = writeln!(
-            output,
-            "  {field_name} : {}",
-            render_args_field_type(field, &path, shapes)
-        );
+) {
+    let inputs = || fields.iter().filter(|field| is_input(field));
+    write_doc_comment(out, doc, "");
+    let _ = writeln!(out, "structure {name} where");
+    for field in inputs() {
+        write_field_documentation(out, field, "  ");
+        let _ = write!(out, "  {} : ", safe_field_name(field, ARGS_RESERVED));
+        render_args_field_type(out, field, parent, shapes);
+        out.push('\n');
     }
+    let has_inputs = inputs().next().is_some();
     // A record with no inputs never reads its argument; `_a` keeps the generated code lint-clean.
-    let binder = if inputs.is_empty() { "_a" } else { "a" };
+    let binder = if has_inputs { "a" } else { "_a" };
     let _ = write!(
-        output,
+        out,
         "\ndef {name}.toInputObject ({binder} : {name}) : InputObject :=\n  ⟨List.filterMap (fun entry => entry) ([",
     );
-    for (index, field) in inputs.iter().enumerate() {
-        let separator = if index == 0 { " " } else { "\n    , " };
-        let field_name = safe_field_name(field, ARGS_RESERVED);
-        let path = child_path(parent_path, field);
-        let _ = write!(
-            output,
-            "{separator}{}",
-            render_args_field_entry(field, &field_name, &path, shapes)
-        );
+    for (index, field) in inputs().enumerate() {
+        out.push_str(if index == 0 { " " } else { "\n    , " });
+        render_args_field_entry(out, field, parent, shapes);
     }
-    if !inputs.is_empty() {
-        output.push(' ');
+    if has_inputs {
+        out.push(' ');
     }
     let _ = write!(
-        output,
+        out,
         "] : List (Option (String × ExprNode)))⟩\n\n\
          def {name}.toExprNode (a : {name}) : ExprNode :=\n  a.toInputObject.toExprNode\n\n"
     );
-    let constraints: Vec<_> = inputs
-        .iter()
-        .flat_map(|field| block_constraints(field, &child_path(parent_path, field), shapes, ranged))
+    let constraints: Vec<_> = inputs()
+        .flat_map(|field| block_constraints(field, parent, shapes, ranged))
         .collect();
     if !constraints.is_empty() {
         ranged.insert(name.to_owned());
         let (descriptions, checks): (Vec<_>, Vec<_>) = constraints.into_iter().unzip();
         let _ = write!(
-            output,
+            out,
             "/-- Whether the nested blocks hold as many entries as the provider schema allows: {}. \
              Builders taking this record require it; a record whose block lists have literal \
              length discharges it automatically. -/\n\
@@ -553,7 +565,6 @@ fn render_args_structure(
             checks.join(" && ")
         );
     }
-    output
 }
 
 /// How many entries a nested block list may hold, from the provider schema.
@@ -582,7 +593,7 @@ fn multiplicity(field: &BindingField) -> Multiplicity {
 /// `blocksInRange`: its own list bounds, and its nested record's obligation when it has one.
 fn block_constraints(
     field: &BindingField,
-    path: &[String],
+    parent: PathNode,
     shapes: &Shapes<'_>,
     ranged: &HashSet<String>,
 ) -> Vec<(String, String)> {
@@ -590,7 +601,7 @@ fn block_constraints(
         return Vec::new();
     };
     let field_name = safe_field_name(field, ARGS_RESERVED);
-    let record = format!("{}Args", shapes.name(path));
+    let record = format!("{}Args", shapes.name(parent, field));
     let mut constraints = Vec::new();
     let multiplicity = multiplicity(field);
     if let (NestedContainer::Array, Multiplicity::Many { min, max }) = (container, multiplicity) {
@@ -642,81 +653,107 @@ fn nullable_list(field: &BindingField) -> bool {
 }
 
 /// The field type in an argument record, with the default for optional fields.
-fn render_args_field_type(field: &BindingField, path: &[String], shapes: &Shapes<'_>) -> String {
-    let record = format!("{}Args", shapes.name(path));
-    match (nested_container(&field.r#type), field.required) {
-        (Some(NestedContainer::Single), true) => record,
-        (Some(NestedContainer::Single), false) => format!("Option {record} := none"),
-        (Some(NestedContainer::Array), required) => match multiplicity(field) {
-            Multiplicity::One => record,
-            Multiplicity::AtMostOne => format!("Option {record} := none"),
-            Multiplicity::Many { .. } if required => format!("List {record}"),
-            Multiplicity::Many { .. } if nullable_list(field) => {
-                format!("Option (List {record}) := none")
-            }
-            Multiplicity::Many { .. } => format!("List {record} := []"),
-        },
-        (Some(NestedContainer::Map), true) => format!("List (String × {record})"),
-        (Some(NestedContainer::Map), false) if nullable_list(field) => {
-            format!("Option (List (String × {record})) := none")
+fn render_args_field_type(
+    out: &mut Output<'_>,
+    field: &BindingField,
+    parent: PathNode,
+    shapes: &Shapes<'_>,
+) {
+    let Some(container) = nested_container(&field.r#type) else {
+        out.push_str(if field.required {
+            "Input "
+        } else {
+            "Option (Input "
+        });
+        render_type_argument(out, &field.r#type, parent, field, shapes);
+        if !field.required {
+            out.push_str(") := none");
         }
-        (Some(NestedContainer::Map), false) => format!("List (String × {record}) := []"),
-        (None, true) => format!(
-            "Input {}",
-            render_type_argument(&field.r#type, path, shapes)
-        ),
-        (None, false) => format!(
-            "Option (Input {}) := none",
-            render_type_argument(&field.r#type, path, shapes)
-        ),
-    }
+        return;
+    };
+    let record = shapes.name(parent, field);
+    let _ = match (container, field.required) {
+        (NestedContainer::Single, true) => write!(out, "{record}Args"),
+        (NestedContainer::Single, false) => write!(out, "Option {record}Args := none"),
+        (NestedContainer::Array, required) => match multiplicity(field) {
+            Multiplicity::One => write!(out, "{record}Args"),
+            Multiplicity::AtMostOne => write!(out, "Option {record}Args := none"),
+            Multiplicity::Many { .. } if required => write!(out, "List {record}Args"),
+            Multiplicity::Many { .. } if nullable_list(field) => {
+                write!(out, "Option (List {record}Args) := none")
+            }
+            Multiplicity::Many { .. } => write!(out, "List {record}Args := []"),
+        },
+        (NestedContainer::Map, true) => write!(out, "List (String × {record}Args)"),
+        (NestedContainer::Map, false) if nullable_list(field) => {
+            write!(out, "Option (List (String × {record}Args)) := none")
+        }
+        (NestedContainer::Map, false) => write!(out, "List (String × {record}Args) := []"),
+    };
 }
 
 /// The `Option (String × ExprNode)` entry a record field contributes to the input object.
 fn render_args_field_entry(
+    out: &mut Output<'_>,
     field: &BindingField,
-    field_name: &str,
-    path: &[String],
+    parent: PathNode,
     shapes: &Shapes<'_>,
-) -> String {
-    let key = escape_string(&field.provider_name);
-    let record = format!("{}Args", shapes.name(path));
-    let array = format!("ExprNode.array (a.{field_name}.map {record}.toExprNode)");
-    let map = format!(
-        "ExprNode.object (a.{field_name}.map fun (key, block) => (key, {record}.toExprNode block))"
+) {
+    let key = Escaped(&field.provider_name);
+    let field_name = safe_field_name(field, ARGS_RESERVED);
+    let Some(container) = nested_container(&field.r#type) else {
+        let _ = if field.required {
+            write!(out, "some (\"{key}\", inputNode a.{field_name})")
+        } else {
+            write!(
+                out,
+                "a.{field_name}.map fun value => (\"{key}\", inputNode value)"
+            )
+        };
+        return;
+    };
+    let record = shapes.name(parent, field);
+    let array = format_args!("ExprNode.array (a.{field_name}.map {record}Args.toExprNode)");
+    let map = format_args!(
+        "ExprNode.object (a.{field_name}.map fun (key, block) => (key, {record}Args.toExprNode block))"
     );
-    match (nested_container(&field.r#type), field.required) {
-        (Some(NestedContainer::Single), true) => {
-            format!("some (\"{key}\", a.{field_name}.toExprNode)")
+    let _ = match (container, field.required) {
+        (NestedContainer::Single, true) => {
+            write!(out, "some (\"{key}\", a.{field_name}.toExprNode)")
         }
-        (Some(NestedContainer::Single), false) => {
-            format!("a.{field_name}.map fun block => (\"{key}\", block.toExprNode)")
-        }
-        (Some(NestedContainer::Array), required) => match multiplicity(field) {
-            Multiplicity::One => {
-                format!("some (\"{key}\", ExprNode.array [a.{field_name}.toExprNode])")
-            }
-            Multiplicity::AtMostOne => format!(
+        (NestedContainer::Single, false) => write!(
+            out,
+            "a.{field_name}.map fun block => (\"{key}\", block.toExprNode)"
+        ),
+        (NestedContainer::Array, required) => match multiplicity(field) {
+            Multiplicity::One => write!(
+                out,
+                "some (\"{key}\", ExprNode.array [a.{field_name}.toExprNode])"
+            ),
+            Multiplicity::AtMostOne => write!(
+                out,
                 "a.{field_name}.map fun block => (\"{key}\", ExprNode.array [block.toExprNode])"
             ),
-            Multiplicity::Many { .. } if required => format!("some (\"{key}\", {array})"),
-            Multiplicity::Many { .. } if nullable_list(field) => format!(
-                "a.{field_name}.map fun items => (\"{key}\", ExprNode.array (items.map {record}.toExprNode))"
+            Multiplicity::Many { .. } if required => write!(out, "some (\"{key}\", {array})"),
+            Multiplicity::Many { .. } if nullable_list(field) => write!(
+                out,
+                "a.{field_name}.map fun items => (\"{key}\", ExprNode.array (items.map {record}Args.toExprNode))"
             ),
-            Multiplicity::Many { .. } => {
-                format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {array})")
-            }
+            Multiplicity::Many { .. } => write!(
+                out,
+                "if a.{field_name}.isEmpty then none else some (\"{key}\", {array})"
+            ),
         },
-        (Some(NestedContainer::Map), true) => format!("some (\"{key}\", {map})"),
-        (Some(NestedContainer::Map), false) if nullable_list(field) => format!(
-            "a.{field_name}.map fun entries => (\"{key}\", ExprNode.object (entries.map fun (key, block) => (key, {record}.toExprNode block)))"
+        (NestedContainer::Map, true) => write!(out, "some (\"{key}\", {map})"),
+        (NestedContainer::Map, false) if nullable_list(field) => write!(
+            out,
+            "a.{field_name}.map fun entries => (\"{key}\", ExprNode.object (entries.map fun (key, block) => (key, {record}Args.toExprNode block)))"
         ),
-        (Some(NestedContainer::Map), false) => {
-            format!("if a.{field_name}.isEmpty then none else some (\"{key}\", {map})")
-        }
-        (None, true) => format!("some (\"{key}\", inputNode a.{field_name})"),
-        (None, false) => format!("a.{field_name}.map fun value => (\"{key}\", inputNode value)"),
-    }
+        (NestedContainer::Map, false) => write!(
+            out,
+            "if a.{field_name}.isEmpty then none else some (\"{key}\", {map})"
+        ),
+    };
 }
 
 /// A nested object type that gets its own Lean declaration: a builder for an input block or
@@ -724,13 +761,21 @@ fn render_args_field_entry(
 #[derive(Debug)]
 struct NestedType<'a> {
     /// The first path at which this shape occurs; it names the type.
-    path: Vec<String>,
+    path: Vec<&'a str>,
+    /// That path's node, under which the shape's own fields are looked up.
+    node: PathNode,
     name: String,
-    fields: &'a [BindingField],
+    fields: &'a Fields,
     builder: bool,
     /// How many paths share this shape.
     occurrences: usize,
 }
+
+/// A path from the item's top level, as a node of [`Shapes`]' path trie.
+type PathNode = u32;
+
+/// The item's top level.
+const ROOT: PathNode = 0;
 
 /// The nested types of one module with structural sharing. Provider schemas unroll recursive
 /// blocks to a fixed depth, so a resource can contain thousands of nested paths but only a few
@@ -738,21 +783,32 @@ struct NestedType<'a> {
 /// to the type of the first path with the same field list, so the generated module declares
 /// each shape once. Children are emitted before their parents so that a parent's setters can
 /// refer to the child's `toExprNode`.
+///
+/// Shapes are keyed by their interned field list, whose hash is cached and whose equality is a
+/// pointer comparison, and paths are kept as a trie of `(parent, field name)` edges, so
+/// collecting a resource costs one hash lookup per path.
 #[derive(Debug)]
 struct Shapes<'a> {
     entries: Vec<NestedType<'a>>,
-    names: HashMap<Vec<String>, String>,
+    /// Entry indices by builder flag and field list.
+    by_fields: HashMap<(bool, &'a Fields), usize, FxBuildHasher>,
+    /// Trie edges: the child node of `parent` reached through a field's public name.
+    children: HashMap<(PathNode, &'a str), PathNode, FxBuildHasher>,
+    /// For every trie node, the shape last declared at it (none for the root).
+    declared: Vec<Option<usize>>,
 }
 
 impl<'a> Shapes<'a> {
-    fn collect(fields: &'a [BindingField], reserved: &[&str]) -> Self {
+    fn collect(fields: &'a Fields, reserved: &[&str]) -> Self {
         let mut shapes = Self {
             entries: Vec::new(),
-            names: HashMap::new(),
+            by_fields: HashMap::default(),
+            children: HashMap::default(),
+            declared: vec![None],
         };
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        for field in fields {
-            shapes.visit(field, &[], true, reserved, &mut seen);
+        let mut path = Vec::new();
+        for field in fields.iter() {
+            shapes.visit(field, ROOT, &mut path, true, reserved);
         }
         shapes
     }
@@ -764,61 +820,63 @@ impl<'a> Shapes<'a> {
     fn visit(
         &mut self,
         field: &'a BindingField,
-        parent_path: &[String],
+        parent: PathNode,
+        path: &mut Vec<&'a str>,
         parent_builder: bool,
         reserved: &[&str],
-        seen: &mut HashMap<String, usize>,
     ) {
         let Some(fields) = object_fields(&field.r#type) else {
             return;
         };
-        let builder = parent_builder
-            && (field.required || field.optional)
-            && nested_container(&field.r#type).is_some();
-        let path = child_path(parent_path, field);
-        for child in fields {
-            self.visit(child, &path, builder, reserved, seen);
+        let builder =
+            parent_builder && is_input(field) && nested_container(&field.r#type).is_some();
+        let node = self.child(parent, &field.public_name);
+        path.push(&field.public_name);
+        for child in fields.iter() {
+            self.visit(child, node, path, builder, reserved);
         }
-        self.declare(path, fields, builder, reserved, seen);
+        let shape = match self.by_fields.entry((builder, fields)) {
+            Entry::Occupied(entry) => {
+                let index = *entry.get();
+                self.entries[index].occurrences += 1;
+                index
+            }
+            Entry::Vacant(entry) => {
+                let index = self.entries.len();
+                entry.insert(index);
+                self.entries.push(NestedType {
+                    path: path.clone(),
+                    node,
+                    name: nested_type_name(path, reserved),
+                    fields,
+                    builder,
+                    occurrences: 1,
+                });
+                index
+            }
+        };
+        self.declared[node as usize] = Some(shape);
+        path.pop();
     }
 
-    fn declare(
-        &mut self,
-        path: Vec<String>,
-        fields: &'a [BindingField],
-        builder: bool,
-        reserved: &[&str],
-        seen: &mut HashMap<String, usize>,
-    ) {
-        let key = format!(
-            "{}:{}",
-            builder,
-            serde_json::to_string(fields).unwrap_or_default()
-        );
-        if let Some(&index) = seen.get(&key) {
-            self.entries[index].occurrences += 1;
-            let name = self.entries[index].name.clone();
-            self.names.insert(path, name);
-            return;
+    fn child(&mut self, parent: PathNode, segment: &'a str) -> PathNode {
+        let next = PathNode::try_from(self.declared.len()).expect("fewer than 2^32 paths");
+        let node = *self.children.entry((parent, segment)).or_insert(next);
+        if node == next {
+            self.declared.push(None);
         }
-        let name = nested_type_name(&path, reserved);
-        seen.insert(key, self.entries.len());
-        self.names.insert(path.clone(), name.clone());
-        self.entries.push(NestedType {
-            path,
-            name,
-            fields,
-            builder,
-            occurrences: 1,
-        });
+        node
     }
 
-    /// The Lean type standing for the object shape at `path`.
-    fn name(&self, path: &[String]) -> String {
-        self.names
-            .get(path)
-            .cloned()
-            .unwrap_or_else(|| nested_type_name(path, &[]))
+    /// The Lean type standing for the object shape of `field`, a field of the record at
+    /// `parent`. Every object-typed field below the item was visited by [`Shapes::collect`].
+    fn name(&self, parent: PathNode, field: &BindingField) -> &str {
+        let index = self
+            .children
+            .get(&(parent, field.public_name.as_ref()))
+            .and_then(|&node| self.declared[node as usize])
+            .expect("object shapes are collected before they are rendered");
+        &self.entries[index].name
     }
 }
 
@@ -849,54 +907,32 @@ fn nested_container(r#type: &BindingType) -> Option<NestedContainer> {
     }
 }
 
-/// The object shape behind any number of collection layers, if there is exactly one.
-fn object_fields(r#type: &BindingType) -> Option<&[BindingField]> {
-    match r#type {
-        BindingType::Object(fields) => Some(fields),
-        BindingType::List(item) | BindingType::Set(item) | BindingType::Map(item) => {
-            object_fields(item)
-        }
-        BindingType::String
-        | BindingType::Bool
-        | BindingType::Number
-        | BindingType::Tuple(_)
-        | BindingType::Dynamic => None,
-    }
-}
-
-fn render_shapes(shapes: &Shapes<'_>, ranged: &mut HashSet<String>) -> String {
-    let mut output = String::new();
+fn render_shapes(out: &mut Output<'_>, shapes: &Shapes<'_>, ranged: &mut HashSet<String>) {
     for nested in &shapes.entries {
-        let fields: Vec<_> = nested.fields.iter().collect();
-        output.push_str(&render_attributes(
+        let path = nested.path.join(".");
+        let note = shared_note(nested.occurrences);
+        render_attributes(
+            out,
             &format!("{}Attributes", nested.name),
             &format!("{}Attributes.names", nested.name),
-            &nested.path,
-            &fields,
+            nested.node,
+            nested.fields,
             &[],
-            &format!(
-                "The attributes of the `{}` block{}, held in `f`.",
-                nested.path.join("."),
-                shared_note(nested.occurrences)
-            ),
+            &format!("The attributes of the `{path}` block{note}, held in `f`."),
             shapes,
-        ));
+        );
         if nested.builder {
-            output.push_str(&render_args_structure(
+            render_args_structure(
+                out,
                 &format!("{}Args", nested.name),
-                &nested.path,
-                &fields,
-                &format!(
-                    "Arguments for the `{}` block{}.",
-                    nested.path.join("."),
-                    shared_note(nested.occurrences)
-                ),
+                nested.node,
+                nested.fields,
+                &format!("Arguments for the `{path}` block{note}."),
                 shapes,
                 ranged,
-            ));
+            );
         }
     }
-    output
 }
 
 /// Only required attributes and blocks are guaranteed present in state; everything else,
@@ -909,46 +945,45 @@ fn always_present(field: &BindingField) -> bool {
 /// A higher-kinded attribute structure plus its decoder (for any `Marshal f o`), its encoder
 /// at resolved state, so state round-trips through `Value`, and `names_name`: the same
 /// structure instantiated at `fun _ => String`, holding each attribute's provider name.
+#[allow(clippy::too_many_arguments)]
 fn render_attributes(
+    out: &mut Output<'_>,
     name: &str,
     names_name: &str,
-    parent_path: &[String],
-    fields: &[&BindingField],
+    parent: PathNode,
+    fields: &[BindingField],
     reserved: &[&str],
     doc: &str,
     shapes: &Shapes<'_>,
-) -> String {
-    let mut output = doc_comment(doc);
-    let _ = writeln!(output, "structure {name} (f o : Type → Type) where");
+) {
+    write_doc_comment(out, doc, "");
+    let _ = writeln!(out, "structure {name} (f o : Type → Type) where");
     for field in fields {
-        output.push_str(&indent_doc(&field_documentation(field), "  "));
-        let inner =
-            render_hkd_type_argument(&field.r#type, &child_path(parent_path, field), shapes);
-        let _ = writeln!(
-            output,
-            "  {} : f {}",
-            safe_field_name(field, reserved),
-            if always_present(field) {
-                inner
-            } else {
-                format!("(o {inner})")
-            }
-        );
+        write_field_documentation(out, field, "  ");
+        let _ = write!(out, "  {} : f ", safe_field_name(field, reserved));
+        if always_present(field) {
+            render_hkd_type_argument(out, &field.r#type, parent, field, shapes);
+        } else {
+            out.push_str("(o ");
+            render_hkd_type_argument(out, &field.r#type, parent, field, shapes);
+            out.push(')');
+        }
+        out.push('\n');
     }
     // Lean's structure-instance parser wants newline-separated fields aligned in one column.
     let _ = write!(
-        output,
+        out,
         "\ndef {name}.ofValue [Marshal f o] ({} : Value) : Except String ({name} f o) := do\n  pure",
         if fields.is_empty() { "_value" } else { "value" }
     );
     if fields.is_empty() {
-        output.push_str(" {}\n\n");
+        out.push_str(" {}\n\n");
     } else {
-        output.push_str("\n    {");
+        out.push_str("\n    {");
         for (index, field) in fields.iter().enumerate() {
             let separator = if index == 0 { " " } else { "\n      " };
             let _ = write!(
-                output,
+                out,
                 "{separator}{} := (← Marshal.{} (f := f) (o := o) value \"{}\")",
                 safe_field_name(field, reserved),
                 if always_present(field) {
@@ -956,13 +991,13 @@ fn render_attributes(
                 } else {
                     "optional"
                 },
-                escape_string(&field.provider_name)
+                Escaped(&field.provider_name)
             );
         }
-        output.push_str(" }\n\n");
+        out.push_str(" }\n\n");
     }
     let _ = write!(
-        output,
+        out,
         "instance [Marshal f o] : FromValue ({name} f o) := ⟨{name}.ofValue⟩\n\n\
          instance : ToValue ({name} Resolved Option) :=\n  ⟨fun {} => .object\n    [",
         if fields.is_empty() { "_" } else { "attributes" }
@@ -970,50 +1005,53 @@ fn render_attributes(
     for (index, field) in fields.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n    , " };
         let _ = write!(
-            output,
+            out,
             "{separator}(\"{}\", toValue attributes.{})",
-            escape_string(&field.provider_name),
+            Escaped(&field.provider_name),
             safe_field_name(field, reserved)
         );
     }
-    output.push_str(" ]⟩\n\n");
+    out.push_str(" ]⟩\n\n");
     // Attribute names as a record shaped like the attributes: `names.nodePool = "node_pool"`.
     // Policies (`resource.argument? names.size`) and `ignoreChanges [names.nodeCount]` then name
     // attributes through the generated record, so a schema rename is a compile error rather
     // than a silently unmatched string.
     let _ = write!(
-        output,
+        out,
         "/-- The provider-side name of every attribute, as a record shaped like the attributes \
          themselves, so policies and `ignoreChanges` never spell provider names as raw strings. \
          `@[simp]` so that proofs by `simp` see the strings behind the record. -/\n\
          @[simp] def {names_name} : {name} (fun _ => String) (fun _ => String) :=\n  "
     );
     if fields.is_empty() {
-        output.push_str("{}\n\n");
+        out.push_str("{}\n\n");
     } else {
-        output.push('{');
+        out.push('{');
         for (index, field) in fields.iter().enumerate() {
             let separator = if index == 0 { " " } else { "\n    " };
             let _ = write!(
-                output,
+                out,
                 "{separator}{} := \"{}\"",
                 safe_field_name(field, reserved),
-                escape_string(&field.provider_name)
+                Escaped(&field.provider_name)
             );
         }
-        output.push_str(" }\n\n");
+        out.push_str(" }\n\n");
     }
-    output.push_str(&render_symbolic_fields(name, fields, reserved));
-    output
+    render_symbolic_fields(out, name, fields, reserved);
 }
 
 /// The same structure read off a symbolic value of it: an element of a computed list
 /// (`cluster.nodePool[0].fields.nodes`) or a splat (`cluster.nodePool.splat (·.name)`) is
 /// traversed with the schema's types rather than through `Input.field` and a claimed type.
-fn render_symbolic_fields(name: &str, fields: &[&BindingField], reserved: &[&str]) -> String {
-    let mut output = String::new();
+fn render_symbolic_fields(
+    out: &mut Output<'_>,
+    name: &str,
+    fields: &[BindingField],
+    reserved: &[&str],
+) {
     let _ = write!(
-        output,
+        out,
         "/-- The typed attributes of a symbolic `{name}` value, behind `Input.fields`: \
          `value.fields.<attribute>` for an element of a computed list, and the projection \
          `Input.splat` maps over every element. -/\n\
@@ -1021,88 +1059,124 @@ fn render_symbolic_fields(name: &str, fields: &[&BindingField], reserved: &[&str
         if fields.is_empty() { "_value" } else { "value" }
     );
     if fields.is_empty() {
-        output.push_str("{}\n\n");
+        out.push_str("{}\n\n");
     } else {
-        output.push('{');
+        out.push('{');
         for (index, field) in fields.iter().enumerate() {
             let separator = if index == 0 { " " } else { "\n    " };
             let _ = write!(
-                output,
+                out,
                 "{separator}{} := value.schemaField \"{}\"",
                 safe_field_name(field, reserved),
-                escape_string(&field.provider_name)
+                Escaped(&field.provider_name)
             );
         }
-        output.push_str(" }\n\n");
+        out.push_str(" }\n\n");
     }
     let _ = write!(
-        output,
+        out,
         "instance : Inframe.SymbolicFields ({name} Input Resolved) := ⟨{name}.ofInput⟩\n\n"
     );
-    output
 }
 
 /// The phantom type of an input or attribute: nested objects are their attribute structure at
-/// the handle instantiation, so a handle and its arguments agree on names.
-fn render_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
+/// the handle instantiation, so a handle and its arguments agree on names. `field` (a field of
+/// the record at `parent`) names the object shape, whatever collections it sits in.
+fn render_type(
+    out: &mut Output<'_>,
+    r#type: &BindingType,
+    parent: PathNode,
+    field: &BindingField,
+    shapes: &Shapes<'_>,
+) {
     match r#type {
-        BindingType::String => "String".into(),
-        BindingType::Bool => "Bool".into(),
-        BindingType::Number => "Number".into(),
+        BindingType::String => out.push_str("String"),
+        BindingType::Bool => out.push_str("Bool"),
+        BindingType::Number => out.push_str("Number"),
         BindingType::List(item) | BindingType::Set(item) => {
-            format!("List {}", render_type_argument(item, path, shapes))
+            out.push_str("List ");
+            render_type_argument(out, item, parent, field, shapes);
         }
-        BindingType::Map(item) => format!("Map {}", render_type_argument(item, path, shapes)),
-        BindingType::Tuple(_) | BindingType::Dynamic => "Value".into(),
-        BindingType::Object(_) => format!("{}Attributes Input Resolved", shapes.name(path)),
+        BindingType::Map(item) => {
+            out.push_str("Map ");
+            render_type_argument(out, item, parent, field, shapes);
+        }
+        BindingType::Tuple(_) | BindingType::Dynamic => out.push_str("Value"),
+        BindingType::Object(_) => {
+            let _ = write!(
+                out,
+                "{}Attributes Input Resolved",
+                shapes.name(parent, field)
+            );
+        }
     }
 }
 
 /// The type of an attribute inside a higher-kinded `Attributes f`: nested objects are their
 /// own `…Attributes f`, so instantiating `f` instantiates the whole tree.
-fn render_hkd_type(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
+fn render_hkd_type(
+    out: &mut Output<'_>,
+    r#type: &BindingType,
+    parent: PathNode,
+    field: &BindingField,
+    shapes: &Shapes<'_>,
+) {
     match r#type {
-        BindingType::String => "String".into(),
-        BindingType::Bool => "Bool".into(),
-        BindingType::Number => "Number".into(),
+        BindingType::String => out.push_str("String"),
+        BindingType::Bool => out.push_str("Bool"),
+        BindingType::Number => out.push_str("Number"),
         BindingType::List(item) | BindingType::Set(item) => {
-            format!("List {}", render_hkd_type_argument(item, path, shapes))
+            out.push_str("List ");
+            render_hkd_type_argument(out, item, parent, field, shapes);
         }
-        BindingType::Map(item) => format!("Map {}", render_hkd_type_argument(item, path, shapes)),
-        BindingType::Tuple(_) | BindingType::Dynamic => "Value".into(),
-        BindingType::Object(_) => format!("{}Attributes f o", shapes.name(path)),
-    }
-}
-
-fn render_hkd_type_argument(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
-    match r#type {
-        BindingType::String
-        | BindingType::Bool
-        | BindingType::Number
-        | BindingType::Tuple(_)
-        | BindingType::Dynamic => render_hkd_type(r#type, path, shapes),
-        BindingType::List(_)
-        | BindingType::Set(_)
-        | BindingType::Map(_)
-        | BindingType::Object(_) => {
-            format!("({})", render_hkd_type(r#type, path, shapes))
+        BindingType::Map(item) => {
+            out.push_str("Map ");
+            render_hkd_type_argument(out, item, parent, field, shapes);
+        }
+        BindingType::Tuple(_) | BindingType::Dynamic => out.push_str("Value"),
+        BindingType::Object(_) => {
+            let _ = write!(out, "{}Attributes f o", shapes.name(parent, field));
         }
     }
 }
 
-fn render_type_argument(r#type: &BindingType, path: &[String], shapes: &Shapes<'_>) -> String {
-    match r#type {
-        BindingType::String
-        | BindingType::Bool
-        | BindingType::Number
-        | BindingType::Tuple(_)
-        | BindingType::Dynamic => render_type(r#type, path, shapes),
-        BindingType::List(_)
-        | BindingType::Set(_)
-        | BindingType::Map(_)
-        | BindingType::Object(_) => {
-            format!("({})", render_type(r#type, path, shapes))
-        }
+/// Whether a type needs parentheses as an argument.
+fn compound(r#type: &BindingType) -> bool {
+    matches!(
+        r#type,
+        BindingType::List(_) | BindingType::Set(_) | BindingType::Map(_) | BindingType::Object(_)
+    )
+}
+
+fn render_hkd_type_argument(
+    out: &mut Output<'_>,
+    r#type: &BindingType,
+    parent: PathNode,
+    field: &BindingField,
+    shapes: &Shapes<'_>,
+) {
+    if compound(r#type) {
+        out.push('(');
+        render_hkd_type(out, r#type, parent, field, shapes);
+        out.push(')');
+    } else {
+        render_hkd_type(out, r#type, parent, field, shapes);
+    }
+}
+
+fn render_type_argument(
+    out: &mut Output<'_>,
+    r#type: &BindingType,
+    parent: PathNode,
+    field: &BindingField,
+    shapes: &Shapes<'_>,
+) {
+    if compound(r#type) {
+        out.push('(');
+        render_type(out, r#type, parent, field, shapes);
+        out.push(')');
+    } else {
+        render_type(out, r#type, parent, field, shapes);
     }
 }
 
@@ -1114,23 +1188,12 @@ fn shared_note(occurrences: usize) -> String {
     }
 }
 
-fn child_path(parent_path: &[String], field: &BindingField) -> Vec<String> {
-    let mut path = parent_path.to_vec();
-    path.push(field.public_name.clone());
-    path
-}
-
-fn nested_type_name(path: &[String], reserved: &[&str]) -> String {
-    let name: String = path.iter().map(|part| upper_first(part)).collect();
-    safe_type_name(&name, reserved, "Block")
-}
-
-fn upper_first(value: &str) -> String {
-    let mut characters = value.chars();
-    characters
-        .next()
-        .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
-        .unwrap_or_default()
+fn nested_type_name(path: &[&str], reserved: &[&str]) -> String {
+    let mut name = String::new();
+    for part in path {
+        inframe_binding_model::push_capitalized(&mut name, part);
+    }
+    safe_type_name(name, reserved, "Block")
 }
 
 /// Type names that generated modules already use, either from the core library (which is
@@ -1179,16 +1242,15 @@ const RESERVED_TYPE_NAMES: &[&str] = &[
     "Inframe",
 ];
 
-fn safe_type_name(name: &str, reserved: &[&str], suffix: &str) -> String {
-    if RESERVED_TYPE_NAMES.contains(&name) || reserved.contains(&name) {
-        format!("{name}{suffix}")
-    } else {
-        name.to_owned()
+fn safe_type_name(mut name: String, reserved: &[&str], suffix: &str) -> String {
+    if RESERVED_TYPE_NAMES.contains(&name.as_str()) || reserved.contains(&name.as_str()) {
+        name.push_str(suffix);
     }
+    name
 }
 
 fn safe_handle_name(name: &str, node: &str) -> String {
-    safe_type_name(name, &[node], "Handle")
+    safe_type_name(name.to_owned(), &[node], "Handle")
 }
 
 /// Lean 4 tokens that cannot be used as plain identifiers.
@@ -1290,31 +1352,52 @@ fn lean_reserved(name: &str) -> bool {
     )
 }
 
-fn safe_field_name(field: &BindingField, reserved: &[&str]) -> String {
-    let name = &field.public_name;
-    if lean_reserved(name)
-        || reserved.contains(&name.as_str())
-        || name.starts_with(|c: char| c.is_ascii_digit())
-    {
-        format!("{name}_")
-    } else {
-        name.clone()
+/// A field's Lean name: its public name, with `_` appended when that is a keyword, one of
+/// `reserved`, or starts with a digit.
+struct SafeFieldName<'a> {
+    name: &'a str,
+    suffixed: bool,
+}
+
+impl fmt::Display for SafeFieldName<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name)?;
+        if self.suffixed {
+            formatter.write_str("_")?;
+        }
+        Ok(())
     }
 }
 
-fn escape_string(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '\\' => output.push_str("\\\\"),
-            '"' => output.push_str("\\\""),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            other => output.push(other),
-        }
+fn safe_field_name<'a>(field: &'a BindingField, reserved: &[&str]) -> SafeFieldName<'a> {
+    let name: &str = &field.public_name;
+    SafeFieldName {
+        name,
+        suffixed: lean_reserved(name)
+            || reserved.contains(&name)
+            || name.starts_with(|c: char| c.is_ascii_digit()),
     }
-    output
+}
+
+/// A string as the body of a Lean string literal.
+struct Escaped<'a>(&'a str);
+
+impl fmt::Display for Escaped<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut rest = self.0;
+        while let Some(index) = rest.find(['\\', '"', '\n', '\r', '\t']) {
+            formatter.write_str(&rest[..index])?;
+            formatter.write_str(match rest.as_bytes()[index] {
+                b'\\' => "\\\\",
+                b'"' => "\\\"",
+                b'\n' => "\\n",
+                b'\r' => "\\r",
+                _ => "\\t",
+            })?;
+            rest = &rest[index + 1..];
+        }
+        formatter.write_str(rest)
+    }
 }
 
 /// Lean block comments nest, so both delimiters must be neutralised inside doc text.
@@ -1326,38 +1409,41 @@ fn first_line(description: &str) -> String {
     escape_doc(description.lines().next().unwrap_or_default().trim_end())
 }
 
-fn doc_comment(text: &str) -> String {
+/// A `/-- … -/` comment holding `text`, every line prefixed with `indent`; nothing when the
+/// text is blank.
+fn write_doc_comment(out: &mut Output<'_>, text: &str, indent: &str) {
     let text = text.trim();
     if text.is_empty() {
-        return String::new();
+        return;
     }
-    let lines: Vec<_> = text.lines().map(str::trim_end).collect();
-    if lines.len() == 1 {
-        return format!("/-- {} -/\n", lines[0]);
+    let mut lines = text.lines().map(str::trim_end);
+    out.push_str(indent);
+    out.push_str("/-- ");
+    out.push_str(lines.next().unwrap_or_default());
+    for line in lines {
+        out.push('\n');
+        out.push_str(indent);
+        out.push_str(line);
     }
-    let mut output = String::from("/-- ");
-    output.push_str(lines[0]);
-    for line in &lines[1..] {
-        output.push('\n');
-        output.push_str(line);
-    }
-    output.push_str(" -/\n");
-    output
+    out.push_str(" -/\n");
 }
 
-fn indent_doc(doc: &str, indent: &str) -> String {
-    let mut output = String::new();
-    for line in doc.lines() {
-        let _ = writeln!(output, "{indent}{line}");
-    }
-    output
+fn has_description(field: &BindingField) -> bool {
+    field
+        .description
+        .as_deref()
+        .is_some_and(|description| !description.trim().is_empty())
 }
 
 /// The description of a field followed by the descriptions of its direct nested fields, so
 /// that hovers on a block-typed field explain the block's contents. Only one level is listed:
 /// provider schemas unroll recursive blocks to a fixed depth (AWS WAF rules reach 21,000
 /// nested paths), and listing whole subtrees made the documentation quadratic in that size.
-fn field_documentation(field: &BindingField) -> String {
+fn write_field_documentation(out: &mut Output<'_>, field: &BindingField, indent: &str) {
+    let children = object_fields(&field.r#type).map_or(&[][..], |fields| &fields[..]);
+    if !has_description(field) && !children.iter().any(has_description) {
+        return;
+    }
     let mut text = field
         .description
         .as_deref()
@@ -1365,27 +1451,27 @@ fn field_documentation(field: &BindingField) -> String {
         .filter(|description| !description.is_empty())
         .map(escape_doc)
         .unwrap_or_default();
-    let documented_children: Vec<_> = object_fields(&field.r#type)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|child| {
-            child
+    if children.iter().any(has_description) {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        for child in children {
+            if let Some(description) = child
                 .description
                 .as_deref()
                 .map(str::trim)
                 .filter(|description| !description.is_empty())
-                .map(|description| (child.public_name.as_str(), description))
-        })
-        .collect();
-    if !documented_children.is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        for (name, description) in documented_children {
-            let _ = write!(text, "\n- `{name}`: {}", first_line(description));
+            {
+                let _ = write!(
+                    text,
+                    "\n- `{}`: {}",
+                    child.public_name,
+                    first_line(description)
+                );
+            }
         }
     }
-    doc_comment(&text)
+    write_doc_comment(out, &text, indent);
 }
 
 #[cfg(test)]
@@ -1393,6 +1479,10 @@ mod tests {
     use inframe_binding_model::{BindingProvider, BindingType};
 
     use super::*;
+
+    fn object(fields: Vec<BindingField>) -> BindingType {
+        BindingType::Object(fields.into())
+    }
 
     fn field(
         provider_name: &str,
@@ -1433,7 +1523,7 @@ mod tests {
             ..field(
                 name,
                 &inframe_binding_model::field_name(name),
-                BindingType::List(Box::new(BindingType::Object(fields))),
+                BindingType::List(Box::new(object(fields))),
                 required,
                 !required,
                 false,
@@ -1468,7 +1558,8 @@ mod tests {
                 None,
                 Some(1),
             ),
-        ];
+        ]
+        .into();
         let generated = render_package(&bounded, "DigitalOcean", "abc", &core()).unwrap();
         let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
         assert!(source.contains("  exactlyOne : ExactlyOneArgs\n"));
@@ -1532,7 +1623,7 @@ mod tests {
         let taint = field(
             "taint",
             "taint",
-            BindingType::List(Box::new(BindingType::Object(vec![taint_key]))),
+            BindingType::List(Box::new(object(vec![taint_key]))),
             false,
             true,
             false,
@@ -1540,7 +1631,7 @@ mod tests {
         let mut node_pool = field(
             "node_pool",
             "nodePool",
-            BindingType::List(Box::new(BindingType::Object(vec![
+            BindingType::List(Box::new(object(vec![
                 nested_name,
                 auto_scale,
                 actual_node_count,
@@ -1554,7 +1645,7 @@ mod tests {
         let mut kube_config = field(
             "kube_config",
             "kubeConfig",
-            BindingType::List(Box::new(BindingType::Object(vec![field(
+            BindingType::List(Box::new(object(vec![field(
                 "raw_config",
                 "rawConfig",
                 BindingType::String,
@@ -1596,12 +1687,13 @@ mod tests {
                     false,
                     true,
                     false,
-                )],
+                )]
+                .into(),
             },
             resources: vec![BindingItem {
                 provider_type: "digitalocean_tag".into(),
                 public_name: "Tag".into(),
-                fields: vec![end, id, kube_config, labels, name, node_pool, values],
+                fields: vec![end, id, kube_config, labels, name, node_pool, values].into(),
             }],
             data_sources: vec![BindingItem {
                 provider_type: "digitalocean_tag".into(),
@@ -1613,7 +1705,8 @@ mod tests {
                     true,
                     false,
                     false,
-                )],
+                )]
+                .into(),
             }],
         }
     }
@@ -1776,7 +1869,7 @@ mod tests {
     #[test]
     fn identical_nested_shapes_share_one_type() {
         let shape = || {
-            BindingType::List(Box::new(BindingType::Object(vec![
+            BindingType::List(Box::new(object(vec![
                 field("key", "key", BindingType::String, true, false, false),
                 field("value", "value", BindingType::String, false, true, false),
             ])))
@@ -1788,7 +1881,7 @@ mod tests {
             field(
                 "different",
                 "different",
-                BindingType::List(Box::new(BindingType::Object(vec![field(
+                BindingType::List(Box::new(object(vec![field(
                     "key",
                     "key",
                     BindingType::Number,
@@ -1800,7 +1893,8 @@ mod tests {
                 true,
                 false,
             ),
-        ];
+        ]
+        .into();
         let generated = render_package(&package, "DigitalOcean", "abc", &core()).unwrap();
         let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
         assert_eq!(source.matches("structure PrimaryArgs where").count(), 1);
@@ -1851,7 +1945,7 @@ mod tests {
         let mut rule = field(
             "rule",
             "rule",
-            BindingType::List(Box::new(BindingType::Object(vec![field(
+            BindingType::List(Box::new(object(vec![field(
                 "port",
                 "port",
                 BindingType::String,
@@ -1867,14 +1961,16 @@ mod tests {
         let mut empty = field(
             "empty",
             "empty",
-            BindingType::List(Box::new(BindingType::Object(Vec::new()))),
+            BindingType::List(Box::new(object(Vec::new()))),
             false,
             true,
             false,
         );
         empty.block = true;
-        package.resources[0].fields.push(rule);
-        package.resources[0].fields.push(empty);
+        let mut fields = package.resources[0].fields.to_vec();
+        fields.push(rule);
+        fields.push(empty);
+        package.resources[0].fields = fields.into();
         let generated = render_package(&package, "DigitalOcean", "abc", &core()).unwrap();
         let source = &generated.files[Path::new("DigitalOcean/Resource/Tag.lean")];
         assert!(source.contains("rule : List RuleArgs := []"));

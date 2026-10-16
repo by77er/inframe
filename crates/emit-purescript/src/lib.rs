@@ -1,31 +1,21 @@
 //! Deterministic PureScript provider-binding emitter.
+//!
+//! Every nested input block gets its own builder named after its full path, so a provider
+//! with deep unrolled schemas renders to very large modules (AWS: 312 MB in all). Modules are
+//! therefore rendered straight into their output sink, and each builder's names are computed
+//! once and extended for its children rather than rebuilt from the path at every use.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::fs;
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use inframe_binding_model::{BindingField, BindingItem, BindingPackage, BindingType};
+use inframe_binding_model::emit::{self, FileJob, Output};
+use inframe_binding_model::{
+    BindingField, BindingItem, BindingPackage, BindingType, path_count, push_capitalized,
+};
 use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedPackage {
-    pub files: BTreeMap<PathBuf, String>,
-}
-
-impl GeneratedPackage {
-    pub fn write_to(&self, output: &Path) -> Result<(), EmitError> {
-        for (relative_path, contents) in &self.files {
-            let path = output.join(relative_path);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(path, contents)?;
-        }
-        Ok(())
-    }
-}
+pub use inframe_binding_model::emit::GeneratedPackage;
 
 #[derive(Debug, Serialize)]
 struct Manifest<'a> {
@@ -47,32 +37,64 @@ pub enum EmitError {
     Json(#[from] serde_json::Error),
 }
 
+/// Renders the whole package in memory.
 pub fn render_package(
     package: &BindingPackage,
     module_root: &str,
     schema_sha256: &str,
 ) -> Result<GeneratedPackage, EmitError> {
+    let files = package_files(package, module_root, schema_sha256)?;
+    Ok(GeneratedPackage::render(&files))
+}
+
+/// Renders the package straight into `output`, every module streamed to its file and the
+/// modules spread over all cores. The files are those of [`render_package`], byte for byte.
+pub fn write_package(
+    package: &BindingPackage,
+    module_root: &str,
+    schema_sha256: &str,
+    output: &Path,
+) -> Result<(), EmitError> {
+    let files = package_files(package, module_root, schema_sha256)?;
+    emit::write_files(files, output)?;
+    Ok(())
+}
+
+fn package_files<'a>(
+    package: &'a BindingPackage,
+    module_root: &'a str,
+    schema_sha256: &str,
+) -> Result<Vec<FileJob<'a>>, EmitError> {
     if !valid_module_root(module_root) {
         return Err(EmitError::InvalidModuleRoot(module_root.to_owned()));
     }
-    let mut files = BTreeMap::new();
-    files.insert(
+    let mut files = Vec::with_capacity(package.resources.len() + package.data_sources.len() + 4);
+    files.push(FileJob::new(
         module_path(&format!("{module_root}.Provider")),
-        render_provider(package, module_root),
-    );
-    for resource in &package.resources {
-        let module = format!("{module_root}.Resource.{}", resource.public_name);
-        files.insert(
-            module_path(&module),
-            render_item(resource, &module, module_root, &package.provider, false),
-        );
-    }
-    for data_source in &package.data_sources {
-        let module = format!("{module_root}.Data.{}", data_source.public_name);
-        files.insert(
-            module_path(&module),
-            render_item(data_source, &module, module_root, &package.provider, true),
-        );
+        path_count(&package.provider.fields),
+        move |out| render_provider(out, package, module_root),
+    ));
+    for (items, kind, data_source) in [
+        (&package.resources, "Resource", false),
+        (&package.data_sources, "Data", true),
+    ] {
+        for item in items {
+            let module = format!("{module_root}.{kind}.{}", item.public_name);
+            files.push(FileJob::new(
+                module_path(&module),
+                path_count(&item.fields),
+                move |out| {
+                    render_item(
+                        out,
+                        item,
+                        &module,
+                        module_root,
+                        &package.provider,
+                        data_source,
+                    );
+                },
+            ));
+        }
     }
     let manifest = Manifest {
         provider_source: &package.provider.source,
@@ -84,22 +106,22 @@ pub fn render_package(
     };
     let mut manifest = serde_json::to_string_pretty(&manifest)?;
     manifest.push('\n');
-    files.insert(PathBuf::from("provider-manifest.json"), manifest);
-    files.insert(
-        PathBuf::from("README.md"),
+    files.push(FileJob::text("provider-manifest.json", manifest));
+    files.push(FileJob::text(
+        "README.md",
         format!(
             "# {module_root}\n\nGenerated PureScript bindings for `{}` `{}`. Do not edit by hand.\n",
             package.provider.source, package.provider.version
         ),
-    );
-    files.insert(
-        PathBuf::from("spago.yaml"),
+    ));
+    files.push(FileJob::text(
+        "spago.yaml",
         format!(
             "package:\n  name: generated-{}\n  dependencies:\n    - argonaut-core\n    - foreign-object\n    - prelude\n    - inframe-graph-core\n    - tuples\n",
             package.provider.public_name.to_ascii_lowercase()
         ),
-    );
-    Ok(GeneratedPackage { files })
+    ));
+    Ok(files)
 }
 
 fn valid_module_root(value: &str) -> bool {
@@ -119,81 +141,85 @@ fn module_path(module: &str) -> PathBuf {
     PathBuf::from("src").join(module.replace('.', "/") + ".purs")
 }
 
-fn render_provider(package: &BindingPackage, module_root: &str) -> String {
+fn render_provider(out: &mut Output<'_>, package: &BindingPackage, module_root: &str) {
     let fields = &package.provider.fields;
     let builders = collect_nested_builders(fields);
-    let setters: Vec<_> = fields.iter().filter(|field| field.optional).collect();
-    let mut exports = vec![
-        provider_marker(module_root),
-        "Args".to_owned(),
-        "Required".to_owned(),
-        "args".to_owned(),
-        "configure".to_owned(),
-        "configureAs".to_owned(),
-    ];
+    let marker = provider_marker(module_root);
+    let mut exports = Exports::new(out, &format!("{module_root}.Provider"));
+    for export in [
+        marker.as_str(),
+        "Args",
+        "Required",
+        "args",
+        "configure",
+        "configureAs",
+    ] {
+        exports.add(export);
+    }
     extend_nested_exports(&mut exports, &builders);
-    exports.extend(setters.iter().map(|field| safe_field_name(field)));
-    let mut output = module_header(&format!("{module_root}.Provider"), &exports);
+    for field in fields.iter().filter(|field| field.optional) {
+        exports.add(safe_field_name(field));
+    }
+    exports.finish();
     if uses_nested_mapping(fields) {
-        output.push_str("import Prelude (map)\n\n");
+        out.push_str("import Prelude (map)\n\n");
     }
     if requires_json_import(fields) {
-        output.push_str("import Data.Argonaut.Core (Json)\n");
+        out.push_str("import Data.Argonaut.Core (Json)\n");
     }
-    output.push_str("import Data.Maybe (Maybe(..))\n");
+    out.push_str("import Data.Maybe (Maybe(..))\n");
     if has_required_fields(fields, &builders) {
-        output.push_str("import Data.Tuple (Tuple(..))\n");
+        out.push_str("import Data.Tuple (Tuple(..))\n");
     }
     if uses_map_expressions(fields) {
-        output.push_str("import Foreign.Object as Object\n");
+        out.push_str("import Foreign.Object as Object\n");
     }
-    output.push_str(&render_builder_import("addProvider", fields));
-    output.push_str(&render_core_import(None, fields));
-    output.push('\n');
-    let marker = provider_marker(module_root);
-    let _ = write!(output, "data {marker}\n\n");
-    output.push_str(&render_nested_builders(&builders));
-    output.push_str(&render_args(fields));
-    for field in setters {
-        output.push_str(&render_setter(field, &[]));
+    render_builder_import(out, "addProvider", fields, &builders);
+    render_core_import(out, None, fields, &builders);
+    out.push('\n');
+    let _ = write!(out, "data {marker}\n\n");
+    render_nested_builders(out, &builders);
+    render_args(out, fields);
+    for field in fields.iter().filter(|field| field.optional) {
+        render_setter(out, field);
     }
-    let _ = writeln!(output, "configure :: Args -> Infra (Provider {marker})");
+    let _ = writeln!(out, "configure :: Args -> Infra (Provider {marker})");
     let local_name = provider_local_name_from_source(&package.provider.source);
     let version = format!("= {}", package.provider.version);
     let _ = write!(
-        output,
+        out,
         "configure (Args values) = addProvider \"{local_name}\" \"{}\" \"{version}\" Nothing values\n\n",
         package.provider.source
     );
     let _ = writeln!(
-        output,
+        out,
         "configureAs :: String -> Args -> Infra (Provider {marker})"
     );
     let _ = writeln!(
-        output,
+        out,
         "configureAs alias (Args values) = addProvider \"{local_name}\" \"{}\" \"{version}\" (Just alias) values",
         package.provider.source
     );
-    output
 }
 
 #[allow(clippy::too_many_lines)]
 fn render_item(
+    out: &mut Output<'_>,
     item: &BindingItem,
     module: &str,
     module_root: &str,
     provider: &inframe_binding_model::BindingProvider,
     data_source: bool,
-) -> String {
-    let builders = collect_nested_builders(&item.fields);
-    let setters: Vec<_> = item.fields.iter().filter(|field| field.optional).collect();
+) {
+    let fields = &item.fields;
+    let builders = collect_nested_builders(fields);
     let operation = if data_source { "read" } else { "create" };
     let operation_with = if data_source {
         "readWith"
     } else {
         "createWith"
     };
-    let handle_name = safe_type_name(&item.public_name);
+    let handle_name = safe_type_name(item.public_name.clone());
     let node = format!(
         "{}{}",
         item.public_name,
@@ -203,74 +229,78 @@ fn render_item(
             "Resource"
         }
     );
-    let mut exports = vec![
-        "Args".to_owned(),
-        "Required".to_owned(),
-        handle_name.clone(),
-        node.clone(),
-        "args".to_owned(),
-        operation.to_owned(),
-        operation_with.to_owned(),
-    ];
+    let mut exports = Exports::new(out, module);
+    for export in [
+        "Args",
+        "Required",
+        handle_name.as_str(),
+        node.as_str(),
+        "args",
+        operation,
+        operation_with,
+    ] {
+        exports.add(export);
+    }
     extend_nested_exports(&mut exports, &builders);
-    exports.extend(setters.iter().map(|field| safe_field_name(field)));
-    let mut output = module_header(module, &exports);
-    output.push_str("import Prelude (bind");
-    if uses_nested_mapping(&item.fields) {
-        output.push_str(", map");
+    for field in fields.iter().filter(|field| field.optional) {
+        exports.add(safe_field_name(field));
     }
-    output.push_str(", pure)\n\n");
-    if requires_json_import(&item.fields) {
-        output.push_str("import Data.Argonaut.Core (Json)\n");
+    exports.finish();
+    out.push_str("import Prelude (bind");
+    if uses_nested_mapping(fields) {
+        out.push_str(", map");
     }
-    if has_required_fields(&item.fields, &builders) {
-        output.push_str("import Data.Tuple (Tuple(..))\n");
+    out.push_str(", pure)\n\n");
+    if requires_json_import(fields) {
+        out.push_str("import Data.Argonaut.Core (Json)\n");
     }
-    if uses_map_expressions(&item.fields) {
-        output.push_str("import Foreign.Object as Object\n");
+    if has_required_fields(fields, &builders) {
+        out.push_str("import Data.Tuple (Tuple(..))\n");
     }
-    output.push_str(&render_builder_import(
+    if uses_map_expressions(fields) {
+        out.push_str("import Foreign.Object as Object\n");
+    }
+    render_builder_import(
+        out,
         if data_source {
             "addDataSource"
         } else {
             "addResource"
         },
-        &item.fields,
-    ));
-    output.push_str(&render_core_import(Some(data_source), &item.fields));
+        fields,
+        &builders,
+    );
+    render_core_import(out, Some(data_source), fields, &builders);
     let _ = writeln!(
-        output,
+        out,
         "import {module_root}.Provider ({})",
         provider_marker(module_root)
     );
-    output.push('\n');
-    let _ = write!(output, "data {node}\n\n");
-    output.push_str(&render_nested_builders(&builders));
-    output.push_str(&render_args(&item.fields));
-    for field in setters {
-        output.push_str(&render_setter(field, &[]));
+    out.push('\n');
+    let _ = write!(out, "data {node}\n\n");
+    render_nested_builders(out, &builders);
+    render_args(out, fields);
+    for field in fields.iter().filter(|field| field.optional) {
+        render_setter(out, field);
     }
     let handle_fields: Vec<_> = item.outputs().collect();
-    output.push_str(&render_record_documentation(
+    render_record_documentation(
+        out,
         &format!("A symbolic handle to `{}`.", item.provider_type),
         &handle_fields,
-    ));
-    let _ = write!(output, "type {handle_name} =\n  {{ ");
-    output.push_str(if data_source {
+    );
+    let _ = write!(out, "type {handle_name} =\n  {{ ");
+    out.push_str(if data_source {
         "dataSource :: DataSource "
     } else {
         "resource :: Resource "
     });
-    output.push_str(&node);
+    out.push_str(&node);
     for field in &handle_fields {
-        let _ = write!(
-            output,
-            "\n  , {} :: Expr {}",
-            safe_field_name(field),
-            render_type_argument(&field.r#type)
-        );
+        let _ = write!(out, "\n  , {} :: Expr ", safe_field_name(field));
+        render_type_argument(out, &field.r#type);
     }
-    output.push_str("\n  }\n\n");
+    out.push_str("\n  }\n\n");
     let options_type = if data_source {
         "DataSourceOptions"
     } else {
@@ -283,7 +313,7 @@ fn render_item(
     };
     let marker = provider_marker(module_root);
     let _ = write!(
-        output,
+        out,
         "{operation} :: String -> Args -> Infra {handle_name}\n\
          {operation} logicalName values = {operation_with} logicalName values {default_options}\n\n\
          {operation_with} :: String -> Args -> {options_type} {marker} -> Infra {handle_name}\n"
@@ -304,7 +334,7 @@ fn render_item(
         "resourceAttr"
     };
     let _ = write!(
-        output,
+        out,
         "{operation_with} logicalName (Args values) options = do\n  _ <- requireProvider \"{}\" \"{}\" \"= {}\"\n  handle <- {add} options \"{}\" logicalName values\n  pure\n    {{ {handle_key}: handle",
         provider_local_name_from_source(&provider.source),
         provider.source,
@@ -313,95 +343,142 @@ fn render_item(
     );
     for field in &handle_fields {
         let _ = write!(
-            output,
+            out,
             "\n    , {}: {attr} handle [ \"{}\" ]",
             safe_field_name(field),
             field.provider_name
         );
     }
-    output.push_str("\n    }\n");
-    output
+    out.push_str("\n    }\n");
 }
 
-fn module_header(module: &str, exports: &[String]) -> String {
-    let mut output = format!("module {module}\n  ( {}", exports[0]);
-    for export in &exports[1..] {
-        let _ = write!(output, "\n  , {export}");
-    }
-    output.push_str("\n  ) where\n\n");
-    output
+/// The module header with its export list, written as the list is built.
+struct Exports<'o, 'w> {
+    out: &'o mut Output<'w>,
+    first: bool,
 }
 
-fn render_doc_comment(description: &str) -> String {
-    let description = description.trim();
-    if description.is_empty() {
-        return String::new();
+impl<'o, 'w> Exports<'o, 'w> {
+    fn new(out: &'o mut Output<'w>, module: &str) -> Self {
+        let _ = write!(out, "module {module}\n  ( ");
+        Self { out, first: true }
     }
-    let mut output = String::new();
-    for line in description.lines() {
+
+    fn add(&mut self, export: impl fmt::Display) {
+        if !std::mem::take(&mut self.first) {
+            self.out.push_str("\n  , ");
+        }
+        let _ = write!(self.out, "{export}");
+    }
+
+    fn finish(self) {
+        self.out.push_str("\n  ) where\n\n");
+    }
+}
+
+fn render_doc_comment(out: &mut Output<'_>, description: &str) {
+    for line in description.trim().lines() {
         if line.trim().is_empty() {
-            output.push_str("-- |\n");
+            out.push_str("-- |\n");
         } else {
-            let _ = writeln!(output, "-- | {}", line.trim_end());
+            let _ = writeln!(out, "-- | {}", line.trim_end());
         }
     }
-    output
 }
 
-fn render_record_documentation(summary: &str, fields: &[&BindingField]) -> String {
-    let mut output = render_doc_comment(summary);
-    let mut entries = Vec::new();
+/// The summary, then every documented field below `fields` by path. The paths are listed
+/// separately from the summary only when there are any, so they are collected first.
+fn render_record_documentation(out: &mut Output<'_>, summary: &str, fields: &[&BindingField]) {
+    render_doc_comment(out, summary);
+    let mut entries = String::new();
+    let mut path = String::new();
     for field in fields {
-        collect_field_documentation(field, "", &mut entries);
+        collect_field_documentation(&mut entries, &mut path, field);
     }
-    if entries.is_empty() {
-        return output;
+    if !entries.is_empty() {
+        out.push_str("-- |\n");
+        out.push_str(&entries);
     }
-    output.push_str("-- |\n");
-    for (path, description) in entries {
-        let mut lines = description.lines();
-        let first = lines.next().unwrap_or_default().trim_end();
-        let _ = writeln!(output, "-- | - `{path}`: {first}");
-        for line in lines {
-            if line.trim().is_empty() {
-                output.push_str("-- |\n");
-            } else {
-                let _ = writeln!(output, "-- |   {}", line.trim_end());
-            }
-        }
-    }
-    output
 }
 
-fn collect_field_documentation<'a>(
-    field: &'a BindingField,
-    parent_path: &str,
-    entries: &mut Vec<(String, &'a str)>,
-) {
-    let name = safe_field_name(field);
-    let path = if parent_path.is_empty() {
-        name
-    } else {
-        format!("{parent_path}.{name}")
-    };
+/// Appends the documentation entries of `field` and its nested fields, `path` holding the
+/// dotted path of the field's parent (and restored before returning).
+fn collect_field_documentation(entries: &mut String, path: &mut String, field: &BindingField) {
+    let parent_length = path.len();
+    if !path.is_empty() {
+        path.push('.');
+    }
+    let _ = write!(path, "{}", safe_field_name(field));
     if let Some(description) = field
         .description
         .as_deref()
         .map(str::trim)
         .filter(|description| !description.is_empty())
     {
-        entries.push((path.clone(), description));
+        let mut lines = description.lines();
+        let first = lines.next().unwrap_or_default().trim_end();
+        let _ = writeln!(entries, "-- | - `{path}`: {first}");
+        for line in lines {
+            if line.trim().is_empty() {
+                entries.push_str("-- |\n");
+            } else {
+                let _ = writeln!(entries, "-- |   {}", line.trim_end());
+            }
+        }
     }
     if let Some(container) = nested_container(&field.r#type) {
         for child in container.fields() {
-            collect_field_documentation(child, &path, entries);
+            collect_field_documentation(entries, path, child);
+        }
+    }
+    path.truncate(parent_length);
+}
+
+/// The names generated for a nested input block, derived from its path: the type
+/// `NodePoolTaint`, and the prefix `nodePoolTaint` of its constructor, setters, and node.
+#[derive(Debug, Clone)]
+struct BuilderNames {
+    /// Whether this is the empty path of the top-level record.
+    root: bool,
+    /// The path's segments capitalized and joined, before [`safe_type_name`].
+    joined: String,
+    type_name: String,
+    prefix: String,
+}
+
+impl BuilderNames {
+    fn root() -> Self {
+        Self {
+            root: true,
+            joined: String::new(),
+            type_name: String::new(),
+            prefix: String::new(),
+        }
+    }
+
+    fn child(&self, segment: &str) -> Self {
+        let mut joined = String::with_capacity(self.joined.len() + segment.len());
+        joined.push_str(&self.joined);
+        push_capitalized(&mut joined, segment);
+        let mut prefix = String::with_capacity(self.prefix.len() + segment.len());
+        if self.root {
+            prefix.push_str(segment);
+        } else {
+            prefix.push_str(&self.prefix);
+            push_capitalized(&mut prefix, segment);
+        }
+        Self {
+            root: false,
+            type_name: safe_type_name(joined.clone()),
+            joined,
+            prefix,
         }
     }
 }
 
 #[derive(Debug)]
 struct NestedBuilder<'a> {
-    path: Vec<String>,
+    names: BuilderNames,
     fields: &'a [BindingField],
 }
 
@@ -439,10 +516,11 @@ fn nested_container(r#type: &BindingType) -> Option<NestedContainer<'_>> {
     }
 }
 
+/// Every nested input block below `fields`, parents before their children.
 fn collect_nested_builders(fields: &[BindingField]) -> Vec<NestedBuilder<'_>> {
     fn visit<'a>(
         field: &'a BindingField,
-        parent_path: &[String],
+        parent: &BuilderNames,
         builders: &mut Vec<NestedBuilder<'a>>,
     ) {
         if !field.required && !field.optional {
@@ -451,37 +529,33 @@ fn collect_nested_builders(fields: &[BindingField]) -> Vec<NestedBuilder<'_>> {
         let Some(container) = nested_container(&field.r#type) else {
             return;
         };
-        let mut path = parent_path.to_vec();
-        path.push(field.public_name.clone());
+        let names = parent.child(&field.public_name);
         builders.push(NestedBuilder {
-            path: path.clone(),
+            names: names.clone(),
             fields: container.fields(),
         });
         for child in container.fields() {
-            visit(child, &path, builders);
+            visit(child, &names, builders);
         }
     }
 
     let mut builders = Vec::new();
+    let root = BuilderNames::root();
     for field in fields {
-        visit(field, &[], &mut builders);
+        visit(field, &root, &mut builders);
     }
     builders
 }
 
-fn extend_nested_exports(exports: &mut Vec<String>, builders: &[NestedBuilder<'_>]) {
+fn extend_nested_exports(exports: &mut Exports<'_, '_>, builders: &[NestedBuilder<'_>]) {
     for builder in builders {
-        let type_name = builder_type_name(&builder.path);
-        exports.push(type_name.clone());
-        exports.push(format!("{type_name}Required"));
-        exports.push(format!("{}Args", builder_prefix(&builder.path)));
-        exports.extend(
-            builder
-                .fields
-                .iter()
-                .filter(|field| field.optional)
-                .map(|field| nested_setter_name(&builder.path, field)),
-        );
+        let names = &builder.names;
+        exports.add(&names.type_name);
+        exports.add(format_args!("{}Required", names.type_name));
+        exports.add(format_args!("{}Args", names.prefix));
+        for field in builder.fields.iter().filter(|field| field.optional) {
+            exports.add(NestedSetterName(names, field));
+        }
     }
 }
 
@@ -492,7 +566,8 @@ fn has_required_fields(fields: &[BindingField], builders: &[NestedBuilder<'_>]) 
             .any(|builder| builder.fields.iter().any(|field| field.required))
 }
 
-fn uses_nested_mapping(fields: &[BindingField]) -> bool {
+/// Whether any nested input block (at any depth) satisfies `matches`.
+fn any_nested_input(fields: &[BindingField], matches: fn(NestedContainer<'_>) -> bool) -> bool {
     fields.iter().any(|field| {
         if !field.required && !field.optional {
             return false;
@@ -500,39 +575,33 @@ fn uses_nested_mapping(fields: &[BindingField]) -> bool {
         let Some(container) = nested_container(&field.r#type) else {
             return false;
         };
+        matches(container) || any_nested_input(container.fields(), matches)
+    })
+}
+
+fn uses_nested_mapping(fields: &[BindingField]) -> bool {
+    any_nested_input(fields, |container| {
         matches!(
             container,
             NestedContainer::Array(_) | NestedContainer::Map(_)
-        ) || uses_nested_mapping(container.fields())
+        )
     })
 }
 
 fn uses_array_expressions(fields: &[BindingField]) -> bool {
-    fields.iter().any(|field| {
-        if !field.required && !field.optional {
-            return false;
-        }
-        let Some(container) = nested_container(&field.r#type) else {
-            return false;
-        };
-        matches!(container, NestedContainer::Array(_)) || uses_array_expressions(container.fields())
+    any_nested_input(fields, |container| {
+        matches!(container, NestedContainer::Array(_))
     })
 }
 
 fn uses_map_expressions(fields: &[BindingField]) -> bool {
-    fields.iter().any(|field| {
-        if !field.required && !field.optional {
-            return false;
-        }
-        let Some(container) = nested_container(&field.r#type) else {
-            return false;
-        };
-        matches!(container, NestedContainer::Map(_)) || uses_map_expressions(container.fields())
+    any_nested_input(fields, |container| {
+        matches!(container, NestedContainer::Map(_))
     })
 }
 
-fn has_optional_nested_fields(fields: &[BindingField]) -> bool {
-    collect_nested_builders(fields)
+fn has_optional_nested_fields(builders: &[NestedBuilder<'_>]) -> bool {
+    builders
         .iter()
         .any(|builder| builder.fields.iter().any(|field| field.optional))
 }
@@ -550,7 +619,12 @@ fn requires_json_import(fields: &[BindingField]) -> bool {
     fields.iter().any(|field| type_uses_json(&field.r#type))
 }
 
-fn render_builder_import(operation: &str, fields: &[BindingField]) -> String {
+fn render_builder_import(
+    out: &mut Output<'_>,
+    operation: &str,
+    fields: &[BindingField],
+    builders: &[NestedBuilder<'_>],
+) {
     let mut public_imports = vec!["Infra"];
     let mut internal_imports = vec![operation, "InputObject", "inputObject"];
     if operation == "addResource" {
@@ -562,24 +636,30 @@ fn render_builder_import(operation: &str, fields: &[BindingField]) -> String {
         public_imports.push("DataSourceOptions");
         public_imports.push("dataSourceOptions");
     }
-    if fields.iter().any(|field| field.optional) || has_optional_nested_fields(fields) {
+    if fields.iter().any(|field| field.optional) || has_optional_nested_fields(builders) {
         internal_imports.push("insertInputField");
     }
-    if !collect_nested_builders(fields).is_empty() {
+    if !builders.is_empty() {
         internal_imports.push("inputObjectNode");
     }
-    format!(
+    let _ = write!(
+        out,
         "import Inframe.Builder ({})\nimport Inframe.Internal.Builder ({})\n",
         public_imports.join(", "),
         internal_imports.join(", ")
-    )
+    );
 }
 
 fn provider_local_name_from_source(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
 }
 
-fn render_core_import(item_kind: Option<bool>, fields: &[BindingField]) -> String {
+fn render_core_import(
+    out: &mut Output<'_>,
+    item_kind: Option<bool>,
+    fields: &[BindingField],
+    builders: &[NestedBuilder<'_>],
+) {
     let mut public_imports = vec!["Input"];
     let mut internal_imports = vec!["inputNode"];
     if item_kind.is_none() {
@@ -588,7 +668,7 @@ fn render_core_import(item_kind: Option<bool>, fields: &[BindingField]) -> Strin
     if item_kind.is_some() {
         public_imports.insert(0, "Expr");
     }
-    if !collect_nested_builders(fields).is_empty() {
+    if !builders.is_empty() {
         internal_imports.push("ExprNode");
         if uses_array_expressions(fields) {
             internal_imports.push("arrayExprNode");
@@ -609,11 +689,12 @@ fn render_core_import(item_kind: Option<bool>, fields: &[BindingField]) -> Strin
             "resourceAttr"
         });
     }
-    format!(
+    let _ = write!(
+        out,
         "import Inframe.Core ({})\nimport Inframe.Internal.Core ({})\n",
         public_imports.join(", "),
         internal_imports.join(", ")
-    )
+    );
 }
 
 fn provider_marker(module_root: &str) -> String {
@@ -623,255 +704,240 @@ fn provider_marker(module_root: &str) -> String {
     )
 }
 
-fn render_nested_builders(builders: &[NestedBuilder<'_>]) -> String {
-    let mut output = String::new();
+fn render_nested_builders(out: &mut Output<'_>, builders: &[NestedBuilder<'_>]) {
     for builder in builders {
-        output.push_str(&render_nested_builder(builder));
+        render_nested_builder(out, builder);
     }
-    output
 }
 
-fn render_nested_builder(builder: &NestedBuilder<'_>) -> String {
-    let type_name = builder_type_name(&builder.path);
-    let required_name = format!("{type_name}Required");
-    let constructor_name = format!("{}Args", builder_prefix(&builder.path));
+fn render_nested_builder(out: &mut Output<'_>, builder: &NestedBuilder<'_>) {
+    let names = &builder.names;
+    let type_name = &names.type_name;
+    let prefix = &names.prefix;
     let required: Vec<_> = builder
         .fields
         .iter()
         .filter(|field| field.required)
         .collect();
-    let mut output = format!("newtype {type_name} = {type_name} InputObject\n\n");
-    output.push_str(&render_record_documentation(
+    let _ = write!(out, "newtype {type_name} = {type_name} InputObject\n\n");
+    render_record_documentation(
+        out,
         &format!("Required fields for `{type_name}`."),
         &required,
-    ));
-    let _ = write!(output, "type {required_name} =\n  {{");
-    render_required_fields(&mut output, &required, &builder.path);
+    );
+    let _ = write!(out, "type {type_name}Required =\n  {{");
+    render_required_fields(out, &required, names);
     let _ = write!(
-        output,
-        "\n  }}\n\n{constructor_name} :: {required_name} -> {type_name}\n"
+        out,
+        "\n  }}\n\n{prefix}Args :: {type_name}Required -> {type_name}\n"
     );
     let argument = if required.is_empty() { "_" } else { "required" };
     let _ = write!(
-        output,
-        "{constructor_name} {argument} = {type_name} (inputObject\n  ["
+        out,
+        "{prefix}Args {argument} = {type_name} (inputObject\n  ["
     );
-    render_required_values(&mut output, &required, &builder.path);
-    output.push_str("\n  ])\n\n");
+    render_required_values(out, &required, names);
+    out.push_str("\n  ])\n\n");
     for field in builder.fields.iter().filter(|field| field.optional) {
-        output.push_str(&render_nested_setter(builder, field));
+        render_nested_setter(out, builder, field);
     }
-    let node_name = format!("{}Node", builder_prefix(&builder.path));
     let _ = write!(
-        output,
-        "{node_name} :: {type_name} -> ExprNode\n\
-         {node_name} ({type_name} values) = inputObjectNode values\n\n"
+        out,
+        "{prefix}Node :: {type_name} -> ExprNode\n\
+         {prefix}Node ({type_name} values) = inputObjectNode values\n\n"
     );
-    output
 }
 
-fn render_args(fields: &[BindingField]) -> String {
+fn render_args(out: &mut Output<'_>, fields: &[BindingField]) {
     let required: Vec<_> = fields.iter().filter(|field| field.required).collect();
-    let mut output = render_record_documentation("Required arguments.", &required);
-    output.push_str("type Required =\n  {");
-    render_required_fields(&mut output, &required, &[]);
-    output.push_str("\n  }\n\nnewtype Args = Args InputObject\n\n");
+    render_record_documentation(out, "Required arguments.", &required);
+    out.push_str("type Required =\n  {");
+    let root = BuilderNames::root();
+    render_required_fields(out, &required, &root);
+    out.push_str("\n  }\n\nnewtype Args = Args InputObject\n\n");
     let required_argument = if required.is_empty() { "_" } else { "required" };
     let _ = write!(
-        output,
+        out,
         "args :: Required -> Args\nargs {required_argument} = Args (inputObject\n  ["
     );
-    render_required_values(&mut output, &required, &[]);
-    output.push_str("\n  ])\n\n");
-    output
+    render_required_values(out, &required, &root);
+    out.push_str("\n  ])\n\n");
 }
 
-fn render_required_fields(output: &mut String, required: &[&BindingField], parent_path: &[String]) {
+fn render_required_fields(out: &mut Output<'_>, required: &[&BindingField], parent: &BuilderNames) {
     for (index, field) in required.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n  , " };
-        let path = child_path(parent_path, field);
-        let _ = write!(
-            output,
-            "{separator}{} :: {}",
-            safe_field_name(field),
-            render_input_type(&field.r#type, &path)
-        );
+        let _ = write!(out, "{separator}{} :: ", safe_field_name(field));
+        render_input_type(out, field, parent);
     }
 }
 
-fn render_required_values(output: &mut String, required: &[&BindingField], parent_path: &[String]) {
+fn render_required_values(out: &mut Output<'_>, required: &[&BindingField], parent: &BuilderNames) {
     for (index, field) in required.iter().enumerate() {
         let separator = if index == 0 { " " } else { "\n  , " };
-        let field_name = safe_field_name(field);
-        let value = format!("required.{field_name}");
-        let path = child_path(parent_path, field);
-        let encoded = render_input_node(&value, &field.r#type, &path);
-        let _ = write!(
-            output,
-            "{separator}Tuple \"{}\" ({encoded})",
-            field.provider_name
+        let _ = write!(out, "{separator}Tuple \"{}\" (", field.provider_name);
+        render_input_node(
+            out,
+            format_args!("required.{}", safe_field_name(field)),
+            field,
+            parent,
         );
+        out.push(')');
     }
 }
 
-fn render_setter(field: &BindingField, parent_path: &[String]) -> String {
+fn render_setter(out: &mut Output<'_>, field: &BindingField) {
     let name = safe_field_name(field);
-    let path = child_path(parent_path, field);
-    let input_type = render_input_type(&field.r#type, &path);
-    let encoded = render_input_node("value", &field.r#type, &path);
-    let mut output = field
-        .description
-        .as_deref()
-        .map(render_doc_comment)
-        .unwrap_or_default();
+    if let Some(description) = field.description.as_deref() {
+        render_doc_comment(out, description);
+    }
+    let root = BuilderNames::root();
+    let _ = write!(out, "{name} :: ");
+    render_input_type(out, field, &root);
     let _ = write!(
-        output,
-        "{name} :: {input_type} -> Args -> Args\n\
-         {name} value (Args values) = Args (insertInputField \"{}\" ({encoded}) values)\n\n",
+        out,
+        " -> Args -> Args\n\
+         {name} value (Args values) = Args (insertInputField \"{}\" (",
         field.provider_name
     );
-    output
+    render_input_node(out, "value", field, &root);
+    out.push_str(") values)\n\n");
 }
 
-fn render_nested_setter(builder: &NestedBuilder<'_>, field: &BindingField) -> String {
-    let name = nested_setter_name(&builder.path, field);
-    let path = child_path(&builder.path, field);
-    let input_type = render_input_type(&field.r#type, &path);
-    let encoded = render_input_node("value", &field.r#type, &path);
-    let type_name = builder_type_name(&builder.path);
-    let mut output = field
-        .description
-        .as_deref()
-        .map(render_doc_comment)
-        .unwrap_or_default();
+fn render_nested_setter(out: &mut Output<'_>, builder: &NestedBuilder<'_>, field: &BindingField) {
+    let name = NestedSetterName(&builder.names, field);
+    let type_name = &builder.names.type_name;
+    if let Some(description) = field.description.as_deref() {
+        render_doc_comment(out, description);
+    }
+    let _ = write!(out, "{name} :: ");
+    render_input_type(out, field, &builder.names);
     let _ = write!(
-        output,
-        "{name} :: {input_type} -> {type_name} -> {type_name}\n\
-         {name} value ({type_name} values) = {type_name} (insertInputField \"{}\" ({encoded}) values)\n\n",
+        out,
+        " -> {type_name} -> {type_name}\n\
+         {name} value ({type_name} values) = {type_name} (insertInputField \"{}\" (",
         field.provider_name
     );
-    output
+    render_input_node(out, "value", field, &builder.names);
+    out.push_str(") values)\n\n");
 }
 
-fn render_input_type(r#type: &BindingType, path: &[String]) -> String {
-    match nested_container(r#type) {
-        Some(NestedContainer::Single(_)) => builder_type_name(path),
-        Some(NestedContainer::Array(_)) => format!("Array {}", builder_type_name(path)),
-        Some(NestedContainer::Map(_)) => {
-            format!("Object.Object {}", builder_type_name(path))
-        }
-        None => format!("Input {}", render_type_argument(r#type)),
-    }
-}
-
-fn render_input_node(value: &str, r#type: &BindingType, path: &[String]) -> String {
-    let node_function = format!("{}Node", builder_prefix(path));
-    match nested_container(r#type) {
-        Some(NestedContainer::Single(_)) => format!("{node_function} {value}"),
-        Some(NestedContainer::Array(_)) => {
-            format!("arrayExprNode (map {node_function} {value})")
-        }
-        Some(NestedContainer::Map(_)) => {
-            format!("objectExprNode (map {node_function} {value})")
-        }
-        None => format!("inputNode {value}"),
-    }
-}
-
-fn child_path(parent_path: &[String], field: &BindingField) -> Vec<String> {
-    let mut path = parent_path.to_vec();
-    path.push(field.public_name.clone());
-    path
-}
-
-fn nested_setter_name(path: &[String], field: &BindingField) -> String {
-    format!(
-        "{}{}",
-        builder_prefix(path),
-        upper_first(&field.public_name)
-    )
-}
-
-fn builder_type_name(path: &[String]) -> String {
-    safe_type_name(
-        &path
-            .iter()
-            .map(|part| upper_first(part))
-            .collect::<String>(),
-    )
-}
-
-fn builder_prefix(path: &[String]) -> String {
-    let Some((first, rest)) = path.split_first() else {
-        return String::new();
+/// The type of an input `field` of the block named by `parent`.
+fn render_input_type(out: &mut Output<'_>, field: &BindingField, parent: &BuilderNames) {
+    let Some(container) = nested_container(&field.r#type) else {
+        out.push_str("Input ");
+        render_type_argument(out, &field.r#type);
+        return;
     };
-    let mut prefix = first.clone();
-    for part in rest {
-        prefix.push_str(&upper_first(part));
-    }
-    prefix
-}
-
-fn upper_first(value: &str) -> String {
-    let mut characters = value.chars();
-    characters
-        .next()
-        .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
-        .unwrap_or_default()
-}
-
-fn safe_field_name(field: &BindingField) -> String {
-    if field.target_reserved {
-        format!("{}_", field.public_name)
-    } else {
-        field.public_name.clone()
+    let child = parent.child(&field.public_name);
+    match container {
+        NestedContainer::Single(_) => out.push_str(&child.type_name),
+        NestedContainer::Array(_) => {
+            let _ = write!(out, "Array {}", child.type_name);
+        }
+        NestedContainer::Map(_) => {
+            let _ = write!(out, "Object.Object {}", child.type_name);
+        }
     }
 }
 
-fn safe_type_name(name: &str) -> String {
-    if matches!(name, "Record" | "Row" | "Type") {
-        format!("{name}Handle")
-    } else {
-        name.to_owned()
+/// The `ExprNode` for `value`, an input `field` of the block named by `parent`.
+fn render_input_node(
+    out: &mut Output<'_>,
+    value: impl fmt::Display,
+    field: &BindingField,
+    parent: &BuilderNames,
+) {
+    let Some(container) = nested_container(&field.r#type) else {
+        let _ = write!(out, "inputNode {value}");
+        return;
+    };
+    let child = parent.child(&field.public_name);
+    let node = &child.prefix;
+    let _ = match container {
+        NestedContainer::Single(_) => write!(out, "{node}Node {value}"),
+        NestedContainer::Array(_) => write!(out, "arrayExprNode (map {node}Node {value})"),
+        NestedContainer::Map(_) => write!(out, "objectExprNode (map {node}Node {value})"),
+    };
+}
+
+/// The setter of an optional `field` in the block named by the builder names.
+struct NestedSetterName<'a>(&'a BuilderNames, &'a BindingField);
+
+impl fmt::Display for NestedSetterName<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0.prefix)?;
+        let mut characters = self.1.public_name.chars();
+        if let Some(first) = characters.next() {
+            formatter.write_char(first.to_ascii_uppercase())?;
+            formatter.write_str(characters.as_str())?;
+        }
+        Ok(())
     }
 }
 
-fn render_type(r#type: &BindingType) -> String {
+/// A field's PureScript name: its public name, with `_` appended when that is a keyword.
+struct SafeFieldName<'a>(&'a BindingField);
+
+impl fmt::Display for SafeFieldName<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0.public_name)?;
+        if self.0.target_reserved {
+            formatter.write_str("_")?;
+        }
+        Ok(())
+    }
+}
+
+fn safe_field_name(field: &BindingField) -> SafeFieldName<'_> {
+    SafeFieldName(field)
+}
+
+fn safe_type_name(mut name: String) -> String {
+    if matches!(name.as_str(), "Record" | "Row" | "Type") {
+        name.push_str("Handle");
+    }
+    name
+}
+
+fn render_type(out: &mut Output<'_>, r#type: &BindingType) {
     match r#type {
-        BindingType::String => "String".into(),
-        BindingType::Bool => "Boolean".into(),
-        BindingType::Number => "Number".into(),
+        BindingType::String => out.push_str("String"),
+        BindingType::Bool => out.push_str("Boolean"),
+        BindingType::Number => out.push_str("Number"),
         BindingType::List(item) | BindingType::Set(item) => {
-            format!("Array {}", render_type_argument(item))
+            out.push_str("Array ");
+            render_type_argument(out, item);
         }
-        BindingType::Map(_) | BindingType::Tuple(_) | BindingType::Dynamic => "Json".into(),
+        BindingType::Map(_) | BindingType::Tuple(_) | BindingType::Dynamic => {
+            out.push_str("Json");
+        }
         BindingType::Object(fields) => {
-            let body = fields
-                .iter()
-                .map(|field| {
-                    format!(
-                        "{} :: {}",
-                        safe_field_name(field),
-                        render_type(&field.r#type)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{ {body} }}")
+            out.push_str("{ ");
+            for (index, field) in fields.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{} :: ", safe_field_name(field));
+                render_type(out, &field.r#type);
+            }
+            out.push_str(" }");
         }
     }
 }
 
-fn render_type_argument(r#type: &BindingType) -> String {
+fn render_type_argument(out: &mut Output<'_>, r#type: &BindingType) {
     match r#type {
         BindingType::String
         | BindingType::Bool
         | BindingType::Number
         | BindingType::Map(_)
         | BindingType::Tuple(_)
-        | BindingType::Dynamic => render_type(r#type),
+        | BindingType::Dynamic => render_type(out, r#type),
         BindingType::List(_) | BindingType::Set(_) | BindingType::Object(_) => {
-            format!("({})", render_type(r#type))
+            out.push('(');
+            render_type(out, r#type);
+            out.push(')');
         }
     }
 }
@@ -881,6 +947,10 @@ mod tests {
     use inframe_binding_model::{BindingProvider, BindingType};
 
     use super::*;
+
+    fn object(fields: Vec<BindingField>) -> BindingType {
+        BindingType::Object(fields.into())
+    }
 
     fn package() -> BindingPackage {
         let name = BindingField {
@@ -952,7 +1022,7 @@ mod tests {
         let mut node_pool = nested_field(
             "node_pool",
             "nodePool",
-            BindingType::List(Box::new(BindingType::Object(vec![
+            BindingType::List(Box::new(object(vec![
                 nested_name,
                 auto_scale,
                 actual_node_count,
@@ -967,12 +1037,12 @@ mod tests {
                 source: "digitalocean/digitalocean".into(),
                 version: "2.100.0".into(),
                 public_name: "Digitalocean".into(),
-                fields: Vec::new(),
+                fields: Vec::new().into(),
             },
             resources: vec![BindingItem {
                 provider_type: "digitalocean_tag".into(),
                 public_name: "Tag".into(),
-                fields: vec![id, name, node_pool],
+                fields: vec![id, name, node_pool].into(),
             }],
             data_sources: Vec::new(),
         }

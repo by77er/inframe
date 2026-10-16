@@ -1,12 +1,16 @@
 //! Derives a language-neutral binding API from normalized provider schemas.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap};
 
 use inframe_provider_schema::{
-    AttributeSchema, BlockSchema, NestingMode, ProviderSchema, SchemaType,
+    AttributeSchema, BlockSchema, Interner, NameMap, NestingMode, ProviderSchema, SchemaType,
 };
+pub use inframe_provider_schema::{Name, Shared};
+use rustc_hash::FxBuildHasher;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod emit;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingPackage {
@@ -20,14 +24,14 @@ pub struct BindingProvider {
     pub source: String,
     pub version: String,
     pub public_name: String,
-    pub fields: Vec<BindingField>,
+    pub fields: Fields,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingItem {
     pub provider_type: String,
     pub public_name: String,
-    pub fields: Vec<BindingField>,
+    pub fields: Fields,
 }
 
 impl BindingItem {
@@ -46,10 +50,14 @@ impl BindingItem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A field list. Derived lists are interned, so equal lists (the same nested block repeated
+/// across a provider's unrolled recursive schemas) are one allocation and compare by pointer.
+pub type Fields = Shared<BindingField>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BindingField {
-    pub provider_name: String,
-    pub public_name: String,
+    pub provider_name: Name,
+    pub public_name: Name,
     pub r#type: BindingType,
     pub required: bool,
     pub optional: bool,
@@ -58,7 +66,7 @@ pub struct BindingField {
     pub block: bool,
     pub target_reserved: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    pub description: Option<Name>,
     /// For nested blocks, the fewest entries the provider accepts (when more than zero).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_items: Option<u64>,
@@ -67,7 +75,7 @@ pub struct BindingField {
     pub max_items: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum BindingType {
     String,
@@ -76,7 +84,7 @@ pub enum BindingType {
     List(Box<Self>),
     Set(Box<Self>),
     Map(Box<Self>),
-    Object(Vec<BindingField>),
+    Object(Fields),
     Tuple(Vec<Self>),
     Dynamic,
 }
@@ -126,14 +134,15 @@ pub fn derive_bindings_with(
             schema.resources.keys().chain(schema.data_sources.keys()),
         )
     });
-    let resources = derive_items(&schema.resources, &prefix)?;
-    let data_sources = derive_items(&schema.data_sources, &prefix)?;
+    let mut deriver = Deriver::default();
+    let resources = deriver.items(&schema.resources, &prefix)?;
+    let data_sources = deriver.items(&schema.data_sources, &prefix)?;
     Ok(BindingPackage {
         provider: BindingProvider {
             source: schema.source.clone(),
             version: schema.version.clone(),
             public_name: provider_name,
-            fields: derive_fields(&schema.provider_config),
+            fields: deriver.fields(&schema.provider_config),
         },
         resources,
         data_sources,
@@ -168,114 +177,149 @@ pub fn infer_type_prefix<'a>(
         .unwrap_or_else(|| format!("{provider_native_name}_"))
 }
 
-fn derive_items(
-    schemas: &BTreeMap<String, inframe_provider_schema::ResourceSchema>,
-    provider_prefix: &str,
-) -> Result<Vec<BindingItem>, DeriveError> {
-    let mut seen = BTreeMap::<String, String>::new();
-    let mut items = Vec::with_capacity(schemas.len());
-    for (provider_type, schema) in schemas {
-        let short_name = provider_type
-            .strip_prefix(provider_prefix)
-            .unwrap_or(provider_type);
-        let public_name = pascal_case(short_name);
-        if let Some(first) = seen.insert(public_name.clone(), provider_type.clone()) {
-            return Err(DeriveError::NameCollision {
+/// Derives field lists with every distinct list built once. Normalized schemas share their
+/// repeated blocks, so the memo tables are keyed by schema value (an O(1) hash and, for shared
+/// blocks, a pointer comparison) and the work is proportional to the distinct blocks rather
+/// than to every path through them. Derived lists are interned as well, because different
+/// schemas can derive equal bindings (a `single` and a `group` block, say).
+#[derive(Default)]
+struct Deriver {
+    interned: Interner<BindingField>,
+    blocks: HashMap<BlockSchema, Fields, FxBuildHasher>,
+    objects: HashMap<NameMap<AttributeSchema>, Fields, FxBuildHasher>,
+    public_names: HashMap<Name, Name, FxBuildHasher>,
+}
+
+impl Deriver {
+    fn items(
+        &mut self,
+        schemas: &BTreeMap<String, inframe_provider_schema::ResourceSchema>,
+        provider_prefix: &str,
+    ) -> Result<Vec<BindingItem>, DeriveError> {
+        let mut seen = BTreeMap::<String, &str>::new();
+        let mut items = Vec::with_capacity(schemas.len());
+        for (provider_type, schema) in schemas {
+            let short_name = provider_type
+                .strip_prefix(provider_prefix)
+                .unwrap_or(provider_type);
+            let public_name = pascal_case(short_name);
+            if let Some(first) = seen.insert(public_name.clone(), provider_type) {
+                return Err(DeriveError::NameCollision {
+                    public_name,
+                    first: first.to_owned(),
+                    second: provider_type.clone(),
+                });
+            }
+            items.push(BindingItem {
+                provider_type: provider_type.clone(),
                 public_name,
-                first,
-                second: provider_type.clone(),
+                fields: self.fields(&schema.block),
             });
         }
-        items.push(BindingItem {
-            provider_type: provider_type.clone(),
-            public_name,
-            fields: derive_fields(&schema.block),
-        });
+        Ok(items)
     }
-    Ok(items)
-}
 
-fn derive_fields(block: &BlockSchema) -> Vec<BindingField> {
-    let mut fields: Vec<_> = block
-        .attributes
-        .iter()
-        .map(|(name, attribute)| derive_attribute(name, attribute))
-        .collect();
-    fields.extend(block.blocks.iter().map(|(name, block)| {
-        let object = BindingType::Object(derive_fields(&block.block));
-        let r#type = match block.nesting_mode {
-            NestingMode::Single | NestingMode::Group => object,
-            NestingMode::List => BindingType::List(Box::new(object)),
-            NestingMode::Set => BindingType::Set(Box::new(object)),
-            NestingMode::Map => BindingType::Map(Box::new(object)),
-        };
+    fn fields(&mut self, block: &BlockSchema) -> Fields {
+        if let Some(fields) = self.blocks.get(block) {
+            return fields.clone();
+        }
+        let mut fields = Vec::with_capacity(block.attributes.len() + block.blocks.len());
+        for (name, attribute) in block.attributes.iter() {
+            fields.push(self.attribute(name, attribute));
+        }
+        for (name, nested) in block.blocks.iter() {
+            let object = BindingType::Object(self.fields(&nested.block));
+            let r#type = match nested.nesting_mode {
+                NestingMode::Single | NestingMode::Group => object,
+                NestingMode::List => BindingType::List(Box::new(object)),
+                NestingMode::Set => BindingType::Set(Box::new(object)),
+                NestingMode::Map => BindingType::Map(Box::new(object)),
+            };
+            let public_name = self.public_name(name);
+            fields.push(BindingField {
+                provider_name: name.clone(),
+                target_reserved: reserved_word(&public_name),
+                public_name,
+                r#type,
+                required: nested.min_items.is_some_and(|minimum| minimum > 0),
+                optional: nested.min_items.is_none_or(|minimum| minimum == 0),
+                computed: false,
+                sensitive: false,
+                block: true,
+                description: None,
+                min_items: nested.min_items.filter(|minimum| *minimum > 0),
+                max_items: nested.max_items,
+            });
+        }
+        // Stable: an attribute and a block with the same name keep that order.
+        fields.sort_by(|left, right| left.provider_name.cmp(&right.provider_name));
+        let fields = self.interned.intern(fields);
+        self.blocks.insert(block.clone(), fields.clone());
+        fields
+    }
+
+    fn attribute(&mut self, name: &Name, attribute: &AttributeSchema) -> BindingField {
+        let public_name = self.public_name(name);
         BindingField {
             provider_name: name.clone(),
-            public_name: field_name(name),
-            r#type,
-            required: block.min_items.is_some_and(|minimum| minimum > 0),
-            optional: block.min_items.is_none_or(|minimum| minimum == 0),
-            computed: false,
-            sensitive: false,
-            block: true,
-            target_reserved: reserved_words().contains(field_name(name).as_str()),
-            description: None,
-            min_items: block.min_items.filter(|minimum| *minimum > 0),
-            max_items: block.max_items,
+            target_reserved: reserved_word(&public_name),
+            public_name,
+            r#type: self.binding_type(&attribute.r#type),
+            required: attribute.required,
+            optional: attribute.optional,
+            computed: attribute.computed,
+            sensitive: attribute.sensitive,
+            block: false,
+            description: attribute.description.clone(),
+            min_items: None,
+            max_items: None,
         }
-    }));
-    fields.sort_by(|left, right| left.provider_name.cmp(&right.provider_name));
-    fields
-}
-
-fn derive_attribute(name: &str, attribute: &AttributeSchema) -> BindingField {
-    let public_name = field_name(name);
-    BindingField {
-        provider_name: name.to_owned(),
-        public_name: public_name.clone(),
-        r#type: binding_type(&attribute.r#type),
-        required: attribute.required,
-        optional: attribute.optional,
-        computed: attribute.computed,
-        sensitive: attribute.sensitive,
-        block: false,
-        target_reserved: reserved_words().contains(public_name.as_str()),
-        description: attribute.description.clone(),
-        min_items: None,
-        max_items: None,
     }
-}
 
-fn binding_type(schema_type: &SchemaType) -> BindingType {
-    match schema_type {
-        SchemaType::String => BindingType::String,
-        SchemaType::Bool => BindingType::Bool,
-        SchemaType::Number => BindingType::Number,
-        SchemaType::List(item) => BindingType::List(Box::new(binding_type(item))),
-        SchemaType::Set(item) => BindingType::Set(Box::new(binding_type(item))),
-        SchemaType::Map(item) => BindingType::Map(Box::new(binding_type(item))),
-        SchemaType::Object(fields) => BindingType::Object(
-            fields
-                .iter()
-                .map(|(name, attribute)| derive_attribute(name, attribute))
-                .collect(),
-        ),
-        SchemaType::Tuple(items) => BindingType::Tuple(items.iter().map(binding_type).collect()),
-        SchemaType::Dynamic => BindingType::Dynamic,
+    fn binding_type(&mut self, schema_type: &SchemaType) -> BindingType {
+        match schema_type {
+            SchemaType::String => BindingType::String,
+            SchemaType::Bool => BindingType::Bool,
+            SchemaType::Number => BindingType::Number,
+            SchemaType::List(item) => BindingType::List(Box::new(self.binding_type(item))),
+            SchemaType::Set(item) => BindingType::Set(Box::new(self.binding_type(item))),
+            SchemaType::Map(item) => BindingType::Map(Box::new(self.binding_type(item))),
+            SchemaType::Object(attributes) => BindingType::Object(self.object(attributes)),
+            SchemaType::Tuple(items) => {
+                BindingType::Tuple(items.iter().map(|item| self.binding_type(item)).collect())
+            }
+            SchemaType::Dynamic => BindingType::Dynamic,
+        }
+    }
+
+    fn object(&mut self, attributes: &NameMap<AttributeSchema>) -> Fields {
+        if let Some(fields) = self.objects.get(attributes) {
+            return fields.clone();
+        }
+        let fields = attributes
+            .iter()
+            .map(|(name, attribute)| self.attribute(name, attribute))
+            .collect();
+        let fields = self.interned.intern(fields);
+        self.objects.insert(attributes.clone(), fields.clone());
+        fields
+    }
+
+    fn public_name(&mut self, name: &Name) -> Name {
+        self.public_names
+            .entry(name.clone())
+            .or_insert_with(|| field_name(name).into())
+            .clone()
     }
 }
 
 #[must_use]
 pub fn pascal_case(value: &str) -> String {
-    split_words(value)
-        .map(|word| {
-            let mut characters = word.chars();
-            characters
-                .next()
-                .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
-                .unwrap_or_default()
-        })
-        .collect()
+    let mut output = String::with_capacity(value.len());
+    for word in split_words(value) {
+        push_capitalized(&mut output, word);
+    }
+    output
 }
 
 #[must_use]
@@ -284,15 +328,21 @@ pub fn field_name(value: &str) -> String {
     let Some(first) = words.next() else {
         return String::new();
     };
-    let mut output = first.to_owned();
+    let mut output = String::with_capacity(value.len());
+    output.push_str(first);
     for word in words {
-        let mut characters = word.chars();
-        if let Some(first) = characters.next() {
-            output.push(first.to_ascii_uppercase());
-            output.push_str(characters.as_str());
-        }
+        push_capitalized(&mut output, word);
     }
     output
+}
+
+/// Appends `word` with its first character upper-cased (ASCII only).
+pub fn push_capitalized(output: &mut String, word: &str) {
+    let mut characters = word.chars();
+    if let Some(first) = characters.next() {
+        output.push(first.to_ascii_uppercase());
+        output.push_str(characters.as_str());
+    }
 }
 
 fn split_words(value: &str) -> impl Iterator<Item = &str> {
@@ -301,53 +351,82 @@ fn split_words(value: &str) -> impl Iterator<Item = &str> {
         .filter(|part| !part.is_empty())
 }
 
-fn reserved_words() -> BTreeSet<&'static str> {
-    BTreeSet::from([
-        "ado",
-        "case",
-        "class",
-        "data",
-        "derive",
-        "do",
-        "else",
-        "false",
-        "forall",
-        "foreign",
-        "hiding",
-        "if",
-        "import",
-        "in",
-        "infix",
-        "infixl",
-        "infixr",
-        "instance",
-        "kind",
-        "let",
-        "module",
-        "newtype",
-        "nominal",
-        "of",
-        "representational",
-        "role",
-        "then",
-        "true",
-        "type",
-        "where",
-    ])
+/// PureScript keywords, which a field name has to avoid.
+const RESERVED_WORDS: &[&str] = &[
+    "ado",
+    "case",
+    "class",
+    "data",
+    "derive",
+    "do",
+    "else",
+    "false",
+    "forall",
+    "foreign",
+    "hiding",
+    "if",
+    "import",
+    "in",
+    "infix",
+    "infixl",
+    "infixr",
+    "instance",
+    "kind",
+    "let",
+    "module",
+    "newtype",
+    "nominal",
+    "of",
+    "representational",
+    "role",
+    "then",
+    "true",
+    "type",
+    "where",
+];
+
+fn reserved_word(name: &str) -> bool {
+    RESERVED_WORDS.contains(&name)
+}
+
+/// The number of fields reachable from `fields` along every path, counting each repetition
+/// of a shared list: a rough measure of how much text an emitter produces for them.
+#[must_use]
+pub fn path_count(fields: &[BindingField]) -> usize {
+    fields
+        .iter()
+        .map(|field| 1 + object_fields(&field.r#type).map_or(0, |fields| path_count(fields)))
+        .sum()
+}
+
+/// The object fields behind any number of collection layers, if there are any.
+#[must_use]
+pub fn object_fields(r#type: &BindingType) -> Option<&Fields> {
+    match r#type {
+        BindingType::Object(fields) => Some(fields),
+        BindingType::List(item) | BindingType::Set(item) | BindingType::Map(item) => {
+            object_fields(item)
+        }
+        BindingType::String
+        | BindingType::Bool
+        | BindingType::Number
+        | BindingType::Tuple(_)
+        | BindingType::Dynamic => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use inframe_provider_schema::{BlockSchema, NestedBlockSchema, ProviderSchema, ResourceSchema};
+    use inframe_provider_schema::{NestedBlockSchema, ResourceSchema};
 
     use super::*;
 
     #[test]
     fn derives_required_optional_computed_and_reserved_fields() {
         let block = BlockSchema {
-            attributes: BTreeMap::from([
+            attributes: NameMap::from([
                 (
-                    "name".into(),
+                    "name",
                     AttributeSchema {
                         r#type: SchemaType::String,
                         required: true,
@@ -358,7 +437,7 @@ mod tests {
                     },
                 ),
                 (
-                    "type".into(),
+                    "type",
                     AttributeSchema {
                         r#type: SchemaType::String,
                         required: false,
@@ -369,7 +448,7 @@ mod tests {
                     },
                 ),
             ]),
-            blocks: BTreeMap::new(),
+            blocks: NameMap::default(),
         };
         let schema = ProviderSchema {
             source: "digitalocean/digitalocean".into(),
@@ -439,9 +518,9 @@ mod tests {
     #[test]
     fn preserves_nested_attribute_roles() {
         let nested = AttributeSchema {
-            r#type: SchemaType::List(Box::new(SchemaType::Object(BTreeMap::from([
+            r#type: SchemaType::List(Box::new(SchemaType::Object(NameMap::from([
                 (
-                    "name".into(),
+                    "name",
                     AttributeSchema {
                         r#type: SchemaType::String,
                         required: true,
@@ -452,7 +531,7 @@ mod tests {
                     },
                 ),
                 (
-                    "actual_node_count".into(),
+                    "actual_node_count",
                     AttributeSchema {
                         r#type: SchemaType::Number,
                         required: false,
@@ -469,9 +548,9 @@ mod tests {
             sensitive: false,
             description: None,
         };
-        let fields = derive_fields(&BlockSchema {
-            attributes: BTreeMap::from([("node_pool".into(), nested)]),
-            blocks: BTreeMap::new(),
+        let fields = Deriver::default().fields(&BlockSchema {
+            attributes: NameMap::from([("node_pool", nested)]),
+            blocks: NameMap::default(),
         });
         let BindingType::List(item) = &fields[0].r#type else {
             panic!("node_pool should be a list");
@@ -482,28 +561,28 @@ mod tests {
         assert!(
             children
                 .iter()
-                .any(|field| field.public_name == "name" && field.required)
+                .any(|field| &*field.public_name == "name" && field.required)
         );
         assert!(
             children
                 .iter()
-                .any(|field| field.public_name == "actualNodeCount" && field.computed)
+                .any(|field| &*field.public_name == "actualNodeCount" && field.computed)
         );
     }
 
     #[test]
     fn exposes_nested_blocks_as_traversable_outputs() {
-        let fields = derive_fields(&BlockSchema {
-            attributes: BTreeMap::new(),
-            blocks: BTreeMap::from([(
-                "node_pool".into(),
+        let fields = Deriver::default().fields(&BlockSchema {
+            attributes: NameMap::default(),
+            blocks: NameMap::from([(
+                "node_pool",
                 NestedBlockSchema {
                     nesting_mode: NestingMode::List,
                     min_items: Some(1),
                     max_items: Some(1),
                     block: BlockSchema {
-                        attributes: BTreeMap::from([(
-                            "name".into(),
+                        attributes: NameMap::from([(
+                            "name",
                             AttributeSchema {
                                 r#type: SchemaType::String,
                                 required: true,
@@ -513,7 +592,7 @@ mod tests {
                                 description: None,
                             },
                         )]),
-                        blocks: BTreeMap::new(),
+                        blocks: NameMap::default(),
                     },
                 },
             )]),
@@ -526,7 +605,7 @@ mod tests {
 
         assert!(
             item.outputs()
-                .any(|field| { field.provider_name == "node_pool" && field.block })
+                .any(|field| { &*field.provider_name == "node_pool" && field.block })
         );
         let node_pool = &item.fields[0];
         assert!(node_pool.required);
