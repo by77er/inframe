@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, env};
 
@@ -10,7 +10,7 @@ use inframe_binding_model::{BindingOptions, derive_bindings_with};
 use inframe_emit_lean::CoreDependency;
 use inframe_graph_ir::GraphDocument;
 use inframe_opentofu::{OpenTofu, Workspace, secret_variable_name, to_pretty_json};
-use inframe_provider_schema::{ProviderRequest, SchemaAcquirer, normalize_schema};
+use inframe_provider_schema::{ProviderRequest, SchemaAcquirer, SchemaFile, read_schema_file};
 
 mod inspect;
 mod project;
@@ -311,7 +311,11 @@ fn provider_command(
             println!("data sources: {}", schema.data_sources.len());
             println!("sha256: {}", schema.sha256()?);
             if let Some(output) = arguments.output {
-                write_text(&output, &schema.canonical_json()?)?;
+                write_with(&output, |writer| {
+                    serde_json::to_writer_pretty(&mut *writer, &schema)?;
+                    writer.write_all(b"\n")?;
+                    Ok(())
+                })?;
             }
             Ok(())
         }
@@ -441,25 +445,50 @@ fn generate_providers(
         let bindings = derive_bindings_with(&schema, &options)
             .context("failed to derive provider bindings")?;
         for target in generation.targets {
-            let written = match target.frontend {
-                Frontend::PureScript => {
-                    inframe_emit_purescript::render_package(&bindings, &target.module_root, &hash)
-                        .context("failed to render PureScript package")?
-                        .write_to(&target.output)
-                        .map_err(anyhow::Error::from)
-                }
+            let (written, frontend) = match target.frontend {
+                Frontend::PureScript => (
+                    inframe_emit_purescript::write_package(
+                        &bindings,
+                        &target.module_root,
+                        &hash,
+                        &target.output,
+                    )
+                    .map_err(|error| {
+                        let io = matches!(error, inframe_emit_purescript::EmitError::Io(_));
+                        (anyhow::Error::from(error), io)
+                    }),
+                    "PureScript",
+                ),
                 Frontend::Lean => {
                     let core = target
                         .lean_core
                         .as_ref()
                         .context("missing Lean core dependency")?;
-                    inframe_emit_lean::render_package(&bindings, &target.module_root, &hash, core)
-                        .context("failed to render Lean package")?
-                        .write_to(&target.output)
-                        .map_err(anyhow::Error::from)
+                    (
+                        inframe_emit_lean::write_package(
+                            &bindings,
+                            &target.module_root,
+                            &hash,
+                            core,
+                            &target.output,
+                        )
+                        .map_err(|error| {
+                            let io = matches!(error, inframe_emit_lean::EmitError::Io(_));
+                            (anyhow::Error::from(error), io)
+                        }),
+                        "Lean",
+                    )
                 }
             };
-            written.with_context(|| format!("failed to write {}", target.output.display()))?;
+            // Rendering problems (an invalid module root) are found before anything is
+            // written; only I/O errors happen while writing.
+            if let Err((error, io)) = written {
+                return Err(if io {
+                    error.context(format!("failed to write {}", target.output.display()))
+                } else {
+                    error.context(format!("failed to render {frontend} package"))
+                });
+            }
             println!(
                 "generated {} resources and {} data sources for `{}` ({}) in {}",
                 bindings.resources.len(),
@@ -500,21 +529,22 @@ fn load_provider_schema(
         let bytes = fs::read(&path).with_context(|| {
             format!("failed to read provider schema fixture {}", path.display())
         })?;
-        if let Ok(schema) =
-            serde_json::from_slice::<inframe_provider_schema::ProviderSchema>(&bytes)
+        match read_schema_file(&bytes, request)
+            .context("failed to normalize provider schema fixture")?
         {
-            if schema.source != request.source || schema.version != request.version {
-                bail!(
-                    "normalized schema identifies {}@{}, expected {}@{}",
-                    schema.source,
-                    schema.version,
-                    request.source,
-                    request.version
-                );
+            SchemaFile::Normalized(schema) => {
+                if schema.source != request.source || schema.version != request.version {
+                    bail!(
+                        "normalized schema identifies {}@{}, expected {}@{}",
+                        schema.source,
+                        schema.version,
+                        request.source,
+                        request.version
+                    );
+                }
+                Ok(schema)
             }
-            Ok(schema)
-        } else {
-            normalize_schema(&bytes, request).context("failed to normalize provider schema fixture")
+            SchemaFile::Raw(schema) => Ok(schema),
         }
     } else {
         SchemaAcquirer::new(tofu_binary)
@@ -762,8 +792,15 @@ fn read_graph(path: &Path) -> Result<GraphDocument> {
 }
 
 fn write_text(path: &Path, contents: &str) -> Result<()> {
+    write_with(path, |writer| Ok(writer.write_all(contents.as_bytes())?))
+}
+
+/// Writes to `path`, or to stdout for `-`, through a buffer.
+fn write_with(path: &Path, write: impl FnOnce(&mut dyn Write) -> Result<()>) -> Result<()> {
     if path == Path::new("-") {
-        print!("{contents}");
+        let mut stdout = io::BufWriter::new(io::stdout().lock());
+        write(&mut stdout)?;
+        stdout.flush()?;
         Ok(())
     } else {
         if let Some(parent) = path
@@ -773,6 +810,14 @@ fn write_text(path: &Path, contents: &str) -> Result<()> {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
+        let written = fs::File::create(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|file| {
+                let mut file = io::BufWriter::with_capacity(1 << 16, file);
+                write(&mut file)?;
+                file.flush()?;
+                Ok(())
+            });
+        written.with_context(|| format!("failed to write {}", path.display()))
     }
 }
