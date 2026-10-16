@@ -5,17 +5,17 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::hash::Hash;
-use std::io::{self, Write as _};
+use std::io;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ring::digest;
 use rustc_hash::FxBuildHasher;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use thiserror::Error;
 
@@ -61,9 +61,11 @@ impl ProviderSchema {
     }
 
     /// The SHA-256 of the compact JSON encoding, streamed into the hasher rather than built
-    /// in memory first.
+    /// in memory first. For a large provider (AWS: 24 MB of JSON) hashing is the most
+    /// expensive step after decoding, so it uses `ring`'s assembly implementation, about
+    /// twice as fast as a portable one on CPUs without SHA extensions.
     pub fn sha256(&self) -> Result<String, serde_json::Error> {
-        struct Hashing(Sha256);
+        struct Hashing(digest::Context);
 
         impl io::Write for Hashing {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -76,13 +78,13 @@ impl ProviderSchema {
             }
         }
 
-        let mut writer = io::BufWriter::with_capacity(1 << 16, Hashing(Sha256::new()));
+        let hashing = Hashing(digest::Context::new(&digest::SHA256));
+        let mut writer = io::BufWriter::with_capacity(1 << 16, hashing);
         serde_json::to_writer(&mut writer, self)?;
-        writer.flush().map_err(serde_json::Error::io)?;
-        let hasher = writer
+        let hashing = writer
             .into_inner()
             .map_err(|error| serde_json::Error::io(error.into_error()))?;
-        Ok(hex::encode(hasher.0.finalize()))
+        Ok(hex::encode(hashing.0.finish()))
     }
 }
 
@@ -217,16 +219,25 @@ fn decode(
     request: &ProviderRequest,
     accept_normalized: bool,
 ) -> Result<Document, serde_json::Error> {
-    let mut normalizer = Normalizer::default();
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let document = DocumentSeed {
+    let seed = |normalizer| DocumentSeed {
         request,
-        normalizer: &mut normalizer,
+        normalizer,
         accept_normalized,
+    };
+    let mut normalizer = Normalizer::default();
+    // Validating the input once lets the decoder skip validating every string in it. Invalid
+    // UTF-8 is decoded from the bytes, which reports where it is.
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let mut deserializer = serde_json::Deserializer::from_str(text);
+        let document = seed(&mut normalizer).deserialize(&mut deserializer)?;
+        deserializer.end()?;
+        Ok(document)
+    } else {
+        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+        let document = seed(&mut normalizer).deserialize(&mut deserializer)?;
+        deserializer.end()?;
+        Ok(document)
     }
-    .deserialize(&mut deserializer)?;
-    deserializer.end()?;
-    Ok(document)
 }
 
 /// A normalized node, or the first problem in it in schema order.

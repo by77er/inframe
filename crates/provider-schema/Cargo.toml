@@ -7,10 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 hex.workspace = true
+ring.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 

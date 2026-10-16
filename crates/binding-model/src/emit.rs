@@ -101,6 +101,27 @@ impl fmt::Write for Output<'_> {
     }
 }
 
+/// The digest of the schema a package was generated from, recorded in its manifest.
+///
+/// Hashing a large schema takes about as long as rendering its modules, so the digest may still
+/// be in the making when rendering starts: a manifest asks for it only when it is rendered,
+/// which [`write_files`] does after the modules it describes have been claimed.
+pub trait SchemaDigest: Sync {
+    fn sha256(&self) -> String;
+}
+
+impl SchemaDigest for str {
+    fn sha256(&self) -> String {
+        self.to_owned()
+    }
+}
+
+impl SchemaDigest for String {
+    fn sha256(&self) -> String {
+        self.clone()
+    }
+}
+
 /// One file of a generated package: where it goes and how to render it.
 pub struct FileJob<'a> {
     pub path: PathBuf,
