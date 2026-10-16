@@ -679,6 +679,10 @@ among 75,000. The pipeline is built around that repetition:
   with its structural hash cached, so equal subtrees are one allocation, compare by pointer,
   and hash in O(1). `binding-model` derives each distinct block once and interns its result,
   and the Lean emitter's shape sharing is a hash lookup per path.
+- **Compact input.** A normalized schema written by `inframe provider inspect --output` is
+  read with its indentation dropped as it streams in (AWS: 154 MB on disk, 24 MB in memory)
+  and decoded with the same interning; anything unusual in it falls back to the derived
+  decoders, so results are the same either way.
 - **Streaming output.** Emitters render each module straight into a buffered sink that
   flushes to its file; modules render in parallel, largest first. The schema digest is
   streamed into SHA-256 on its own thread while the modules render.
