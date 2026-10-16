@@ -13,7 +13,9 @@ use inframe_binding_model::{BindingOptions, BindingPackage, derive_bindings_with
 use inframe_emit_lean::CoreDependency;
 use inframe_graph_ir::GraphDocument;
 use inframe_opentofu::{OpenTofu, Workspace, secret_variable_name, to_pretty_json};
-use inframe_provider_schema::{ProviderRequest, SchemaAcquirer, SchemaFile, read_schema_file};
+use inframe_provider_schema::{
+    ProviderRequest, SchemaAcquirer, SchemaFile, read_compact_json, read_schema_file,
+};
 
 mod inspect;
 mod project;
@@ -586,12 +588,25 @@ fn load_provider_schema(
     tofu_binary: &Path,
 ) -> Result<inframe_provider_schema::ProviderSchema> {
     if let Some(path) = fixture {
-        let bytes = fs::read(&path).with_context(|| {
+        let read = || -> Result<_> {
+            let file = fs::File::open(&path)?;
+            Ok(read_compact_json(io::BufReader::new(file))?)
+        };
+        let bytes = read().with_context(|| {
             format!("failed to read provider schema fixture {}", path.display())
         })?;
-        match read_schema_file(&bytes, request)
-            .context("failed to normalize provider schema fixture")?
-        {
+        // Problems are reported from the file as written, whose positions they name.
+        let file = if let Ok(file) = read_schema_file(&bytes, request) {
+            file
+        } else {
+            drop(bytes);
+            let original = fs::read(&path).with_context(|| {
+                format!("failed to read provider schema fixture {}", path.display())
+            })?;
+            read_schema_file(&original, request)
+                .context("failed to normalize provider schema fixture")?
+        };
+        match file {
             SchemaFile::Normalized(schema) => {
                 if schema.source != request.source || schema.version != request.version {
                     bail!(
