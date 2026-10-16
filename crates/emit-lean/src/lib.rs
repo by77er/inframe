@@ -12,7 +12,7 @@ use std::collections::hash_map::{Entry, HashMap};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use inframe_binding_model::emit::{self, FileJob, Output};
+use inframe_binding_model::emit::{self, FileJob, Output, SchemaDigest};
 use inframe_binding_model::{
     BindingField, BindingItem, BindingPackage, BindingProvider, BindingType, Fields, object_fields,
     path_count,
@@ -64,7 +64,7 @@ pub enum EmitError {
 pub fn render_package(
     package: &BindingPackage,
     module_root: &str,
-    schema_sha256: &str,
+    schema_sha256: &(impl SchemaDigest + ?Sized),
     core: &CoreDependency,
 ) -> Result<GeneratedPackage, EmitError> {
     let files = package_files(package, module_root, schema_sha256, core)?;
@@ -76,7 +76,7 @@ pub fn render_package(
 pub fn write_package(
     package: &BindingPackage,
     module_root: &str,
-    schema_sha256: &str,
+    schema_sha256: &(impl SchemaDigest + ?Sized),
     core: &CoreDependency,
     output: &Path,
 ) -> Result<(), EmitError> {
@@ -85,10 +85,10 @@ pub fn write_package(
     Ok(())
 }
 
-fn package_files<'a>(
+fn package_files<'a, D: SchemaDigest + ?Sized>(
     package: &'a BindingPackage,
     module_root: &'a str,
-    schema_sha256: &str,
+    schema_sha256: &'a D,
     core: &CoreDependency,
 ) -> Result<Vec<FileJob<'a>>, EmitError> {
     if !valid_module_root(module_root) {
@@ -126,18 +126,22 @@ fn package_files<'a>(
         let _ = writeln!(root, "import {module}");
     }
     files.push(FileJob::text(module_path(module_root), root));
-    let manifest = Manifest {
-        provider_source: &package.provider.source,
-        provider_version: &package.provider.version,
-        schema_sha256,
-        generator_version: env!("CARGO_PKG_VERSION"),
-        binding_model_version: "1.0",
-        graph_ir_version: "1.0",
-        lean_toolchain: LEAN_TOOLCHAIN,
-    };
-    let mut manifest = serde_json::to_string_pretty(&manifest)?;
-    manifest.push('\n');
-    files.push(FileJob::text("provider-manifest.json", manifest));
+    // Weightless, so it is rendered after the modules, by when the digest is likely ready.
+    files.push(FileJob::new("provider-manifest.json", 0, move |out| {
+        let manifest = Manifest {
+            provider_source: &package.provider.source,
+            provider_version: &package.provider.version,
+            schema_sha256: &schema_sha256.sha256(),
+            generator_version: env!("CARGO_PKG_VERSION"),
+            binding_model_version: "1.0",
+            graph_ir_version: "1.0",
+            lean_toolchain: LEAN_TOOLCHAIN,
+        };
+        let mut manifest =
+            serde_json::to_string_pretty(&manifest).expect("a manifest of strings serializes");
+        manifest.push('\n');
+        out.push_str(&manifest);
+    }));
     files.push(FileJob::text(
         "README.md",
         format!(

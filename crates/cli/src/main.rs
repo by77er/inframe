@@ -2,11 +2,14 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::thread::{self, ScopedJoinHandle};
 use std::{collections::BTreeMap, env};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use inframe_binding_model::{BindingOptions, derive_bindings_with};
+use inframe_binding_model::emit::SchemaDigest;
+use inframe_binding_model::{BindingOptions, BindingPackage, derive_bindings_with};
 use inframe_emit_lean::CoreDependency;
 use inframe_graph_ir::GraphDocument;
 use inframe_opentofu::{OpenTofu, Workspace, secret_variable_name, to_pretty_json};
@@ -438,68 +441,125 @@ fn generate_providers(
             version: generation.version,
         };
         let schema = load_provider_schema(&request, arguments.schema_json.clone(), tofu_binary)?;
-        let hash = schema.sha256()?;
         let options = BindingOptions {
             strip_prefix: generation.strip_prefix.clone(),
         };
-        let bindings = derive_bindings_with(&schema, &options)
-            .context("failed to derive provider bindings")?;
-        for target in generation.targets {
-            let (written, frontend) = match target.frontend {
-                Frontend::PureScript => (
-                    inframe_emit_purescript::write_package(
-                        &bindings,
-                        &target.module_root,
-                        &hash,
-                        &target.output,
-                    )
-                    .map_err(|error| {
-                        let io = matches!(error, inframe_emit_purescript::EmitError::Io(_));
-                        (anyhow::Error::from(error), io)
-                    }),
-                    "PureScript",
-                ),
-                Frontend::Lean => {
-                    let core = target
-                        .lean_core
-                        .as_ref()
-                        .context("missing Lean core dependency")?;
-                    (
-                        inframe_emit_lean::write_package(
-                            &bindings,
-                            &target.module_root,
-                            &hash,
-                            core,
-                            &target.output,
-                        )
-                        .map_err(|error| {
-                            let io = matches!(error, inframe_emit_lean::EmitError::Io(_));
-                            (anyhow::Error::from(error), io)
-                        }),
-                        "Lean",
-                    )
-                }
-            };
-            // Rendering problems (an invalid module root) are found before anything is
-            // written; only I/O errors happen while writing.
-            if let Err((error, io)) = written {
-                return Err(if io {
-                    error.context(format!("failed to write {}", target.output.display()))
-                } else {
-                    error.context(format!("failed to render {frontend} package"))
-                });
+        thread::scope(|scope| {
+            let digest = PendingDigest::new(scope.spawn(|| schema.sha256()));
+            let bindings = derive_bindings_with(&schema, &options)
+                .context("failed to derive provider bindings")?;
+            for target in &generation.targets {
+                write_target(&bindings, target, &digest)?;
+                println!(
+                    "generated {} resources and {} data sources for `{}` ({}) in {}",
+                    bindings.resources.len(),
+                    bindings.data_sources.len(),
+                    generation.name,
+                    target.frontend.name(),
+                    target.output.display()
+                );
             }
-            println!(
-                "generated {} resources and {} data sources for `{}` ({}) in {}",
-                bindings.resources.len(),
-                bindings.data_sources.len(),
-                generation.name,
-                target.frontend.name(),
-                target.output.display()
-            );
-        }
+            digest.check()
+        })?;
     }
     Ok(())
+}
+
+fn write_target(
+    bindings: &BindingPackage,
+    target: &FrontendTarget,
+    digest: &PendingDigest<'_>,
+) -> Result<()> {
+    let (written, frontend) = match target.frontend {
+        Frontend::PureScript => (
+            inframe_emit_purescript::write_package(
+                bindings,
+                &target.module_root,
+                digest,
+                &target.output,
+            )
+            .map_err(|error| {
+                let io = matches!(error, inframe_emit_purescript::EmitError::Io(_));
+                (anyhow::Error::from(error), io)
+            }),
+            "PureScript",
+        ),
+        Frontend::Lean => {
+            let core = target
+                .lean_core
+                .as_ref()
+                .context("missing Lean core dependency")?;
+            (
+                inframe_emit_lean::write_package(
+                    bindings,
+                    &target.module_root,
+                    digest,
+                    core,
+                    &target.output,
+                )
+                .map_err(|error| {
+                    let io = matches!(error, inframe_emit_lean::EmitError::Io(_));
+                    (anyhow::Error::from(error), io)
+                }),
+                "Lean",
+            )
+        }
+    };
+    // Rendering problems (an invalid module root) are found before anything is written; only
+    // I/O errors happen while writing.
+    written.map_err(|(error, io)| {
+        if io {
+            error.context(format!("failed to write {}", target.output.display()))
+        } else {
+            error.context(format!("failed to render {frontend} package"))
+        }
+    })
+}
+
+/// The schema digest, hashed on its own thread while the bindings are derived and rendered:
+/// SHA-256 over the canonical JSON of a large schema takes as long as rendering it. The
+/// manifest asks for the digest last, and waits only if hashing is not done by then.
+struct PendingDigest<'scope> {
+    hashing: Mutex<Option<ScopedJoinHandle<'scope, serde_json::Result<String>>>>,
+    digest: OnceLock<Result<String, String>>,
+}
+
+impl<'scope> PendingDigest<'scope> {
+    fn new(hashing: ScopedJoinHandle<'scope, serde_json::Result<String>>) -> Self {
+        Self {
+            hashing: Mutex::new(Some(hashing)),
+            digest: OnceLock::new(),
+        }
+    }
+
+    fn digest(&self) -> &Result<String, String> {
+        self.digest.get_or_init(|| {
+            let hashing = self
+                .hashing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("the digest is joined once");
+            hashing
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Fails if the schema could not be hashed (the manifests then hold no digest).
+    fn check(&self) -> Result<()> {
+        match self.digest() {
+            Ok(_) => Ok(()),
+            Err(error) => bail!("failed to hash the provider schema: {error}"),
+        }
+    }
+}
+
+impl SchemaDigest for PendingDigest<'_> {
+    fn sha256(&self) -> String {
+        self.digest().clone().unwrap_or_default()
+    }
 }
 
 fn provider_name(source: &str) -> &str {

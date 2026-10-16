@@ -665,6 +665,27 @@ pub fn normalize_schema(
 - implement the CLI;
 - contain DigitalOcean-specific logic.
 
+### Scale
+
+The AWS provider is the benchmark: a 19 MB schema whose WAF and QuickSight resources unroll
+recursive blocks into tens of thousands of nested paths, but only about 6,500 distinct blocks
+among 75,000. The pipeline is built around that repetition:
+
+- **One-pass decoding.** `tofu providers schema -json` output is decoded with serde seeds that
+  normalize each block the moment its JSON ends, so no raw tree (and no `serde_json::Value`)
+  is ever built. Normalization problems are carried as values and the first in schema order
+  wins, which reports exactly what normalizing after a full decode would.
+- **Hash-consing.** Every name and node list is interned. A node list is a `Shared` slice
+  with its structural hash cached, so equal subtrees are one allocation, compare by pointer,
+  and hash in O(1). `binding-model` derives each distinct block once and interns its result,
+  and the Lean emitter's shape sharing is a hash lookup per path.
+- **Streaming output.** Emitters render each module straight into a buffered sink that
+  flushes to its file; modules render in parallel, largest first. The schema digest is
+  streamed into SHA-256 on its own thread while the modules render.
+
+On four cores, generating either frontend for AWS takes 0.3–0.5 s and under 30 MB, two
+thirds of which is the input buffer.
+
 ---
 
 ## 7.2 `binding-model`
@@ -848,7 +869,7 @@ the target language:
 - **Structural sharing of nested shapes.** Provider schemas unroll recursive blocks to a
   fixed depth, so one resource can contain thousands of nested block paths but only a few
   dozen distinct field lists (`aws_wafv2_web_acl_rule`: 21,025 paths, 73 shapes). The emitter
-  keys every nested object by its serialized field list and declares each shape once, named
+  keys every nested object by its interned field list and declares each shape once, named
   after the first path where it occurs; later paths reuse that type and the doc comment says
   how many paths share it. This took the generated AWS package from 213 MB to 24 MB and the
   worst module from 59 MB (unbuildable in 15 GB) to well under 1 MB. `emit-purescript`
