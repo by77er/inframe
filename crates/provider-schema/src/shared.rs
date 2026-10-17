@@ -172,17 +172,17 @@ impl<T> NameMap<T> {
         self.0.is_empty()
     }
 
-    #[must_use]
+    #[must_use = "iterators are lazy"]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&Name, &T)> {
         self.0.iter().map(|(name, value)| (name, value))
     }
 
-    #[must_use]
+    #[must_use = "iterators are lazy"]
     pub fn keys(&self) -> impl ExactSizeIterator<Item = &Name> {
         self.0.iter().map(|(name, _)| name)
     }
 
-    #[must_use]
+    #[must_use = "iterators are lazy"]
     pub fn values(&self) -> impl ExactSizeIterator<Item = &T> {
         self.0.iter().map(|(_, value)| value)
     }
