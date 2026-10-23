@@ -10,10 +10,6 @@ functional interface, but Lean 4 allows more sophisticated validation and improv
 
 Both frontends render the same intermediate representation.
 
-> Disclosure: LLMs were used heavily to develop this iteration of Inframe. While
-it's mostly data plumbing, be wary and look at your plans before applying if you
-use this tool. It's quite experimental.
-
 ## Example
 
 This Lean 4 stack creates a private network (VPC), a Kubernetes cluster, a
@@ -73,7 +69,7 @@ PureScript is also available as a simpler option. It produces the same output
 for the same stack, but it can't check as much at compile time or do the proofs
 below.
 
-## Proofs, not just tests
+## Proofs
 
 Policy tools like OPA and Sentinel check one plan at a time. If your stack takes
 inputs, like an environment or a list of databases, the most they can tell you
