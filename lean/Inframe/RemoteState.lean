@@ -15,6 +15,9 @@ let cluster : Input String := platform.output "cluster_endpoint"
 
 No provider is required or configured for it, and the builtin provider needs no
 `required_providers` entry.
+
+This is the untyped layer, for producers that are not Inframe stacks. Between Inframe stacks,
+`Stack.read` (`Inframe.Stack`) returns the producer's own exports structure instead.
 -/
 
 namespace Inframe
@@ -116,11 +119,16 @@ def output (state : RemoteState) (output : String)
   let _ := valid
   dataSourceAttr state.dataSource ["outputs", output]
 
+/-- `try(value, default)`: `default` when OpenTofu cannot evaluate `value`, for example an
+output another stack does not export yet (`(← platform.read).region.orDefault "nyc3"`). -/
+def _root_.Inframe.Input.orDefault [IntoInput v α] (value : Input α) (default : v) : Input α :=
+  unsafeCall "try" [unsafeArgument value, unsafeArgument default]
+
 /-- Like `output`, but `default` when the other stack does not export it (OpenTofu's `try`),
 so a consumer can be planned before its producer exports a new value. -/
 def outputOr [IntoInput v α] (state : RemoteState) (output : String) (default : v)
     (valid : validIdentifier output = true := by valid_identifier) : Input α :=
-  unsafeCall "try" [unsafeArgument (state.output output valid (α := α)), unsafeArgument default]
+  (state.output output valid (α := α)).orDefault default
 
 @[simp] theorem run_read_fst (name : String) (backend : RemoteBackend) (workspace : Option String)
     (options : DataSourceOptions Unit) (valid : validIdentifier name = true) (graph : Graph) :

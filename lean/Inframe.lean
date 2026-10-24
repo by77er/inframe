@@ -6,4 +6,6 @@ import Inframe.Json
 import Inframe.Validate
 import Inframe.Policy
 import Inframe.RemoteState
+import Inframe.Stack
+import Inframe.StackDeriving
 import Inframe.Assert

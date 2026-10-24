@@ -1212,6 +1212,7 @@ Inframe.Validate     Graph.validate (port of the Rust validator), dependencies
 Inframe.Policy       Policy, Violation (violated or unknown), Policy.Holds, reports
 Inframe.RemoteState  terraform_remote_state per backend, typed outputs
                      (Builder also has `adopt`: imports as graph data)
+Inframe.Stack        Stack σ, StackExports (deriving): exports as a typed record
 Inframe.Assert       #assert_policy / #assert_valid (evaluation, not reduction)
 ```
 
