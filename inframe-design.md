@@ -556,6 +556,7 @@ pub struct GraphDocument {
     pub outputs: BTreeMap<String, Expr>,
     pub moves: Vec<MoveSpec>,
     pub imports: Vec<ImportSpec>,
+    pub stack_references: Vec<StackReference>,
 }
 ```
 
@@ -2340,6 +2341,8 @@ Therefore:
 - consider explicit publication of non-sensitive shared values to a separate store for least-privilege architectures.
 
 Do not force the state service to parse outputs, especially if client-side state encryption is enabled.
+
+Between stacks of one project, Graph IR records a **stack reference** (`stack_references: [{ "stack": "platform" }]`), the node `data.terraform_remote_state.platform`, rather than a data source carrying a backend. The CLI resolves each reference from the producer's `[stacks.<name>.backend]` when it prepares the consumer, so the backend stays run config (section 19), an undeclared stack fails the build, and `inframe build --all` derives the apply order and rejects cycles. In Lean, `Stack.read` returns the producer's typed exports structure (`deriving StackExports`), and `lower` refuses a graph whose references were never resolved.
 
 ---
 

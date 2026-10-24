@@ -1,5 +1,4 @@
 import Inframe.Json
-import Inframe.RemoteState
 
 /-!
 # Stacks and their exports
@@ -18,7 +17,7 @@ structure Platform where
   deriving StackExports
 
 def platform : Stack Platform :=
-  .define "platform" (.gcs "acme-state" (prefix_ := "platform")) do
+  .define "platform" do
     …
     pure { clusterEndpoint := cluster.endpoint, vpcId := network.id }
 
@@ -28,6 +27,16 @@ def appsStack : Infra Unit := do apps (← platform.read)
 
 The producer's `main` is `platform.emit`. A renamed or retyped field breaks the consumer's build
 instead of its plan.
+
+A `Stack` names a stack of `inframe.toml`, and that stack's `[stacks.<name>.backend]` is the only
+place its backend is written: the graph records a stack reference and the CLI fills in the
+backend (and refuses a name the project does not declare). One stack is one state, so a stack
+deployed per environment is one project stack per environment:
+
+```lean
+def platform (env : Environment) : Stack Platform := .define env.platformStack (platformFor env)
+def apps (env : Environment) : Infra Unit := do appsFor env (← (platform env).read)
+```
 -/
 
 namespace Inframe
@@ -36,6 +45,10 @@ namespace Inframe
 redacted by OpenTofu in the consumer too. -/
 structure Sensitive (α : Type) where
   input : Input α
+
+/-- `Input.orDefault` for a sensitive value; the result stays sensitive. -/
+def Sensitive.orDefault [IntoInput v α] (value : Sensitive α) (default : v) : Sensitive α :=
+  ⟨value.input.orDefault default⟩
 
 /-- The field types an exports structure may have: how a value is published, and the value a
 consumer sees given the reference to its output. -/
@@ -90,20 +103,18 @@ def publish [StackExports σ] (exports : σ) : Infra Unit :=
     ((publish exports).run graph).2.resources = graph.resources :=
   run_publishOutputs_resources _ graph
 
-/-- A stack whose program returns exports `σ`, and where its state is kept. The name is the
-logical name consumers give the `terraform_remote_state` data source that reads it. -/
+/-- The project's stack `name` (its `[stacks.<name>]` table), whose program returns exports
+`σ`. -/
 structure Stack (σ : Type) where
   name : Identifier
-  backend : RemoteBackend
   program : Infra σ
 
 namespace Stack
 
-/-- A stack named `name` whose state is kept in `backend` (the stack's
-`[stacks.<name>.backend]` table). -/
-def define (name : String) (backend : RemoteBackend) (program : Infra σ)
+/-- The project's stack `name`, built by `program`. -/
+def define (name : String) (program : Infra σ)
     (valid : validIdentifier name = true := by valid_identifier) : Stack σ :=
-  ⟨⟨name, valid⟩, backend, program⟩
+  ⟨⟨name, valid⟩, program⟩
 
 /-- The producer's whole program: build the stack and publish its exports. -/
 def publishing [StackExports σ] (stack : Stack σ) : Infra Unit :=
@@ -121,21 +132,17 @@ def emit [StackExports σ] (stack : Stack σ) : IO Unit :=
 def outputReference (stack : Stack σ) (name : String) : ExprNode :=
   .dataSourceAttribute (.dataSource "terraform_remote_state" stack.name.raw) ["outputs", name]
 
-/-- Read `stack`'s exports from its state (of the default workspace unless `workspace` is
-given) through `data.terraform_remote_state.<stack name>`. -/
-def read [StackExports σ] (stack : Stack σ) (workspace : Option String := none)
-    (options : DataSourceOptions Unit := dataSourceOptions) : Infra σ := do
-  let _ ← RemoteState.read stack.name.raw stack.backend workspace options stack.name.valid
+/-- Read `stack`'s exports from its state through the stack reference
+`data.terraform_remote_state.<stack name>`; the CLI supplies the backend. -/
+def read [StackExports σ] (stack : Stack σ) : Infra σ := do
+  let _ : DataSource Unit ← addStackReference stack.name
   pure (StackExports.ofOutputs stack.outputReference)
 
-@[simp] theorem run_read_fst [StackExports σ] (stack : Stack σ) (workspace : Option String)
-    (options : DataSourceOptions Unit) (graph : Graph) :
-    ((stack.read workspace options).run graph).1 = StackExports.ofOutputs stack.outputReference :=
-  rfl
+@[simp] theorem run_read_fst [StackExports σ] (stack : Stack σ) (graph : Graph) :
+    (stack.read.run graph).1 = StackExports.ofOutputs stack.outputReference := rfl
 
-@[simp] theorem run_read_resources [StackExports σ] (stack : Stack σ) (workspace : Option String)
-    (options : DataSourceOptions Unit) (graph : Graph) :
-    ((stack.read workspace options).run graph).2.resources = graph.resources := rfl
+@[simp] theorem run_read_resources [StackExports σ] (stack : Stack σ) (graph : Graph) :
+    (stack.read.run graph).2.resources = graph.resources := rfl
 
 end Stack
 

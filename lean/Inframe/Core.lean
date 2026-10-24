@@ -299,6 +299,11 @@ def interpolate [IntoInput v α] (value : v) : TemplatePart :=
 def template (parts : List TemplatePart) : Input String :=
   ⟨.template parts⟩
 
+/-- `try(value, default)`: `default` when OpenTofu cannot evaluate `value`, for example an
+output another stack does not export yet (`(← platform.read).region.orDefault "nyc3"`). -/
+def Input.orDefault [IntoInput v α] (value : Input α) (default : v) : Input α :=
+  unsafeCall "try" [unsafeArgument value, unsafeArgument default]
+
 /-- Read a secret from the process environment at plan/apply time. The CLI passes it to
 OpenTofu as a sensitive variable and never writes its value. The variable name is validated
 at compile time. -/

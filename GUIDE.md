@@ -381,7 +381,7 @@ structure Platform where
   deriving StackExports
 
 def platform : Stack Platform :=
-  .define "platform" (.gcs "acme-state" (prefix_ := "platform")) do
+  .define "platform" do                   -- the project's [stacks.platform]
     let network ← Vpc.create "platform" { name := "platform", region := "nyc3" }
     …
     pure { clusterEndpoint := cluster.endpoint, vpcId := network.id, adminToken := ⟨token⟩ }
@@ -399,31 +399,67 @@ field, the consumer stops compiling instead of failing at plan time. Because
 `apps` doesn't care where its argument comes from, a test passes literals,
 `platform.program >>= apps` builds both stacks as one graph, and a theorem over
 `∀ p : Platform, … (buildGraph (apps p))` holds however the stacks are deployed.
-The backend given to `Stack.define` must match the producer's
-`[stacks.<name>.backend]` table.
 
-`deriving StackExports` accepts structures without parameters whose fields are
-`Input α` or `Sensitive α`. Two fields that map to the same output name, or a
-field whose snake-case name isn't an OpenTofu identifier, are compile errors.
+The consumer's graph records a stack reference, not a backend. The producer's
+`[stacks.platform.backend]` table is the only place the backend is written:
+`inframe plan`/`apply` fill it in when they prepare the consumer, and for a
+`local` backend they point at the producer's state file in the workspace. A
+build fails if the consumer reads a stack that `inframe.toml` doesn't declare.
 
-For a producer that isn't an Inframe stack, `RemoteState.read` adds the data
-source for a backend and exposes the other stack's outputs by name. The backend
-and its non-secret configuration are the same values that stack's backend
-configuration holds.
+One stack is one state. A stack deployed per environment is one project stack
+per environment, and the `Stack` value can be a function of the environment:
+
+```lean
+def platform (env : Environment) : Stack Platform := .define env.platformStack (platformFor env)
+def apps (env : Environment) : Infra Unit := do appsFor env (← (platform env).read)
+```
+
+`deriving StackExports` accepts structures, with or without parameters, whose
+fields are `Input α` or `Sensitive α`. Two fields that map to the same output
+name, or a field whose snake-case name isn't an OpenTofu identifier, are
+compile errors.
+
+### Building and ordering every stack
+
+`inframe build --stack <name>` compiles only that stack, so a change to a
+producer's exports doesn't show the consumers it breaks. `inframe build --all`
+builds every declared stack, which compiles every consumer against the current
+exports, and prints the order to apply them in, producers first:
+
+```text
+$ inframe build --all
+built stack `apps` to .inframe/graphs/apps.json
+built stack `platform` to .inframe/graphs/platform.json
+apply order: platform, apps
+```
+
+Stacks that read each other in a cycle can't be deployed in any order, and
+`build --all` rejects them. `inframe test --all` runs every stack's tests. CI
+should run both.
+
+The type says what the producer's code exports, not what its state holds yet.
+When a consumer starts reading a new field, apply the producer first or use
+`orDefault` until it has been applied. When a field is removed, apply the
+consumers before the producer.
+
+### Producers outside the project
+
+For a producer that isn't an Inframe stack of this project,
+`RemoteState.read` adds the `terraform_remote_state` data source with an
+explicit backend and exposes the outputs by name:
 
 ```lean
 def infrastructure : Infra Unit := do
-  let platform ← RemoteState.read "platform" (.gcs "acme-state" (prefix_ := "platform"))
-  let cluster : Input String := platform.output "cluster_endpoint"
-  let region : Input String := platform.outputOr "region" "nyc3"   -- `try` with a default
+  let legacy ← RemoteState.read "legacy" (.gcs "acme-state" (prefix_ := "legacy"))
+  let cluster : Input String := legacy.output "cluster_endpoint"
+  let region : Input String := legacy.outputOr "region" "nyc3"   -- `try` with a default
   …
 ```
 
 `RemoteBackend` has constructors for `localFile`, `gcs`, `s3`, `azurerm`,
 `http`, `kubernetes`, and `consul`, and `other` for any backend with its
-configuration as known values. The type of an output is the consumer's claim
-about what the producer exports; a policy over the consumer can still see the
-reference as `data.terraform_remote_state.platform.outputs.<name>`.
+configuration as known values. The type of each output is the consumer's
+claim, so nothing checks it before plan.
 
 ## Proofs versus assertions
 

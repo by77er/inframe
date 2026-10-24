@@ -17,6 +17,9 @@ module_root = "DigitalOcean"
 directory = ".inframe"
 graph_directory = ".inframe/graphs"
 
+[stacks.smoke]
+frontend = "lean"
+
 [stacks.smoke.backend]
 type = "local"
 

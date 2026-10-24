@@ -54,6 +54,13 @@
       "items": {
         "$ref": "#/$defs/ImportSpec"
       }
+    },
+    "stack_references": {
+      "description": "Other stacks of the same project whose root outputs this graph reads, each as the\nnode `data.terraform_remote_state.<stack>`. The graph names the stack, not its\nbackend: the backend is run configuration, so the CLI resolves each reference into a\n`terraform_remote_state` data source from the project before lowering.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/StackReference"
+      }
     }
   },
   "additionalProperties": false,
@@ -573,6 +580,19 @@
       "required": [
         "to",
         "id"
+      ]
+    },
+    "StackReference": {
+      "description": "The root outputs of another stack of the project, read through the node\n`data.terraform_remote_state.<stack>`.",
+      "type": "object",
+      "properties": {
+        "stack": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "stack"
       ]
     }
   }

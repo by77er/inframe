@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use inframe_emit_lean::{CoreDependency, LEAN_TOOLCHAIN};
 use inframe_graph_ir::GraphDocument;
+use inframe_opentofu::Workspace;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -266,6 +267,58 @@ impl Project {
             .with_context(|| format!("stack `{name}` is not declared in the project config"))
     }
 
+    /// Every declared stack, in name order.
+    pub fn stack_names(&self) -> impl Iterator<Item = &str> {
+        self.config.stacks.keys().map(String::as_str)
+    }
+
+    /// Every stack `graph` (built from `stack`) reads must be another declared stack.
+    pub fn check_stack_references(&self, stack: &str, graph: &GraphDocument) -> Result<()> {
+        for reference in &graph.stack_references {
+            if reference.stack == stack {
+                bail!("stack `{stack}` reads its own outputs through a stack reference");
+            }
+            if !self.config.stacks.contains_key(&reference.stack) {
+                bail!(
+                    "stack `{stack}` reads stack `{}`, which is not declared in the project config",
+                    reference.stack
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace `graph`'s stack references with `terraform_remote_state` data sources reading
+    /// each stack's configured backend. A `local` backend's state lives in that stack's own
+    /// directory under `workspace_base`, so its path is made absolute here.
+    pub fn resolve_stack_references(
+        &self,
+        graph: GraphDocument,
+        workspace_base: &Path,
+    ) -> Result<GraphDocument> {
+        graph.resolve_stack_references(|stack| {
+            let (kind, mut config) = self.backend_json(stack)?;
+            if kind == "local" {
+                let producer = Workspace::new(workspace_base, stack)?;
+                let state = match config.get("path") {
+                    Some(Value::String(path)) => producer.root().join(path),
+                    Some(_) => {
+                        bail!("the `path` of stack `{stack}`'s local backend must be a string")
+                    }
+                    None => producer.root().join("terraform.tfstate"),
+                };
+                let state = std::path::absolute(&state).with_context(|| {
+                    format!("failed to resolve the state path of stack `{stack}`")
+                })?;
+                config.insert(
+                    "path".to_owned(),
+                    Value::String(state.to_string_lossy().into_owned()),
+                );
+            }
+            Ok((kind.to_owned(), config))
+        })
+    }
+
     pub fn workspace_directory(&self) -> PathBuf {
         self.root.join(&self.config.workspace.directory)
     }
@@ -501,6 +554,7 @@ impl Project {
             message
         })?;
         graph.validate()?;
+        self.check_stack_references(stack, &graph)?;
         let path = output_override.map_or_else(|| self.graph_path(stack), Path::to_path_buf);
         write_graph(&path, &graph)?;
         Ok((graph, path))
@@ -849,6 +903,44 @@ fn secret_like_key(key: &str) -> bool {
     ]
     .iter()
     .any(|needle| normalized.contains(needle))
+}
+
+/// The stacks of `graphs` ordered so that every stack comes after the stacks it reads, the
+/// order to apply them in; ties are broken by name. A cycle of stack references is an error,
+/// since no order deploys it.
+pub fn stack_order(graphs: &BTreeMap<String, GraphDocument>) -> Result<Vec<String>> {
+    let mut order = Vec::new();
+    for stack in graphs.keys() {
+        visit_stack(stack, graphs, &mut Vec::new(), &mut order)?;
+    }
+    Ok(order)
+}
+
+/// Depth-first step of `stack_order`: `visiting` is the current path, so meeting one of its
+/// stacks again closes a cycle.
+fn visit_stack<'a>(
+    stack: &'a str,
+    graphs: &'a BTreeMap<String, GraphDocument>,
+    visiting: &mut Vec<&'a str>,
+    order: &mut Vec<String>,
+) -> Result<()> {
+    if order.iter().any(|done| done == stack) {
+        return Ok(());
+    }
+    if let Some(start) = visiting.iter().position(|open| *open == stack) {
+        let mut cycle = visiting[start..].to_vec();
+        cycle.push(stack);
+        bail!("stack references form a cycle: {}", cycle.join(" -> "));
+    }
+    visiting.push(stack);
+    for reference in &graphs[stack].stack_references {
+        if graphs.contains_key(&reference.stack) {
+            visit_stack(&reference.stack, graphs, visiting, order)?;
+        }
+    }
+    visiting.pop();
+    order.push(stack.to_owned());
+    Ok(())
 }
 
 fn valid_stack_name(value: &str) -> bool {

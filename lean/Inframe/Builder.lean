@@ -169,6 +169,9 @@ structure Graph where
   outputs : List (String × OutputSpec) := []
   moves : List MoveSpec := []
   imports : List ImportSpec := []
+  /-- Other stacks of the project whose outputs this graph reads, each the node
+  `data.terraform_remote_state.<stack>`; the CLI supplies their backends. -/
+  stackReferences : List String := []
   deriving Repr
 
 namespace ProviderConfigSpec
@@ -234,6 +237,7 @@ def resourcesOfType (graph : Graph) (resourceType : String) : List ResourceSpec 
 /-- Every node address in the graph. -/
 def addresses (graph : Graph) : List Address :=
   graph.resources.map ResourceSpec.address ++ graph.dataSources.map DataSourceSpec.address
+    ++ graph.stackReferences.map (.dataSource "terraform_remote_state")
 
 end Graph
 
@@ -356,6 +360,14 @@ def adopt [Managed h] (destination : h) (id : String) : Infra Unit :=
   Infra.modify fun graph =>
     { graph with imports := graph.imports ++ [⟨Managed.resourceAddress destination, id⟩] }
 
+/-- Read the outputs of the project's stack `stack` through the node
+`data.terraform_remote_state.<stack>`, whose backend the CLI fills in from `inframe.toml`.
+`Stack.read` is the typed way to use it. -/
+def addStackReference (stack : Identifier) : Infra (DataSource r) :=
+  ⟨fun graph =>
+    (dataSourceHandle (Identifier.mk "terraform_remote_state") stack,
+      { graph with stackReferences := graph.stackReferences ++ [stack.raw] })⟩
+
 /-- Run `program` and also return the managed resources it added, in creation order. This is
 the primitive for scope combinators that post-process everything created inside a block, for
 example assigning it all to a cloud project. -/
@@ -432,6 +444,13 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
 
 @[simp] theorem run_adopt [Managed h] (destination : h) (id : String) (graph : Graph) :
     ((adopt destination id).run graph).2.resources = graph.resources := rfl
+
+@[simp] theorem run_addStackReference_fst (stack : Identifier) (graph : Graph) :
+    ((addStackReference (r := r) stack).run graph).1
+      = dataSourceHandle (Identifier.mk "terraform_remote_state") stack := rfl
+
+@[simp] theorem run_addStackReference_resources (stack : Identifier) (graph : Graph) :
+    ((addStackReference (r := r) stack).run graph).2.resources = graph.resources := rfl
 
 @[simp] theorem run_capture (program : Infra α) (graph : Graph) :
     (Infra.capture program).run graph

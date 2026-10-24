@@ -1,11 +1,12 @@
 import Lean.Elab.Deriving.Basic
+import Lean.Elab.Deriving.Util
 import Inframe.Stack
 
 /-!
 # `deriving StackExports`
 
-For a structure with no parameters whose fields are `ExportField`s (`Input α` or
-`Sensitive α`), the handler writes
+For a structure whose fields are `ExportField`s (`Input α` or `Sensitive α`), the handler
+writes
 
 ```lean
 instance : StackExports Platform where
@@ -13,7 +14,8 @@ instance : StackExports Platform where
   ofOutputs reference := { clusterEndpoint := ExportField.ofNode (reference "cluster_endpoint"), … }
 ```
 
-Output names are the field names in snake case (`vpcID` is `vpc_id`); a field whose name is not
+A structure with parameters gets the instance for every value of them. Output names are the
+field names in snake case (`vpcID` is `vpc_id`); a field whose name is not
 an OpenTofu identifier that way, or two fields with the same output name, are compile errors.
 -/
 
@@ -38,7 +40,7 @@ def snakeCase (name : String) : String := Id.run do
       result := result.push c
   return result
 
-open Lean Elab Command Meta
+open Lean Elab Command Meta Deriving
 
 private def mkStackExportsInstance (declName : Name) : CommandElabM Unit := do
   let env ← getEnv
@@ -48,8 +50,6 @@ private def mkStackExportsInstance (declName : Name) : CommandElabM Unit := do
   if fields.isEmpty then
     throwError "`{declName}` has no fields to export"
   let indVal ← getConstInfoInduct declName
-  if indVal.numParams != 0 then
-    throwError "`deriving StackExports` needs a structure without parameters; `{declName}` has {indVal.numParams}"
   let mut seen : Std.HashMap String Name := {}
   let mut outputs : Array Term := #[]
   let mut fieldIdents : Array Ident := #[]
@@ -67,9 +67,13 @@ private def mkStackExportsInstance (declName : Name) : CommandElabM Unit := do
       (← `(Inframe.ExportedOutput.of (Inframe.Identifier.mk $nameLit) (exports.$fieldIdent:ident)))
     fieldIdents := fieldIdents.push fieldIdent
     readers := readers.push (← `(Inframe.ExportField.ofNode (reference $nameLit)))
-  let typeIdent := mkCIdent declName
+  -- Parameters become implicit binders: `structure Exports (α : Type)` gets
+  -- `instance {α} : StackExports (Exports α)`, which holds wherever its fields are exportable.
+  let (binders, target) ← liftTermElabM do
+    let argNames ← mkInductArgNames indVal
+    return (← mkImplicitBinders argNames, ← mkInductiveApp indVal argNames)
   let instanceCommand ← `(command|
-    instance : Inframe.StackExports $typeIdent where
+    instance $binders:implicitBinder* : Inframe.StackExports $target where
       outputs exports := [$outputs,*]
       ofOutputs reference := { $[$fieldIdents:ident := $readers],* })
   elabCommand instanceCommand
