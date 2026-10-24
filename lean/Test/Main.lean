@@ -261,6 +261,72 @@ theorem remote_state_is_a_builtin_data_source :
           , .literal (.string "nyc3") ])) = true := by
   refine ⟨by decide, by decide, by decide, by decide⟩
 
+/-! Stacks composed through typed exports: the producer returns a structure, the consumer is a
+function of it, and remote state is only one way of supplying it. -/
+
+structure PlatformExports where
+  clusterEndpoint : Input String
+  vpcID : Input String
+  adminToken : Sensitive String
+  deriving StackExports
+
+def platformStack : Stack PlatformExports :=
+  .define "platform" (.gcs "acme-state" (prefix_ := "platform")) do
+    let network : Resource VpcResource ← addResource (resourceOptions : ResourceOptions Unit)
+      (Identifier.mk "digitalocean_vpc") (Identifier.mk "network")
+      (InputObject.ofList [("name", inputNode (lit "network"))])
+    pure
+      { clusterEndpoint := "https://k8s.example"
+        vpcID := resourceAttr network ["id"]
+        adminToken := ⟨secretEnv "ADMIN_TOKEN"⟩ }
+
+def appsFor (platform : PlatformExports) : Infra Unit := do
+  let _ : Resource TagResource ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "app")
+    (InputObject.ofList [("vpc", inputNode platform.vpcID)])
+  output "endpoint" (platform.clusterEndpoint.orDefault "https://fallback.example")
+
+def appsStack : Infra Unit := do
+  appsFor (← platformStack.read)
+
+#guard snakeCase "clusterEndpoint" == "cluster_endpoint"
+#guard snakeCase "vpcID" == "vpc_id"
+#guard snakeCase "httpURLPath" == "http_url_path"
+#guard snakeCase "already_snake" == "already_snake"
+#guard snakeCase "ipv4Address" == "ipv4_address"
+
+theorem producer_publishes_its_exports :
+    platformStack.graph.Valid ∧
+    ((platformStack.graph.output? "vpc_id").map (·.value)
+      == some (.resourceAttribute (.res "digitalocean_vpc" "network") ["id"])) = true ∧
+    (platformStack.graph.output? "admin_token").map (·.sensitive) = some true ∧
+    (platformStack.graph.output? "cluster_endpoint").map (·.sensitive) = some false := by
+  refine ⟨by decide, by decide, by decide, by decide⟩
+
+theorem consumer_reads_exports_through_remote_state :
+    (buildGraph appsStack).Valid ∧
+    (((buildGraph appsStack).resource? (.res "digitalocean_tag" "app")).map
+        (·.argumentRefersTo "vpc" (.data "terraform_remote_state" "platform") ["outputs", "vpc_id"])
+      = some true) ∧
+    (((buildGraph appsStack).output? "endpoint").map (·.value)
+      == some (.function "try"
+          [ .dataSourceAttribute (.data "terraform_remote_state" "platform") ["outputs", "cluster_endpoint"]
+          , .literal (.string "https://fallback.example") ])) = true := by
+  refine ⟨by decide, by decide, by decide⟩
+
+/-- For every exports value, however it is supplied, the consumer's tag sits on the platform's
+VPC. -/
+theorem consumer_uses_the_platform_vpc (platform : PlatformExports) :
+    ((buildGraph (appsFor platform)).resource? (.res "digitalocean_tag" "app")).bind
+      (·.argument? "vpc") = some (inputNode platform.vpcID) := rfl
+
+/-- Composed into one graph, the same consumer refers to the VPC itself. -/
+theorem composed_stack_refers_to_the_vpc :
+    ((buildGraph (platformStack.program >>= appsFor)).resource? (.res "digitalocean_tag" "app")).map
+        (·.argumentRefersTo "vpc" (.res "digitalocean_vpc" "network") ["id"])
+      = some true := by
+  decide
+
 /-! `#assert_policy` and `#assert_valid` evaluate instead of reducing, and fail the build with
 the report when violated. -/
 #assert_policy tagsAreNamed graph

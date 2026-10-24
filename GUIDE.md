@@ -367,11 +367,49 @@ in its working directory.
 
 ## Composing stacks through remote state
 
-`terraform_remote_state` belongs to OpenTofu's builtin provider, which no
-provider schema describes, so the Lean core ships it directly: `RemoteState.read`
-adds the data source for a backend and exposes the other stack's outputs as
-typed inputs. The backend and its non-secret configuration are the same values
-the producing stack's `[stacks.<name>.backend]` table holds.
+A stack's public interface is a structure of inputs. The producing program
+returns it and every field becomes a root output, named after the field in
+snake case. A consuming stack gets the same structure back with each field
+pointing into the producer's state. Consumers are ordinary functions of the
+exports:
+
+```lean
+structure Platform where
+  clusterEndpoint : Input String          -- output `cluster_endpoint`
+  vpcId : Input String
+  adminToken : Sensitive String           -- published with `sensitiveOutput`
+  deriving StackExports
+
+def platform : Stack Platform :=
+  .define "platform" (.gcs "acme-state" (prefix_ := "platform")) do
+    let network ← Vpc.create "platform" { name := "platform", region := "nyc3" }
+    …
+    pure { clusterEndpoint := cluster.endpoint, vpcId := network.id, adminToken := ⟨token⟩ }
+
+def apps (p : Platform) : Infra Unit := do
+  let database ← DatabaseCluster.create "apps" { …, privateNetworkUuid := p.vpcId }
+  output "endpoint" (p.clusterEndpoint.orDefault "https://fallback.example")   -- `try`
+
+def appsStack : Infra Unit := do
+  apps (← platform.read)                  -- data.terraform_remote_state.platform
+```
+
+The producer's `main` is `platform.emit`. If the producer renames or retypes a
+field, the consumer stops compiling instead of failing at plan time. Because
+`apps` doesn't care where its argument comes from, a test passes literals,
+`platform.program >>= apps` builds both stacks as one graph, and a theorem over
+`∀ p : Platform, … (buildGraph (apps p))` holds however the stacks are deployed.
+The backend given to `Stack.define` must match the producer's
+`[stacks.<name>.backend]` table.
+
+`deriving StackExports` accepts structures without parameters whose fields are
+`Input α` or `Sensitive α`. Two fields that map to the same output name, or a
+field whose snake-case name isn't an OpenTofu identifier, are compile errors.
+
+For a producer that isn't an Inframe stack, `RemoteState.read` adds the data
+source for a backend and exposes the other stack's outputs by name. The backend
+and its non-secret configuration are the same values that stack's backend
+configuration holds.
 
 ```lean
 def infrastructure : Infra Unit := do
