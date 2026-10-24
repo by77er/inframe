@@ -909,7 +909,7 @@ fn secret_like_key(key: &str) -> bool {
 }
 
 /// The stacks of `graphs` ordered so that every stack comes after the stacks it reads, the
-/// order to apply them in; ties are broken by name. A cycle of stack references is an error,
+/// order to apply them in: a depth-first order seeded by stack name. A cycle of stack references is an error,
 /// since no order deploys it.
 pub fn stack_order(graphs: &BTreeMap<String, GraphDocument>) -> Result<Vec<String>> {
     let mut order = Vec::new();

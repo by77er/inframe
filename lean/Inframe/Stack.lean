@@ -34,7 +34,8 @@ backend (and refuses a name the project does not declare). One stack is one stat
 deployed per environment is one project stack per environment:
 
 ```lean
-def platform (env : Environment) : Stack Platform := .define env.platformStack (platformFor env)
+def Environment.platformStack : Environment → Identifier    -- `platform-dev`, `platform-prod`
+def platform (env : Environment) : Stack Platform := .define env.platformStack.raw (platformFor env)
 def apps (env : Environment) : Infra Unit := do appsFor env (← (platform env).read)
 ```
 -/
@@ -142,7 +143,8 @@ def read [StackExports σ] (stack : Stack σ) : Infra σ := do
     (stack.read.run graph).1 = StackExports.ofOutputs stack.outputReference := rfl
 
 @[simp] theorem run_read_resources [StackExports σ] (stack : Stack σ) (graph : Graph) :
-    (stack.read.run graph).2.resources = graph.resources := rfl
+    (stack.read.run graph).2.resources = graph.resources := by
+  simp [read]
 
 end Stack
 

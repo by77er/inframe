@@ -317,6 +317,16 @@ theorem consumer_reads_exports_through_remote_state :
           , .literal (.string "https://fallback.example") ])) = true := by
   refine ⟨by decide, by decide, by decide, by decide, by decide⟩
 
+/-- Helpers that each read the same stack share one node, and the graph stays valid. -/
+def appsReadingTwice : Infra Unit := do
+  appsFor (← platformStack.read)
+  output "again" (← platformStack.read).clusterEndpoint
+
+theorem reading_a_stack_twice_reuses_its_node :
+    (buildGraph appsReadingTwice).Valid ∧
+    (buildGraph appsReadingTwice).stackReferences = ["platform"] := by
+  refine ⟨by decide, by decide⟩
+
 /-- Exports with parameters: the derived instance holds for every value of them. -/
 structure Endpoints (α : Type) where
   primary : Input α

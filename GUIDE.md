@@ -407,10 +407,16 @@ The consumer's graph records a stack reference, not a backend. The producer's
 build fails if the consumer reads a stack that `inframe.toml` doesn't declare.
 
 One stack is one state. A stack deployed per environment is one project stack
-per environment, and the `Stack` value can be a function of the environment:
+per environment, and the `Stack` value can be a function of the environment.
+A name computed at run time must be an `Identifier`, so its validity is already
+proved:
 
 ```lean
-def platform (env : Environment) : Stack Platform := .define env.platformStack (platformFor env)
+def Environment.platformStack : Environment → Identifier    -- `platform-dev`, `platform-prod`
+  | .dev => Identifier.mk "platform-dev"
+  | .prod => Identifier.mk "platform-prod"
+
+def platform (env : Environment) : Stack Platform := .define env.platformStack.raw (platformFor env)
 def apps (env : Environment) : Infra Unit := do appsFor env (← (platform env).read)
 ```
 
@@ -434,7 +440,8 @@ apply order: platform, apps
 ```
 
 Stacks that read each other in a cycle can't be deployed in any order, and
-`build --all` rejects them. `inframe test --all` runs every stack's tests. CI
+`build --all` rejects them. `inframe test --all` runs the tests of every stack
+that has a test entry point. CI
 should run both.
 
 The type says what the producer's code exports, not what its state holds yet.
