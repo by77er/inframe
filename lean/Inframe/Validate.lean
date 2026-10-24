@@ -249,6 +249,27 @@ def dependsOn (graph : Graph) (downstream upstream : Address) : Bool :=
 private def upstreamOf (edges : List Dependency) (node : Address) : List Address :=
   edges.filterMap fun edge => if edge.downstream == node then some edge.upstream else none
 
+/-- Breadth-first rounds of `upstreamClosure`: `frontier` is the last round's discoveries.
+Every round that continues adds a new node, so `fuel := nodes.length + 1` never runs out. -/
+private def closeUpstream (edges : List Dependency) :
+    Nat → List Address → List Address → List Address
+  | 0, seen, _ => seen
+  | _, seen, [] => seen
+  | fuel + 1, seen, frontier =>
+    let fresh := frontier.eraseDups.filter (!seen.contains ·)
+    closeUpstream edges fuel (seen ++ fresh) (fresh.flatMap (upstreamOf edges))
+
+/-- Everything `node` depends on, directly or through other nodes. Structurally recursive, so
+policies built on it stay decidable by `decide`. -/
+def upstreamClosure (graph : Graph) (node : Address) : List Address :=
+  let edges := graph.dependencies
+  closeUpstream edges (graph.addresses.length + 1) [] (upstreamOf edges node)
+
+/-- Whether `downstream` depends on `upstream`, directly or through other nodes, so that a value
+of `upstream` can flow into it. -/
+def dependsOnTransitively (graph : Graph) (downstream upstream : Address) : Bool :=
+  (graph.upstreamClosure downstream).contains upstream
+
 /-- The cycle closed by reaching `node` while it is already on `path` (nearest first): `node`,
 the nodes between, and `node` again, in dependency order. -/
 private def closeCycle (node : Address) (path : List Address) : List Address :=

@@ -421,6 +421,13 @@ when it can. When an element is a reference, the resource might carry the tag, s
 only if it keeps the rule anyway and is reported unknown otherwise. `PlatformTest.lean` proves
 such a rule for every list of tagged databases.
 
+A policy sees the whole graph, so it can relate resources to each other:
+`Graph.dependsOnTransitively` follows references through any number of resources.
+`Infra/PolicyExamples.lean` checks firewall coverage, disjoint VPC ranges, unique names, and that
+no public object depends on a database, each next to a broken stack it rejects. A theorem can
+also relate two graphs. `PlatformTest.lean` proves that adding databases keeps every existing
+resource unchanged, and that dev and prod create the same resources wired to the same networks.
+
 Programs extend the graph only through the builder primitives: `Infra`'s
 constructor is private, so a stack cannot write a step that reads or replaces
 the graph, and the `run` lemmas the proofs use cover everything a stack can do.

@@ -171,6 +171,147 @@ def main : IO Unit := do
     policies.enforce (buildGraph (infrastructureFor env [Identifier.mk "postgres"]))
   IO.println "platform policies hold (also proved at compile time)"
 
+/-! ### Limits that depend on the input
+
+Prod clusters are highly available with at least two nodes, and dev clusters never grow past
+three, for every environment and every list of databases. -/
+
+/-- A literal number in the first `block` of a resource, such as `node_pool.min_nodes`. -/
+def blockNumber? (resource : ResourceSpec) (block field : String) : Option Number :=
+  match resource.argument? block with
+  | some (.array (.object fields :: _)) =>
+    match fields.lookup field with
+    | some (.literal (.number n)) => some n
+    | _ => none
+  | _ => none
+
+def numberAtLeast (n : Number) (k : Nat) : Bool := n.mantissa ≥ (k * 10 ^ n.exponent : Nat)
+def numberAtMost (n : Number) (k : Nat) : Bool := n.mantissa ≤ (k * 10 ^ n.exponent : Nat)
+
+def clusterSizing : Environment → Policy
+  | .prod =>
+    Policy.resourcesOfType "prod-cluster-sizing" "digitalocean_kubernetes_cluster" fun cluster =>
+      if !cluster.argumentIs KubernetesCluster.names.ha true then some "prod clusters set ha"
+      else match blockNumber? cluster KubernetesCluster.names.nodePool
+          KubernetesCluster.NodePoolAttributes.names.minNodes with
+        | some n => if numberAtLeast n 2 then none else some "prod node pools keep at least 2 nodes"
+        | none => some "prod node pools set a literal min_nodes"
+  | .dev =>
+    Policy.resourcesOfType "dev-cluster-sizing" "digitalocean_kubernetes_cluster" fun cluster =>
+      match blockNumber? cluster KubernetesCluster.names.nodePool
+          KubernetesCluster.NodePoolAttributes.names.maxNodes with
+      | some n => if numberAtMost n 3 then none else some "dev node pools grow to at most 3 nodes"
+      | none => some "dev node pools set a literal max_nodes"
+
+/-- `createDatabases` adds database clusters and nothing else, so a policy about any other
+resource type is unaffected by the database list. -/
+theorem createDatabases_adds_databases (env : Environment) (network : Vpc.Vpc)
+    (databases : List Identifier) (graph : Graph) :
+    ∀ r ∈ ((createDatabases env network databases).run graph).2.resources,
+      r ∈ graph.resources ∨ r.resourceType = "digitalocean_database_cluster" := by
+  induction databases generalizing graph with
+  | nil => exact fun r member => .inl member
+  | cons db rest ih =>
+    simp only [createDatabases, Infra.run_bind, Infra.run_pure, DatabaseCluster.create,
+      DatabaseCluster.createWith]
+    intro r member
+    rcases ih _ r member with member | database
+    · simp only [run_addResource_resources, run_requireProvider, List.mem_append,
+        List.mem_singleton] at member
+      rcases member with member | rfl
+      · exact .inl member
+      · exact .inr rfl
+    · exact .inr database
+
+theorem cluster_sizing (env : Environment) (databases : List Identifier) :
+    (clusterSizing env).Holds (buildGraph (infrastructureFor env databases)) := by
+  cases env <;> simp only [clusterSizing] <;>
+  · rw [Policy.resourcesOfType_holds_iff]
+    simp only [buildGraph, infrastructureFor, Infra.run_bind, Infra.run_pure, run_output,
+      run_outputDatabaseHost, Provider.configure, run_addProvider_fst,
+      Data.KubernetesVersions.readWith, run_addDataSource_fst, Vpc.create, Vpc.createWith,
+      KubernetesCluster.createWith, SpacesBucket.create, SpacesBucket.createWith,
+      run_addResource_fst]
+    intro r member type
+    rcases createDatabases_adds_databases _ _ _ _ r member with member | database
+    · simp only [run_addResource_resources, run_requireProvider, run_addDataSource_resources,
+        run_addProvider_resources, List.mem_append, List.mem_singleton, List.not_mem_nil,
+        false_or, or_assoc] at member
+      rcases member with rfl | rfl | rfl <;> first | decide | simp [resourceSpecOf] at type
+    · rw [database] at type
+      exact absurd type (by decide)
+
+/-! ### Adding a database never touches what is already there
+
+Growing the database list keeps every existing resource exactly as it was, in the same place:
+nothing is changed, so nothing is replaced, and nothing is removed. -/
+
+theorem createDatabases_append (env : Environment) (network : Vpc.Vpc)
+    (xs ys : List Identifier) (graph : Graph) :
+    ((createDatabases env network (xs ++ ys)).run graph).2
+      = ((createDatabases env network ys).run ((createDatabases env network xs).run graph).2).2 := by
+  induction xs generalizing graph with
+  | nil => rfl
+  | cons db rest ih => simp only [List.cons_append, createDatabases, Infra.run_bind, Infra.run_pure, ih]
+
+theorem createDatabases_extends (env : Environment) (network : Vpc.Vpc)
+    (databases : List Identifier) (graph : Graph) :
+    graph.resources <+: ((createDatabases env network databases).run graph).2.resources := by
+  induction databases generalizing graph with
+  | nil => exact List.prefix_refl _
+  | cons db rest ih =>
+    simp only [createDatabases, Infra.run_bind, Infra.run_pure, DatabaseCluster.create,
+      DatabaseCluster.createWith]
+    refine List.IsPrefix.trans ?_ (ih _)
+    simp only [run_addResource_resources, run_requireProvider]
+    exact List.prefix_append _ _
+
+theorem adding_databases_keeps_resources (env : Environment) (databases more : List Identifier) :
+    (buildGraph (infrastructureFor env databases)).resources
+      <+: (buildGraph (infrastructureFor env (databases ++ more))).resources := by
+  simp only [buildGraph, infrastructureFor, Infra.run_bind, run_output,
+    run_outputDatabaseHost, createDatabases_append]
+  exact createDatabases_extends _ _ _ _
+
+/-! ### Dev and prod stay in step
+
+For every database list, dev and prod create the same resources at the same addresses, in the
+same order, and wire every one of them to the same networks: the environment changes sizes,
+counts, and the region, never what exists or what talks to what. -/
+
+/-- What a resource is and which networks it joins. -/
+def wiring (resource : ResourceSpec) : Address × Option ExprNode × Option ExprNode :=
+  (resource.address, resource.argument? KubernetesCluster.names.vpcUuid,
+    resource.argument? DatabaseCluster.names.privateNetworkUuid)
+
+theorem createDatabases_wiring (env env' : Environment) (network : Vpc.Vpc)
+    (databases : List Identifier) (left right : Graph)
+    (same : left.resources.map wiring = right.resources.map wiring) :
+    ((createDatabases env network databases).run left).2.resources.map wiring
+      = ((createDatabases env' network databases).run right).2.resources.map wiring := by
+  induction databases generalizing left right with
+  | nil => simpa [createDatabases] using same
+  | cons db rest ih =>
+    simp only [createDatabases, Infra.run_bind, Infra.run_pure, DatabaseCluster.create,
+      DatabaseCluster.createWith]
+    apply ih
+    simp only [run_addResource_resources, run_requireProvider, List.map_append, same]
+    simp [wiring, resourceSpecOf, ResourceSpec.address, ResourceSpec.argument?,
+      DatabaseCluster.Args.toInputObject, List.filterMap, List.lookup]
+
+theorem environments_share_wiring (databases : List Identifier) :
+    (buildGraph (infrastructureFor .dev databases)).resources.map wiring
+      = (buildGraph (infrastructureFor .prod databases)).resources.map wiring := by
+  simp only [buildGraph, infrastructureFor, Infra.run_bind, run_output, run_outputDatabaseHost]
+  apply createDatabases_wiring
+  rfl
+
+theorem environments_share_resources (databases : List Identifier) :
+    (buildGraph (infrastructureFor .dev databases)).resources.map (·.address)
+      = (buildGraph (infrastructureFor .prod databases)).resources.map (·.address) := by
+  have := congrArg (List.map Prod.fst) (environments_share_wiring databases)
+  simpa [List.map_map, wiring, Function.comp_def] using this
+
 /-! ### A policy over tagged resources
 
 Here the rule applies only to databases that carry a tag: every database tagged `pci` must sit
