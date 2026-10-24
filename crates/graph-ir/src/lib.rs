@@ -1200,7 +1200,7 @@ mod tests {
             })
             .unwrap();
         resolved.validate().unwrap();
-        assert!(resolved.stack_references.is_empty());
+        assert_eq!(resolved.stack_references, Vec::<StackReference>::new());
         let remote = &resolved.data_sources[0];
         assert_eq!(
             remote.address().to_string(),
