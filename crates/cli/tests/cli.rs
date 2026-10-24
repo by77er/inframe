@@ -519,6 +519,24 @@ type = "local"
         .assert()
         .failure()
         .stderr(predicate::str::contains("--output requires --frontend"));
+
+    // `--frontend` takes the names `inframe.toml` and its own error messages use.
+    Command::cargo_bin("inframe")
+        .unwrap()
+        .arg("--project")
+        .arg(&project)
+        .args([
+            "provider",
+            "generate",
+            "--frontend",
+            "purescript",
+            "--schema-json",
+        ])
+        .arg(&fixture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(PureScript) in"))
+        .stdout(predicate::str::contains("(Lean) in").not());
 }
 
 #[test]

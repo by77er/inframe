@@ -51,6 +51,9 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Frontend {
+    /// Spelled as in `inframe.toml` (`frontend = "purescript"`); clap would otherwise expect
+    /// `pure-script`.
+    #[value(name = "purescript", alias = "pure-script")]
     PureScript,
     Lean,
 }
