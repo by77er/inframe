@@ -90,17 +90,24 @@ enum ProjectCommand {
 
 #[derive(Debug, Args)]
 struct BuildArgs {
+    #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+    stack: Option<String>,
+    /// Build every declared stack, so a change to one stack's exports shows every stack that
+    /// reads them, and print the order to apply them in.
     #[arg(long)]
-    stack: String,
+    all: bool,
     /// Override the configured generated-graph path.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "all")]
     output: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
 struct TestArgs {
+    #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+    stack: Option<String>,
+    /// Run the tests of every declared stack that has a test entry point.
     #[arg(long)]
-    stack: String,
+    all: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -278,23 +285,47 @@ fn project_command(command: &ProjectCommand, project_path: &Path) -> Result<()> 
 
 fn build_project(arguments: &BuildArgs, project_path: &Path) -> Result<()> {
     let project = Project::load(project_path)?;
-    let (_, path) = project.build(&arguments.stack, arguments.output.as_deref())?;
-    println!("built stack `{}` to {}", arguments.stack, path.display());
+    let Some(stack) = &arguments.stack else {
+        let mut graphs = BTreeMap::new();
+        for stack in project.stack_names() {
+            let (graph, path) = project.build(stack, None)?;
+            println!("built stack `{stack}` to {}", path.display());
+            graphs.insert(stack.to_owned(), graph);
+        }
+        println!("apply order: {}", project::stack_order(&graphs)?.join(", "));
+        return Ok(());
+    };
+    let (_, path) = project.build(stack, arguments.output.as_deref())?;
+    println!("built stack `{stack}` to {}", path.display());
     Ok(())
 }
 
 fn test_project(arguments: &TestArgs, project_path: &Path) -> Result<()> {
     let project = Project::load(project_path)?;
-    let status = project.test(&arguments.stack)?;
+    let Some(stack) = &arguments.stack else {
+        let mut failed = Vec::new();
+        for stack in project.stack_names() {
+            if project.test_entry_point(stack)?.is_none() {
+                continue;
+            }
+            if !project.test(stack)?.success() {
+                failed.push(stack);
+            }
+        }
+        if failed.is_empty() {
+            return Ok(());
+        }
+        bail!("tests failed for stacks: {}", failed.join(", "));
+    };
+    let status = project.test(stack)?;
     if status.success() {
         return Ok(());
     }
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!(
-            "{} tests for stack `{}` terminated by signal",
-            project.stack_frontend(&arguments.stack)?.name(),
-            arguments.stack
+            "{} tests for stack `{stack}` terminated by signal",
+            project.stack_frontend(stack)?.name(),
         ),
     }
 }
@@ -761,6 +792,7 @@ fn run_graph(
             .workspace
             .clone()
             .unwrap_or_else(|| project.workspace_directory());
+        let graph = project.resolve_stack_references(graph, &base)?;
         let workspace = Workspace::new(base, &arguments.stack)?;
         let (backend_kind, backend_config) = project.backend_json(&arguments.stack)?;
         workspace.write_backend(backend_kind, &backend_config)?;

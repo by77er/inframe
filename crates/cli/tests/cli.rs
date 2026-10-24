@@ -1134,3 +1134,114 @@ fn quiet_lifecycle_runs_and_toolchain_pins_are_checked() {
         .stderr(predicate::str::contains("warning:"))
         .stderr(predicate::str::contains("pins `leanprover/lean4:v4.0.0`"));
 }
+
+/// A stack that reads another names it, not its backend: the build refuses an undeclared
+/// stack, `build --all` prints the apply order and refuses cycles, and a lifecycle command
+/// resolves the reference from the producer's configured backend.
+#[cfg(unix)]
+#[test]
+fn resolves_stack_references_from_the_project() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const CONSUMER: &str = r#"{
+  "format_version": "1.0",
+  "outputs": {
+    "vpc": {
+      "value": {
+        "kind": "data_source_attr",
+        "address": "data.terraform_remote_state.platform",
+        "path": ["outputs", "vpc_id"]
+      }
+    }
+  },
+  "stack_references": [{ "stack": "platform" }]
+}"#;
+    const CYCLIC_PRODUCER: &str = r#"{
+  "format_version": "1.0",
+  "stack_references": [{ "stack": "apps" }]
+}"#;
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let bin = directory.path().join("bin");
+    let lake = bin.join("lake");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(
+        &project,
+        "[lean]\ndirectory = \"lean\"\n\n[stacks.apps]\nmain = \"apps\"\n\n[stacks.platform]\nmain = \"platform\"\n\n[stacks.platform.backend]\ntype = \"local\"\n",
+    )
+    .unwrap();
+    let write_lake = |producer: &str| {
+        fs::write(
+            &lake,
+            format!(
+                "#!/bin/sh\ncase \"$3\" in\n  apps) cat <<'GRAPH'\n{CONSUMER}\nGRAPH\n  ;;\n  platform) cat <<'GRAPH'\n{producer}\nGRAPH\n  ;;\n  *) exit 9 ;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&lake).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&lake, permissions).unwrap();
+    };
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let inframe = |arguments: &[&str]| {
+        let mut command = Command::cargo_bin("inframe").unwrap();
+        command
+            .arg("--project")
+            .arg(&project)
+            .args(arguments)
+            .env("PATH", &path);
+        command
+    };
+
+    write_lake(GRAPH);
+    inframe(&["build", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("apply order: platform, apps"));
+
+    inframe(&[
+        "--tofu-binary",
+        "true",
+        "plan",
+        "--stack",
+        "apps",
+        "--skip-tests",
+    ])
+    .assert()
+    .success();
+    let rendered: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".inframe/stacks/apps/main.tofu.json")).unwrap(),
+    )
+    .unwrap();
+    let remote = &rendered["data"]["terraform_remote_state"]["platform"];
+    assert_eq!(remote["backend"], "local");
+    let state = PathBuf::from(remote["config"]["path"].as_str().unwrap());
+    assert!(state.is_absolute());
+    assert!(state.ends_with(".inframe/stacks/platform/terraform.tfstate"));
+
+    write_lake(CYCLIC_PRODUCER);
+    inframe(&["build", "--all"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "stack references form a cycle: apps -> platform -> apps",
+        ));
+
+    // Without the producer declared, the consumer does not build.
+    fs::write(
+        &project,
+        "[lean]\ndirectory = \"lean\"\n\n[stacks.apps]\nmain = \"apps\"\n",
+    )
+    .unwrap();
+    inframe(&["build", "--stack", "apps"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "stack `apps` reads stack `platform`, which is not declared in the project config",
+        ));
+}

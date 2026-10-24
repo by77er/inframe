@@ -16,12 +16,21 @@ pub enum LowerError {
     InvalidGraph(#[from] inframe_graph_ir::ValidationError),
     #[error("unsafe raw expression is empty")]
     EmptyRawExpression,
+    #[error(
+        "the graph reads stack `{0}`, whose backend only the project knows; run it through `inframe plan --stack …` rather than lowering the graph alone"
+    )]
+    UnresolvedStackReference(String),
 }
 
 /// Lower a validated Graph IR document to `OpenTofu`'s JSON configuration syntax.
 #[allow(clippy::too_many_lines)]
 pub fn lower(graph: &GraphDocument) -> Result<Value, LowerError> {
     graph.validate()?;
+    if let Some(reference) = graph.stack_references.first() {
+        return Err(LowerError::UnresolvedStackReference(
+            reference.stack.clone(),
+        ));
+    }
     let mut document = Map::new();
 
     let mut terraform = Map::new();
@@ -610,6 +619,7 @@ mod tests {
 
     use inframe_graph_ir::{
         Address, DataSourceSpec, ImportSpec, OutputSpec, ProviderRequirement, ResourceSpec,
+        StackReference,
     };
     use tempfile::tempdir;
 
@@ -830,5 +840,17 @@ mod tests {
             value["terraform"]["backend"]["http"]["address"],
             "https://state.example.test/dev"
         );
+    }
+
+    #[test]
+    fn refuses_unresolved_stack_references() {
+        let mut graph = GraphDocument::default();
+        graph.stack_references.push(StackReference {
+            stack: "platform".into(),
+        });
+        assert!(matches!(
+            lower(&graph),
+            Err(LowerError::UnresolvedStackReference(stack)) if stack == "platform"
+        ));
     }
 }

@@ -369,6 +369,15 @@ private def validateDataSourceNames (seen : List Address) :
     if seen.contains dataSource.address then throw (.duplicateAddress dataSource.address)
     validateDataSourceNames (seen ++ [dataSource.address]) rest
 
+private def validateStackReferenceNames (seen : List Address) :
+    List String → Except ValidationError (List Address)
+  | [] => .ok seen
+  | stack :: rest => do
+    validateIdentifier "stack_references[].stack" stack
+    let address := Address.dataSource "terraform_remote_state" stack
+    if seen.contains address then throw (.duplicateAddress address)
+    validateStackReferenceNames (seen ++ [address]) rest
+
 private def validateResources (addresses : List Address) (configured : List String) :
     List ResourceSpec → Except ValidationError Unit
   | [] => .ok ()
@@ -436,6 +445,7 @@ def validate (graph : Graph) : Except ValidationError Unit := do
   let configured := graph.providerConfigs.map ProviderConfigSpec.address
   let addresses ← validateResourceNames [] graph.resources
   let addresses ← validateDataSourceNames addresses graph.dataSources
+  let addresses ← validateStackReferenceNames addresses graph.stackReferences
   validateResources addresses configured graph.resources
   validateDataSources addresses configured graph.dataSources
   validateOutputs addresses graph.outputs

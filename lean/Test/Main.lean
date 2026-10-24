@@ -271,7 +271,7 @@ structure PlatformExports where
   deriving StackExports
 
 def platformStack : Stack PlatformExports :=
-  .define "platform" (.gcs "acme-state" (prefix_ := "platform")) do
+  .define "platform" do
     let network : Resource VpcResource ← addResource (resourceOptions : ResourceOptions Unit)
       (Identifier.mk "digitalocean_vpc") (Identifier.mk "network")
       (InputObject.ofList [("name", inputNode (lit "network"))])
@@ -285,6 +285,7 @@ def appsFor (platform : PlatformExports) : Infra Unit := do
     (Identifier.mk "digitalocean_tag") (Identifier.mk "app")
     (InputObject.ofList [("vpc", inputNode platform.vpcID)])
   output "endpoint" (platform.clusterEndpoint.orDefault "https://fallback.example")
+  sensitiveOutput "token" (platform.adminToken.orDefault "unset").input
 
 def appsStack : Infra Unit := do
   appsFor (← platformStack.read)
@@ -305,6 +306,8 @@ theorem producer_publishes_its_exports :
 
 theorem consumer_reads_exports_through_remote_state :
     (buildGraph appsStack).Valid ∧
+    (buildGraph appsStack).stackReferences = ["platform"] ∧
+    (buildGraph appsStack).dataSources.isEmpty = true ∧
     (((buildGraph appsStack).resource? (.res "digitalocean_tag" "app")).map
         (·.argumentRefersTo "vpc" (.data "terraform_remote_state" "platform") ["outputs", "vpc_id"])
       = some true) ∧
@@ -312,7 +315,25 @@ theorem consumer_reads_exports_through_remote_state :
       == some (.function "try"
           [ .dataSourceAttribute (.data "terraform_remote_state" "platform") ["outputs", "cluster_endpoint"]
           , .literal (.string "https://fallback.example") ])) = true := by
-  refine ⟨by decide, by decide, by decide⟩
+  refine ⟨by decide, by decide, by decide, by decide, by decide⟩
+
+/-- Exports with parameters: the derived instance holds for every value of them. -/
+structure Endpoints (α : Type) where
+  primary : Input α
+  replicas : Input (List α)
+  deriving StackExports
+
+theorem parameterized_exports_publish_every_field :
+    ((StackExports.outputs ({ primary := "a", replicas := ["b"] } : Endpoints String)).map
+      (·.name.raw)) = ["primary", "replicas"] := by
+  decide
+
+/-- A graph cannot read one stack twice, or under a name that is not an identifier. -/
+theorem stack_references_are_validated :
+    ({ stackReferences := ["platform", "platform"] } : Graph).validate
+      = .error (.duplicateAddress (.data "terraform_remote_state" "platform")) ∧
+    ¬({ stackReferences := ["9lives"] } : Graph).Valid := by
+  refine ⟨by decide, by decide⟩
 
 /-- For every exports value, however it is supplied, the consumer's tag sits on the platform's
 VPC. -/
@@ -390,6 +411,9 @@ def main : IO Unit := do
   expect (contains (renderGraph adopting) "\"imports\":[{\"id\":\"legacy-tag-id\",\"to\":\"digitalocean_tag.legacy\"}]")
     "imports are encoded"
   expect (!contains rendered "imports") "a graph that adopts nothing has no imports key"
+  expect (contains (renderGraph appsStack) "\"stack_references\":[{\"stack\":\"platform\"}]")
+    "stack references are encoded"
+  expect (!contains rendered "stack_references") "a graph that reads no stack has no stack_references key"
   for needle in ["digitalocean_tag.app", "resource_attr", "required_providers",
       "create_before_destroy", "replace_triggered_by", "secret_env", "conditional",
       "\"function\"", "\"sensitive\":true", "known-now", "\"count\":{\"kind\":\"literal\",\"value\":2}"] do

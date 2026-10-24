@@ -123,9 +123,13 @@ def encodeGraph (graph : Graph) : Json :=
     , ("data_sources", .arr (graph.dataSources.map encodeDataSource).toArray)
     , ("outputs", Json.mkObj (graph.outputs.map fun (name, output) => (name, encodeOutput output)))
     , ("moves", .arr (graph.moves.map encodeMove).toArray) ]
-    ++ match graph.imports with
+    ++ (match graph.imports with
       | [] => []
-      | imports => [("imports", Json.arr (imports.map encodeImport).toArray)]
+      | imports => [("imports", Json.arr (imports.map encodeImport).toArray)])
+    ++ (match graph.stackReferences with
+      | [] => []
+      | stacks => [("stack_references",
+          Json.arr (stacks.map fun stack => Json.mkObj [("stack", .str stack)]).toArray)])
 
 instance : Lean.ToJson Graph := ⟨encodeGraph⟩
 

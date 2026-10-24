@@ -31,6 +31,12 @@ pub struct GraphDocument {
     /// `import` blocks so a whole account can be taken over in one plan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<ImportSpec>,
+    /// Other stacks of the same project whose root outputs this graph reads, each as the
+    /// node `data.terraform_remote_state.<stack>`. The graph names the stack, not its
+    /// backend: the backend is run configuration, so the CLI resolves each reference into a
+    /// `terraform_remote_state` data source from the project before lowering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack_references: Vec<StackReference>,
 }
 
 impl Default for GraphDocument {
@@ -44,6 +50,7 @@ impl Default for GraphDocument {
             outputs: BTreeMap::new(),
             moves: Vec::new(),
             imports: Vec::new(),
+            stack_references: Vec::new(),
         }
     }
 }
@@ -156,6 +163,27 @@ pub struct MoveSpec {
 pub struct ImportSpec {
     pub to: Address,
     pub id: String,
+}
+
+/// The root outputs of another stack of the project, read through the node
+/// `data.terraform_remote_state.<stack>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StackReference {
+    pub stack: String,
+}
+
+/// The `OpenTofu` data source type a stack reference resolves to.
+pub const REMOTE_STATE_DATA_SOURCE: &str = "terraform_remote_state";
+
+impl StackReference {
+    #[must_use]
+    pub fn address(&self) -> Address {
+        Address::DataSource {
+            data_source_type: REMOTE_STATE_DATA_SOURCE.to_owned(),
+            name: self.stack.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -507,6 +535,13 @@ impl GraphDocument {
                 return Err(ValidationError::DuplicateAddress(address));
             }
         }
+        for reference in &self.stack_references {
+            validate_identifier("stack_references[].stack", &reference.stack)?;
+            let address = reference.address();
+            if !addresses.insert(address.clone()) {
+                return Err(ValidationError::DuplicateAddress(address));
+            }
+        }
 
         for resource in &self.resources {
             validate_owner(
@@ -645,6 +680,28 @@ impl GraphDocument {
         let mut rendered = serde_json::to_string_pretty(&value)?;
         rendered.push('\n');
         Ok(rendered)
+    }
+
+    /// Replace every stack reference with the `terraform_remote_state` data source that
+    /// reads it, given each referenced stack's backend type and configuration.
+    pub fn resolve_stack_references<E>(
+        mut self,
+        mut backend: impl FnMut(&str) -> Result<(String, serde_json::Map<String, Value>), E>,
+    ) -> Result<Self, E> {
+        for reference in std::mem::take(&mut self.stack_references) {
+            let (kind, config) = backend(&reference.stack)?;
+            self.data_sources.push(DataSourceSpec {
+                data_source_type: REMOTE_STATE_DATA_SOURCE.to_owned(),
+                name: reference.stack,
+                arguments: BTreeMap::from([
+                    ("backend".to_owned(), Expr::literal(kind)),
+                    ("config".to_owned(), Expr::literal(Value::Object(config))),
+                ]),
+                depends_on: Vec::new(),
+                provider: None,
+            });
+        }
+        Ok(self)
     }
 
     #[must_use]
@@ -1100,6 +1157,73 @@ mod tests {
         assert!(matches!(
             graph.validate(),
             Err(ValidationError::InvalidIdentifier { value, .. }) if value == "bad name"
+        ));
+    }
+
+    #[test]
+    fn stack_references_are_nodes_and_resolve_to_remote_state() {
+        let mut graph = GraphDocument::default();
+        graph.stack_references.push(StackReference {
+            stack: "platform".into(),
+        });
+        let outputs = Expr::DataSourceAttr {
+            address: Address::parse("data.terraform_remote_state.platform").unwrap(),
+            path: vec!["outputs".into(), "vpc_id".into()],
+        };
+        graph.outputs.insert(
+            "vpc".into(),
+            OutputSpec {
+                value: outputs,
+                sensitive: false,
+                description: None,
+            },
+        );
+        graph.validate().unwrap();
+        let text = graph.to_canonical_json().unwrap();
+        assert!(text.contains("\"stack_references\""));
+        assert_eq!(serde_json::from_str::<GraphDocument>(&text).unwrap(), graph);
+        assert!(
+            !tag_graph()
+                .to_canonical_json()
+                .unwrap()
+                .contains("stack_references")
+        );
+
+        let resolved = graph
+            .clone()
+            .resolve_stack_references(|stack| {
+                assert_eq!(stack, "platform");
+                Ok::<_, ()>((
+                    "gcs".to_owned(),
+                    serde_json::Map::from_iter([("bucket".to_owned(), Value::from("state"))]),
+                ))
+            })
+            .unwrap();
+        resolved.validate().unwrap();
+        assert!(resolved.stack_references.is_empty());
+        let remote = &resolved.data_sources[0];
+        assert_eq!(
+            remote.address().to_string(),
+            "data.terraform_remote_state.platform"
+        );
+        assert_eq!(remote.arguments["backend"], Expr::literal("gcs"));
+
+        // A stack reference and a data source cannot share the node.
+        let mut duplicate = resolved;
+        duplicate.stack_references.push(StackReference {
+            stack: "platform".into(),
+        });
+        assert!(matches!(
+            duplicate.validate(),
+            Err(ValidationError::DuplicateAddress(_))
+        ));
+        let mut invalid = GraphDocument::default();
+        invalid.stack_references.push(StackReference {
+            stack: "9lives".into(),
+        });
+        assert!(matches!(
+            invalid.validate(),
+            Err(ValidationError::InvalidIdentifier { .. })
         ));
     }
 
