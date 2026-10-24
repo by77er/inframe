@@ -80,6 +80,23 @@ def resourcesOfType (name : String) (resourceType : String) (rule : ResourceSpec
   resources name fun resource =>
     if resource.resourceType == resourceType then rule resource else none
 
+/-- A rule evaluated against every managed resource of one type whose list argument `argument`
+contains `value`, such as every database carrying a tag. A resource whose list the graph cannot
+read (an element is a reference) might contain `value`, so it passes only if it keeps the rule
+anyway and is reported `unknown` otherwise. -/
+def resourcesOfTypeContaining [ToValue α] (name resourceType argument : String) (value : α)
+    (rule : ResourceSpec → Option String) : Policy :=
+  ⟨name, fun graph =>
+    graph.resources.filterMap fun resource =>
+      if resource.resourceType == resourceType then
+        match resource.argumentContains? argument value, rule resource with
+        | some false, _ | _, none => none
+        | some true, some message => some ⟨name, resource.address.toString, message, .violated⟩
+        | none, some message =>
+          some ⟨name, resource.address.toString,
+            s!"{message}, if {argument} contains {toValue value}", .unknown⟩
+      else none⟩
+
 /-- A rule evaluated against every data source. -/
 def dataSources (name : String) (rule : DataSourceSpec → Option String) : Policy :=
   ⟨name, fun graph =>
@@ -135,6 +152,30 @@ theorem resourcesOfType_holds_iff (name resourceType : String) (rule : ResourceS
   · intro h resource member
     by_cases equal : resource.resourceType = resourceType
     · simp [equal, h resource member equal]
+    · simp [equal]
+
+theorem resourcesOfTypeContaining_holds_iff [ToValue α] (name resourceType argument : String)
+    (value : α) (rule : ResourceSpec → Option String) (graph : Graph) :
+    (resourcesOfTypeContaining name resourceType argument value rule).Holds graph
+      ↔ ∀ resource ∈ graph.resources, resource.resourceType = resourceType →
+          resource.argumentContains? argument value ≠ some false → rule resource = none := by
+  simp only [Holds, resourcesOfTypeContaining, List.filterMap_eq_nil_iff]
+  constructor
+  · intro h resource member equal contains
+    have := h resource member
+    simp only [equal, beq_self_eq_true, if_true] at this
+    revert this contains
+    cases resource.argumentContains? argument value with
+    | none => cases rule resource <;> simp
+    | some b => cases b <;> cases rule resource <;> simp
+  · intro h resource member
+    by_cases equal : resource.resourceType = resourceType
+    · have := h resource member equal
+      simp only [equal, beq_self_eq_true, if_true]
+      revert this
+      cases resource.argumentContains? argument value with
+      | none => cases rule resource <;> simp
+      | some b => cases b <;> cases rule resource <;> simp
     · simp [equal]
 
 /-- The conjunction of several policies. -/

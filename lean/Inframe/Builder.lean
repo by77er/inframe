@@ -204,6 +204,20 @@ def argumentIs [ToValue α] (resource : ResourceSpec) (argument : String) (value
   | some (.literal known) => known == toValue value
   | _ => false
 
+/-- Whether the list `argument` contains the known literal `value`, such as a tag in `tags`:
+`some` when the graph decides it, `none` when an element is only known once OpenTofu plans. An
+unset or null argument contains nothing. -/
+def argumentContains? [ToValue α] (resource : ResourceSpec) (argument : String) (value : α) :
+    Option Bool :=
+  match resource.argument? argument with
+  | none | some (.literal .null) => some false
+  | some (.literal (.array items)) => some (items.contains (toValue value))
+  | some (.array items) =>
+    if items.any (·.literal? == some (toValue value)) then some true
+    else if items.all (·.literal?.isSome) then some false
+    else none
+  | some _ => none
+
 end ResourceSpec
 
 namespace DataSourceSpec

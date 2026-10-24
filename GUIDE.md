@@ -415,6 +415,12 @@ policy `platform` cannot be decided from the graph:
   [single-region] digitalocean_spaces_bucket.assets: unknown until plan: region is data.digitalocean_region.here.slug
 ```
 
+A rule can also apply only to the resources whose list argument contains a value, such as every
+database tagged `pci`. `Policy.resourcesOfTypeContaining` decides membership from the graph
+when it can. When an element is a reference, the resource might carry the tag, so it passes
+only if it keeps the rule anyway and is reported unknown otherwise. `PlatformTest.lean` proves
+such a rule for every list of tagged databases.
+
 Programs extend the graph only through the builder primitives: `Infra`'s
 constructor is private, so a stack cannot write a step that reads or replaces
 the graph, and the `run` lemmas the proofs use cover everything a stack can do.

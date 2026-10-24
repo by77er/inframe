@@ -170,3 +170,121 @@ def main : IO Unit := do
     IO.println s!"environment {repr env}:"
     policies.enforce (buildGraph (infrastructureFor env [Identifier.mk "postgres"]))
   IO.println "platform policies hold (also proved at compile time)"
+
+/-! ### A policy over tagged resources
+
+Here the rule applies only to databases that carry a tag: every database tagged `pci` must sit
+on the platform VPC, and the others may go anywhere. The stack below takes each database's tags
+as input and puts only the `pci` ones on the VPC, so the policy holds while
+`databaseUsesManagedVpc` does not. -/
+
+/-- The rule for one database tagged `tag`: it must sit on the VPC at `vpc`. -/
+def taggedDatabaseRule (vpc : Address) (database : ResourceSpec) : Option String :=
+  if database.argumentRefersTo DatabaseCluster.names.privateNetworkUuid vpc [Vpc.names.id]
+  then none
+  else some s!"private_network_uuid must reference {vpc}.id"
+
+/-- Every DigitalOcean database tagged `tag` must sit on the VPC at `vpc`. -/
+def taggedDatabasesUseVpc (tag : String) (vpc : Address) : Policy :=
+  Policy.resourcesOfTypeContaining s!"{tag}-databases-use-vpc" "digitalocean_database_cluster"
+    DatabaseCluster.names.tags tag (taggedDatabaseRule vpc)
+
+def pciDatabasesUseVpc : Policy :=
+  taggedDatabasesUseVpc "pci" (.res "digitalocean_vpc" "platform")
+
+/-- A database the stack is asked for, with its tags. -/
+structure DatabaseRequest where
+  name : Identifier
+  tags : List String
+
+/-- One cluster per request; only the ones tagged `pci` go on the VPC. -/
+def createRequestedDatabases (env : Environment) (network : Vpc.Vpc) :
+    List DatabaseRequest → Infra Unit
+  | [] => pure ()
+  | request :: rest => do
+    let _ ← DatabaseCluster.create request.name
+      { engine := "pg"
+        name := "platform-" ++ request.name.raw
+        nodeCount := 1
+        region := env.region
+        size := "db-s-1vcpu-1gb"
+        privateNetworkUuid := if "pci" ∈ request.tags then some network.id else none
+        tags := some (lit request.tags)
+        version := "15" }
+    createRequestedDatabases env network rest
+
+def requestedDatabases (env : Environment) (requests : List DatabaseRequest) : Infra Unit := do
+  let network ← Vpc.create "platform" { name := "platform", region := env.region }
+  createRequestedDatabases env network requests
+
+theorem string_beq (a b : String) : (Value.string a == Value.string b) = (a == b) := rfl
+
+theorem createRequestedDatabases_ok (env : Environment) (network : Vpc.Vpc)
+    (requests : List DatabaseRequest) (graph : Graph)
+    (vpc : inputNode network.id = ExprNode.resourceAttribute (.res "digitalocean_vpc" "platform") ["id"])
+    (before : ∀ r ∈ graph.resources, r.resourceType = "digitalocean_database_cluster" →
+      r.argumentContains? "tags" "pci" ≠ some false →
+      taggedDatabaseRule (.res "digitalocean_vpc" "platform") r = none) :
+    ∀ r ∈ ((createRequestedDatabases env network requests).run graph).2.resources,
+      r.resourceType = "digitalocean_database_cluster" →
+      r.argumentContains? "tags" "pci" ≠ some false →
+      taggedDatabaseRule (.res "digitalocean_vpc" "platform") r = none := by
+  induction requests generalizing graph with
+  | nil => simpa [createRequestedDatabases] using before
+  | cons request rest ih =>
+    simp only [createRequestedDatabases, Infra.run_bind, Infra.run_pure, DatabaseCluster.create,
+      DatabaseCluster.createWith]
+    apply ih
+    intro r member
+    simp only [run_addResource_resources, run_requireProvider, List.mem_append,
+      List.mem_singleton] at member
+    rcases member with member | rfl
+    · exact before r member
+    · intro _ tagged
+      by_cases pci : "pci" ∈ request.tags
+      · simp [taggedDatabaseRule, ResourceSpec.argumentRefersTo, ResourceSpec.argument?,
+          resourceSpecOf, DatabaseCluster.Args.toInputObject, List.filterMap, List.lookup, vpc,
+          ExprNode.refersTo, pci]
+      · exfalso
+        apply tagged
+        simp [ResourceSpec.argumentContains?, ResourceSpec.argument?, resourceSpecOf,
+          DatabaseCluster.Args.toInputObject, List.filterMap, List.lookup, pci, lit, inputNode,
+          toValue, string_beq]
+        intro tag member equal
+        exact pci (equal ▸ member)
+
+/-- Every database tagged `pci` is on the VPC, for every environment and every list of
+requests with any tags. -/
+theorem pci_databases_use_vpc (env : Environment) (requests : List DatabaseRequest) :
+    pciDatabasesUseVpc.Holds (buildGraph (requestedDatabases env requests)) := by
+  rw [pciDatabasesUseVpc, taggedDatabasesUseVpc, Policy.resourcesOfTypeContaining_holds_iff]
+  simp only [buildGraph, requestedDatabases, Infra.run_bind, Infra.run_pure, Vpc.create, Vpc.createWith,
+    run_addResource_fst]
+  apply createRequestedDatabases_ok
+  · rfl
+  · intro r member
+    simp only [run_addResource_resources, run_requireProvider, List.mem_append,
+      List.mem_singleton, List.not_mem_nil, false_or] at member
+    subst member
+    simp [resourceSpecOf]
+
+/-- The tag is what the policy turns on: an untagged database off the VPC breaks the
+unconditional rule but not the tagged one. -/
+theorem untagged_database_may_leave_vpc :
+    let graph := buildGraph (requestedDatabases .prod [⟨Identifier.mk "analytics", []⟩])
+    pciDatabasesUseVpc.Holds graph ∧ ¬ databaseUsesManagedVpc.Holds graph := by
+  decide
+
+/-- A tag the graph cannot read does not pass silently: a database off the VPC whose tags come
+from another resource's attribute might be tagged `pci`, so it is an unknown finding. -/
+def tagsFromTheGraph : Infra Unit := do
+  let network ← Vpc.create "platform" { name := "platform", region := "nyc3" }
+  let _ ← DatabaseCluster.create "ledger"
+    { engine := "pg", name := "ledger", nodeCount := 1, region := "nyc3"
+      size := "db-s-1vcpu-1gb", tags := some (array [network.name]) }
+  pure ()
+
+theorem tags_from_the_graph_are_unknown :
+    (pciDatabasesUseVpc.violations (buildGraph tagsFromTheGraph)).map (fun v => (v.address, v.outcome))
+      = [("digitalocean_database_cluster.ledger", .unknown)] := by
+  decide
