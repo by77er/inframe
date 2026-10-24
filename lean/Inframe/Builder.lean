@@ -362,11 +362,13 @@ def adopt [Managed h] (destination : h) (id : String) : Infra Unit :=
 
 /-- Read the outputs of the project's stack `stack` through the node
 `data.terraform_remote_state.<stack>`, whose backend the CLI fills in from `inframe.toml`.
-`Stack.read` is the typed way to use it. -/
+`Stack.read` is the typed way to use it. Reading a stack again reuses its node, so helpers can
+each read the stacks they need. -/
 def addStackReference (stack : Identifier) : Infra (DataSource r) :=
   ⟨fun graph =>
     (dataSourceHandle (Identifier.mk "terraform_remote_state") stack,
-      { graph with stackReferences := graph.stackReferences ++ [stack.raw] })⟩
+      if graph.stackReferences.contains stack.raw then graph
+      else { graph with stackReferences := graph.stackReferences ++ [stack.raw] })⟩
 
 /-- Run `program` and also return the managed resources it added, in creation order. This is
 the primitive for scope combinators that post-process everything created inside a block, for
@@ -450,7 +452,10 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
       = dataSourceHandle (Identifier.mk "terraform_remote_state") stack := rfl
 
 @[simp] theorem run_addStackReference_resources (stack : Identifier) (graph : Graph) :
-    ((addStackReference (r := r) stack).run graph).2.resources = graph.resources := rfl
+    ((addStackReference (r := r) stack).run graph).2.resources = graph.resources := by
+  unfold addStackReference
+  dsimp only
+  split <;> rfl
 
 @[simp] theorem run_capture (program : Infra α) (graph : Graph) :
     (Infra.capture program).run graph
