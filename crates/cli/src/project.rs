@@ -149,8 +149,30 @@ pub struct StackConfig {
     pub frontend: Option<Frontend>,
     pub main: Option<String>,
     pub test: Option<String>,
+    /// The statement a Lean stack must prove (or pass) before `plan` and `apply`.
+    pub gate: Option<GateConfig>,
     #[serde(default)]
     pub backend: BackendConfig,
+}
+
+/// A Lean stack's deployment gate. Inframe writes a module that imports `module` and states
+/// `Inframe.Gated policy program` itself, so the statement is the project's and not the
+/// test module's; it rejects every declaration outside the Lean toolchain that rests on
+/// `sorry`, `native_decide`, or a declared axiom, or whose compiled code is swapped with
+/// `implemented_by`; and it requires the graph of `program` to be the graph the stack's
+/// `main` prints.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateConfig {
+    /// The module that defines, or imports, the names below.
+    pub module: String,
+    /// The `Infra` program that is deployed.
+    pub program: String,
+    /// The `Policy` its graph must satisfy.
+    pub policy: String,
+    /// A theorem of `Inframe.Gated policy program`. Without one the gate evaluates the
+    /// validator and the policy, which scales past kernel `decide` but is a check, not a proof.
+    pub proof: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,13 +276,22 @@ impl Project {
                 _ => {}
             }
             validate_backend_config(name, &stack.backend.config)?;
+            if let Some(gate) = &stack.gate {
+                validate_gate(name, gate)?;
+            }
         }
         let root = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        Ok(Self { root, config })
+        let project = Self { root, config };
+        for (name, stack) in &project.config.stacks {
+            if stack.gate.is_some() && project.stack_frontend(name)? != Frontend::Lean {
+                bail!("stack `{name}` configures a gate, which only Lean stacks have");
+            }
+        }
+        Ok(project)
     }
 
     pub fn stack(&self, name: &str) -> Result<&StackConfig> {
@@ -504,6 +535,14 @@ impl Project {
         stack: &str,
         output_override: Option<&Path>,
     ) -> Result<(GraphDocument, PathBuf)> {
+        let graph = self.render(stack)?;
+        let path = output_override.map_or_else(|| self.graph_path(stack), Path::to_path_buf);
+        write_graph(&path, &graph)?;
+        Ok((graph, path))
+    }
+
+    /// Run the stack's `main` and check the Graph IR it prints, without writing it.
+    pub fn render(&self, stack: &str) -> Result<GraphDocument> {
         let stack_config = self.stack(stack)?;
         let frontend = self.stack_frontend(stack)?;
         let (mut command, main) = match frontend {
@@ -558,9 +597,7 @@ impl Project {
         })?;
         graph.validate()?;
         self.check_stack_references(stack, &graph)?;
-        let path = output_override.map_or_else(|| self.graph_path(stack), Path::to_path_buf);
-        write_graph(&path, &graph)?;
-        Ok((graph, path))
+        Ok(graph)
     }
 
     /// The test entry point that checks `stack`'s policies, if one is configured: the
@@ -613,6 +650,75 @@ impl Project {
         }
     }
 
+    /// The stack's deployment gate, if it configures one.
+    pub fn gate(&self, stack: &str) -> Result<Option<&GateConfig>> {
+        Ok(self.stack(stack)?.gate.as_ref())
+    }
+
+    /// Run `stack`'s gate (see `GateConfig`) and require the graph it checked to be `emitted`,
+    /// the graph the stack's `main` printed.
+    pub fn run_gate(&self, stack: &str, emitted: &GraphDocument) -> Result<()> {
+        let gate = self
+            .gate(stack)?
+            .with_context(|| format!("stack `{stack}` has no `[stacks.{stack}.gate]`"))?;
+        let config = self.lean_config()?;
+        let directory = self.root.join(&config.directory);
+        let gate_directory = self.workspace_directory().join("gates").join(stack);
+        fs::create_dir_all(&gate_directory)
+            .with_context(|| format!("failed to create {}", gate_directory.display()))?;
+        let gate_directory = std::path::absolute(&gate_directory)
+            .with_context(|| format!("failed to resolve {}", gate_directory.display()))?;
+        let source_path = gate_directory.join("Gate.lean");
+        let graph_path = gate_directory.join("graph.json");
+        match fs::remove_file(&graph_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to remove {}", graph_path.display()));
+            }
+        }
+        write_text(&source_path, &gate_source(stack, gate, &graph_path)?)?;
+
+        let mut build = Command::new("lake");
+        build
+            .arg("-q")
+            .arg("build")
+            .arg("Inframe.Gate")
+            .arg(&gate.module)
+            .current_dir(&directory);
+        run_lake(
+            &mut build,
+            &directory,
+            &format!("building the gate of stack `{stack}`"),
+        )?;
+        let mut check = Command::new("lake");
+        check
+            .arg("env")
+            .arg("lean")
+            .arg(&source_path)
+            .current_dir(&directory);
+        run_lake(
+            &mut check,
+            &directory,
+            &format!("the gate of stack `{stack}` failed"),
+        )?;
+
+        let checked = read_graph_file(&graph_path).with_context(|| {
+            format!("the gate of stack `{stack}` did not write the graph it checked")
+        })?;
+        if &checked != emitted {
+            bail!(
+                "the gate of stack `{stack}` checked the graph of `{}`, but the stack's `main` prints a different graph; \
+                 make `main` emit `{}` (`def main : IO Unit := emitGraph {}`) or point the gate at the program it emits",
+                gate.program,
+                gate.program,
+                gate.program
+            );
+        }
+        Ok(())
+    }
+
     fn purescript_config(&self) -> Result<&PureScriptConfig> {
         self.config
             .purescript
@@ -651,6 +757,59 @@ impl Project {
             .current_dir(self.root.join(&config.directory));
         command
     }
+}
+
+/// The module `run_gate` elaborates. Everything the project names is spliced in as a Lean name
+/// (checked by `valid_lean_name` when the project loads); the statement is fixed here.
+fn gate_source(stack: &str, gate: &GateConfig, graph_path: &Path) -> Result<String> {
+    let graph_path = graph_path
+        .to_str()
+        .filter(|path| !path.chars().any(char::is_control))
+        .with_context(|| format!("the gate path {} is not plain UTF-8", graph_path.display()))?;
+    let graph_path = graph_path.replace('\\', "\\\\").replace('"', "\\\"");
+    let (module, program, policy) = (&gate.module, &gate.program, &gate.policy);
+    let check = match &gate.proof {
+        Some(proof) => format!(
+            "/-- The gate of stack `{stack}`, stated by Inframe and proved by `{proof}`. -/\n\
+             theorem InframeGate.holds : Inframe.Gated ({policy}) ({program}) := ({proof})\n\n\
+             #assert_standard_axioms InframeGate.holds\n"
+        ),
+        None => format!(
+            "#assert_valid (Inframe.buildGraph ({program}))\n\
+             #assert_policy ({policy}) (Inframe.buildGraph ({program}))\n\
+             #assert_standard_axioms\n"
+        ),
+    };
+    Ok(format!(
+        "-- Written by `inframe` for stack `{stack}` on every run; edits are overwritten.\n\
+         import Inframe.Gate\n\
+         import {module}\n\n\
+         {check}\
+         #assert_compiled_as_proved\n\n\
+         #eval Inframe.writeGraph \"{graph_path}\" ({program})\n"
+    ))
+}
+
+/// Run a Lake command, reporting its output if it fails.
+fn run_lake(command: &mut Command, directory: &Path, failure: &str) -> Result<()> {
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => bail!(
+            "`lake` was not found on PATH; {}",
+            install_hint(Frontend::Lean)
+        ),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to start `lake` in {}", directory.display()));
+        }
+    };
+    if !output.status.success() {
+        bail!(
+            "{}",
+            child_failure_report(failure, command, directory, &output)
+        );
+    }
+    Ok(())
 }
 
 fn frontend_tool(frontend: Frontend) -> &'static str {
@@ -813,6 +972,16 @@ fn write_graph(path: &Path, graph: &GraphDocument) -> Result<()> {
         .with_context(|| format!("failed to write generated graph {}", path.display()))
 }
 
+fn write_text(path: &Path, contents: &str) -> Result<()> {
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn read_graph_file(path: &Path) -> Result<GraphDocument> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} is not a Graph IR document", path.display()))
+}
+
 /// Lexically normalize a path: resolve `.` and `..` without touching the filesystem.
 fn normalize(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
@@ -857,6 +1026,23 @@ pub fn relative_path(from: &Path, to: &Path) -> String {
     } else {
         parts.join("/")
     }
+}
+
+/// Gate names are spliced into the module the gate writes, so each must be a Lean name.
+fn validate_gate(stack: &str, gate: &GateConfig) -> Result<()> {
+    for (field, value) in [
+        ("module", Some(&gate.module)),
+        ("program", Some(&gate.program)),
+        ("policy", Some(&gate.policy)),
+        ("proof", gate.proof.as_ref()),
+    ] {
+        if let Some(value) = value.filter(|value| !valid_lean_name(value)) {
+            bail!(
+                "`stacks.{stack}.gate.{field}` must be a Lean name such as `Infra.Platform.policies`, not `{value}`"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_backend_config(stack: &str, config: &BTreeMap<String, toml::Value>) -> Result<()> {
@@ -959,6 +1145,20 @@ fn valid_component_name(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
+/// A dotted Lean name of plain identifiers (`Infra.PlatformTest`, `policies`), which is all
+/// a gate splices into the module it writes.
+fn valid_lean_name(value: &str) -> bool {
+    value.split('.').all(|component| {
+        let mut characters = component.chars();
+        characters
+            .next()
+            .is_some_and(|first| first.is_alphabetic() || first == '_')
+            && characters.all(|character| {
+                character.is_alphanumeric() || matches!(character, '_' | '\'' | '!' | '?')
+            })
+    })
+}
+
 pub fn pascal_case(value: &str) -> String {
     value
         .split(|character: char| !character.is_ascii_alphanumeric())
@@ -1030,6 +1230,15 @@ graph_directory = ".inframe/graphs"
 
 [stacks.dev.backend]
 type = "local"
+
+# A Lean stack names the statement that gates `plan` and `apply`: Inframe proves (or, without
+# `proof`, evaluates) `Inframe.Gated policy program` and refuses `sorry`, `native_decide`, and
+# `implemented_by`.
+# [stacks.dev.gate]
+# module = "Infra.Test"
+# program = "infrastructure"
+# policy = "policies"
+# proof = "infrastructure_gated"
 "#;
 
 #[cfg(test)]

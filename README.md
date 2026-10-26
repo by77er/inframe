@@ -104,6 +104,20 @@ proof stops compiling. Inframe checks it before every `plan` and `apply`, so
 that change never reaches the cloud. The full proof is in
 [`PlatformTest.lean`](lean/integration-digitalocean/Infra/PlatformTest.lean).
 
+`inframe.toml`, not the test module, says what gates a deployment. Inframe
+states the gate's theorem itself: the deployed program's graph is valid and
+satisfies the named policy. It refuses `sorry`, `native_decide`, declared
+axioms, and `implemented_by` anywhere in the stack, and it checks that the graph
+it proved is the one `main` deploys:
+
+```toml
+[stacks.lean-example.gate]
+module = "Infra.PlatformTest"
+program = "infrastructure"
+policy = "policies"
+proof = "platform_gate"
+```
+
 ## Getting started
 
 You'll need Rust 1.85+, OpenTofu 1.10+, and

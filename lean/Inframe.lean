@@ -9,3 +9,4 @@ import Inframe.RemoteState
 import Inframe.Stack
 import Inframe.StackDeriving
 import Inframe.Assert
+import Inframe.Gate

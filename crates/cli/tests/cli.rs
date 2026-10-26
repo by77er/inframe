@@ -730,6 +730,151 @@ type = "local"
         .stderr(predicate::str::contains("was not found; install OpenTofu"));
 }
 
+/// A Lean stack's gate is a module Inframe writes: it states `Gated policy program` itself,
+/// checks axioms, and writes the graph it checked, which must be the graph `main` prints.
+/// The fake `lake` plays the gate's three outcomes: the same graph, another graph, and a
+/// refusal; `plan` stops before `OpenTofu` on the last two.
+#[cfg(unix)]
+#[test]
+fn the_gate_states_the_statement_and_binds_the_emitted_graph() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    fs::create_dir(directory.path().join("lean")).unwrap();
+    fs::write(
+        &project,
+        r#"[lean]
+main = "graph"
+
+[stacks.dev.gate]
+module = "Infra.PlatformTest"
+program = "infrastructure"
+policy = "policies"
+proof = "platform_gate"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    let path = fake_lake(
+        directory.path(),
+        &format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n  \"-q exe\") cat <<'GRAPH'\n{GRAPH}\nGRAPH\n  ;;\n  \"-q build\") exit 0 ;;\n  \"env lean\")\n    out=$(sed -n 's/^#eval Inframe.writeGraph \"\\(.*\\)\" .*/\\1/p' \"$3\")\n    case \"$INFRAME_GATE\" in\n      same) cat > \"$out\" <<'GRAPH'\n{GRAPH}\nGRAPH\n      ;;\n      other) cat > \"$out\" <<'GRAPH'\n{SECRET_GRAPH}\nGRAPH\n      ;;\n      *) echo 'Gate.lean:6:0: error: weakened depends on `sorryAx`'; exit 1 ;;\n    esac ;;\n  *) exit 9 ;;\nesac\n"
+        ),
+    );
+    let run = |gate: &str, arguments: &[&str]| {
+        let mut command = Command::cargo_bin("inframe").unwrap();
+        command
+            .arg("--project")
+            .arg(&project)
+            .args(arguments)
+            .env("PATH", &path)
+            .env("INFRAME_GATE", gate);
+        command
+    };
+
+    run("same", &["test", "--stack", "dev"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gate of stack `dev` holds"));
+    let source = fs::read_to_string(directory.path().join(".inframe/gates/dev/Gate.lean")).unwrap();
+    assert!(source.contains("import Infra.PlatformTest\n"));
+    assert!(source.contains(
+        "theorem InframeGate.holds : Inframe.Gated (policies) (infrastructure) := (platform_gate)"
+    ));
+    assert!(source.contains("#assert_standard_axioms InframeGate.holds"));
+    assert!(source.contains("#assert_compiled_as_proved"));
+
+    run("other", &["test", "--stack", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "checked the graph of `infrastructure`, but the stack's `main` prints a different graph",
+        ));
+    run("refuse", &["test", "--stack", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the gate of stack `dev` failed"))
+        .stderr(predicate::str::contains("weakened depends on `sorryAx`"));
+
+    let plan = [
+        "plan",
+        "--stack",
+        "dev",
+        "--tofu-binary",
+        "/nonexistent/tofu",
+    ];
+    run("refuse", &plan)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("did not pass its gate"))
+        .stderr(predicate::str::contains("was not found; install OpenTofu").not());
+    run("other", &plan)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("prints a different graph"))
+        .stderr(predicate::str::contains("was not found; install OpenTofu").not());
+    run("same", &plan)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("gate of stack `dev` holds"))
+        .stderr(predicate::str::contains("was not found; install OpenTofu"));
+    run("refuse", &[&plan[..], &["--skip-tests"]].concat())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "skipping the tests and gate of stack `dev`",
+        ))
+        .stderr(predicate::str::contains("was not found; install OpenTofu"));
+}
+
+/// Gate names are spliced into a Lean module, so only Lean names are accepted, and only Lean
+/// stacks have a gate.
+#[test]
+fn rejects_gates_that_are_not_lean_names_or_not_lean_stacks() {
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let check = |config: &str, expected: &str| {
+        fs::write(&project, config).unwrap();
+        Command::cargo_bin("inframe")
+            .unwrap()
+            .arg("--project")
+            .arg(&project)
+            .args(["test", "--stack", "dev"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(expected));
+    };
+    check(
+        r#"[lean]
+[stacks.dev.gate]
+module = "Infra.PlatformTest"
+program = "infrastructure) (other"
+policy = "policies"
+"#,
+        "`stacks.dev.gate.program` must be a Lean name",
+    );
+    check(
+        r#"[lean]
+[stacks.dev.gate]
+module = "Infra.PlatformTest\nimport Evil"
+program = "infrastructure"
+policy = "policies"
+"#,
+        "`stacks.dev.gate.module` must be a Lean name",
+    );
+    check(
+        r#"[purescript]
+package = "infra"
+[stacks.dev.gate]
+module = "Infra.PlatformTest"
+program = "infrastructure"
+policy = "policies"
+"#,
+        "stack `dev` configures a gate, which only Lean stacks have",
+    );
+}
+
 /// `inframe tofu` runs any subcommand in the stack's workspace, so state, import, and
 /// recovery operations go through the same prepared configuration as `plan` and `apply`.
 #[cfg(unix)]

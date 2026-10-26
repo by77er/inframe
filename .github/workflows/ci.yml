@@ -105,6 +105,8 @@ jobs:
           cargo run -q -p inframe-cli -- build --stack lean-example
           cargo run -q -p inframe-cli -- graph validate --stack lean-example
           cargo run -q -p inframe-cli -- test --stack lean-example
+      - name: The deployment gate refuses sorry, a different main, and a weaker statement
+        run: scripts/lean-gate-probes.sh
       - uses: actions/download-artifact@v4
         with:
           name: purescript-graph

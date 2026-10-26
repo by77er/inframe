@@ -203,6 +203,31 @@ theorem attribute_nodes_are_validated :
       = [.res "digitalocean_tag" "app"] := by
   exact ⟨by decide, by decide⟩
 
+/-- An argument set twice. A policy reads the first value (`List.lookup`) and the encoder keeps
+the last (`Json.mkObj`), so this resource would pass a rule about `name` and deploy something
+else; the validator rejects it instead. -/
+def setTwice (fields : List (String × ExprNode)) : Infra Unit := do
+  let _ : Resource TagResource ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "twice") (InputObject.ofList fields)
+
+/-- No object in a graph repeats a key: arguments, object expressions, object literals at any
+depth, outputs, and provider requirements. `insert` replaces, so the builder never repeats one. -/
+theorem keys_are_unique :
+    (buildGraph (setTwice [("name", .literal (.string "a")), ("name", .literal (.string "b"))])).validate
+      = .error (.duplicateKey "digitalocean_tag.twice" "name") ∧
+    (buildGraph (setTwice [("labels", .object [("k", .literal .null), ("k", .literal .null)])])).validate
+      = .error (.duplicateKey "digitalocean_tag.twice" "k") ∧
+    (buildGraph (setTwice [("meta", .literal (value% { a: [ { k: 1, k: 2 } ] }))])).validate
+      = .error (.duplicateKey "digitalocean_tag.twice" "k") ∧
+    ({ outputs := [("x", ⟨.literal .null, false⟩), ("x", ⟨.literal .null, true⟩)] } : Graph).validate
+      = .error (.duplicateKey "outputs" "x") ∧
+    ({ requiredProviders := [("p", ⟨"a/p", "1"⟩), ("p", ⟨"b/p", "2"⟩)] } : Graph).validate
+      = .error (.duplicateKey "required_providers" "p") ∧
+    (buildGraph (setTwice [("name", .literal (.string "a"))] *> pure ())).Valid ∧
+    (buildGraph (setTwice ([("name", .literal (.string "a"))] |> InputObject.ofList
+      |>.insert "name" (.literal (.string "b")) |>.fields))).Valid := by
+  refine ⟨by decide, by decide, by decide, by decide, by decide, by decide, by decide⟩
+
 /-- Names derived from run-time data: an index, arbitrary text, a literal tail. -/
 theorem identifier_suffixes :
     ((Identifier.mk "fwd").indexed 1).raw = "fwd-1" ∧

@@ -1215,6 +1215,8 @@ Inframe.RemoteState  terraform_remote_state per backend, typed outputs
                      (Builder also has `adopt`: imports as graph data)
 Inframe.Stack        Stack σ, StackExports (deriving): exports as a typed record
 Inframe.Assert       #assert_policy / #assert_valid (evaluation, not reduction)
+Inframe.Gate         Gated, #assert_standard_axioms, #assert_compiled_as_proved, writeGraph:
+                     the CLI's deployment gate
 ```
 
 Design decisions specific to Lean:
@@ -1224,7 +1226,8 @@ Design decisions specific to Lean:
   `Value` inductive rather than `Lean.Json`, and maps are association lists. The
   payoff is that `Graph.Valid g`, `Policy.Holds p g`, `Graph.dependsOn`, and
   expression equality are decidable propositions proved with `decide`; no
-  `native_decide` is needed, so only the kernel is trusted. Kernel reduction
+  `native_decide` is needed, so only the kernel is trusted; a stack's gate
+  refuses `native_decide` (see below). Kernel reduction
   is not free: forty instances with four-kilobyte scripts take about nine
   seconds to validate by `decide`, and beyond that the honest
   tool is `#assert_policy`/`#assert_valid`, which evaluate the same functions
@@ -1256,6 +1259,29 @@ Design decisions specific to Lean:
   lowering, which golden files and the OpenTofu round trip in
   `scripts/check-template-escapes.sh` cover. See "What a proof covers" in
   GUIDE.md for the user-facing statement.
+- **The CLI owns the gating statement.** A test executable's exit status says
+  nothing about a `sorry` beside it (Lean only warns), and a theorem in a test
+  module is about whatever its author wrote. `[stacks.<name>.gate]` names a
+  module, a program, a policy, and optionally a proof. `inframe` writes a module
+  that imports them and states `Inframe.Gated policy program` (the validator and
+  the policy hold for the program's graph) itself. It checks the configured
+  proof against that statement, or evaluates the statement when there is no
+  proof. It runs `#assert_standard_axioms` over every declaration outside the
+  Lean toolchain, accepting only `propext`, `Classical.choice`, and
+  `Quot.sound`, which rules out `sorry` and `native_decide` alike. It runs
+  `#assert_compiled_as_proved`, which refuses `implemented_by` and `extern` on
+  definitions there, since the kernel would check one body while compiled code
+  ran another (opaque constants, `partial def` among them, may keep either:
+  the kernel never sees their body). Finally it writes the program's graph,
+  which must equal what the stack's `main` printed.
+  `scripts/lean-gate-probes.sh` keeps these refusals honest. What the gate
+  cannot rule out is a metaprogram that tampers with the environment;
+  `leanchecker` re-checks compiled modules from scratch for that.
+- **No object repeats a key.** Policies read arguments with `List.lookup` (first
+  entry wins) and the encoder's `Json.mkObj` keeps the last, so `Graph.validate`
+  rejects a repeated key in arguments, object expressions, object literals,
+  outputs, and provider requirements (`duplicateKey`). The Rust validator cannot
+  check this rule, because the duplicates never reach the JSON it reads.
 - **`Infra` is a private state transformer**, not `StateM`, so programs cannot
   read or overwrite the graph; only the builder primitives extend it. Its
   constructor is private (`⟨fun graph => …⟩` and `{ run := … }` do not compile

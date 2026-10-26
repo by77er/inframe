@@ -7,7 +7,10 @@ Policies for the platform stack.
 Each policy is an ordinary function from the completed `Graph` to a list of violations. The
 theorems below are checked by the Lean kernel while this module compiles, so `lake build`
 (and therefore `inframe test --stack lean-example`) fails if a change to `Infra.Platform`
-violates a policy. `main` prints the same policies' reports at run time.
+violates a policy. `main` prints the same policies' reports at run time. `platform_gate` is the
+theorem `inframe`'s deployment gate checks: the CLI states `Gated policies infrastructure`
+itself, refuses any theorem here that rests on `sorry` or `native_decide`, and compares the
+graph it proved with the one `platform` prints.
 -/
 
 open Inframe
@@ -70,6 +73,12 @@ these assertions are the ones that keep failing the build with a report. -/
 theorem platform_policies (env : Environment) :
     policies.Holds (buildGraph (infrastructureFor env [Identifier.mk "postgres"])) := by
   cases env <;> decide
+
+/-- The statement `inframe` gates `plan` and `apply` on (`[stacks.lean-example.gate]` in
+`inframe.toml`): the deployed program's graph is valid and satisfies `policies`. The CLI states
+it itself and checks that this theorem proves it, so it cannot be weakened here. -/
+theorem platform_gate : Gated policies infrastructure :=
+  ⟨platform_valid, platform_policies .prod⟩
 
 /-! ### A proof over every database list
 

@@ -305,11 +305,21 @@ fn test_project(arguments: &TestArgs, project_path: &Path) -> Result<()> {
     let Some(stack) = &arguments.stack else {
         let mut failed = Vec::new();
         for stack in project.stack_names() {
-            if project.test_entry_point(stack)?.is_none() {
+            let has_gate = project.gate(stack)?.is_some();
+            if project.test_entry_point(stack)?.is_none() && !has_gate {
                 continue;
             }
-            if !project.test(stack)?.success() {
+            if project.test_entry_point(stack)?.is_some() && !project.test(stack)?.success() {
                 failed.push(stack);
+                continue;
+            }
+            if has_gate {
+                if let Err(error) = gate_stack(&project, stack) {
+                    eprintln!("{error:#}");
+                    failed.push(stack);
+                }
+            } else {
+                note_missing_gate(&project, stack)?;
             }
         }
         if failed.is_empty() {
@@ -317,17 +327,44 @@ fn test_project(arguments: &TestArgs, project_path: &Path) -> Result<()> {
         }
         bail!("tests failed for stacks: {}", failed.join(", "));
     };
-    let status = project.test(stack)?;
-    if status.success() {
-        return Ok(());
+    let has_gate = project.gate(stack)?.is_some();
+    if project.test_entry_point(stack)?.is_some() || !has_gate {
+        let status = project.test(stack)?;
+        if !status.success() {
+            match status.code() {
+                Some(code) => std::process::exit(code),
+                None => bail!(
+                    "{} tests for stack `{stack}` terminated by signal",
+                    project.stack_frontend(stack)?.name(),
+                ),
+            }
+        }
     }
-    match status.code() {
-        Some(code) => std::process::exit(code),
-        None => bail!(
-            "{} tests for stack `{stack}` terminated by signal",
-            project.stack_frontend(stack)?.name(),
-        ),
+    if has_gate {
+        gate_stack(&project, stack)
+    } else {
+        note_missing_gate(&project, stack)
     }
+}
+
+/// Build `stack` and run its gate against the graph its `main` prints.
+fn gate_stack(project: &Project, stack: &str) -> Result<()> {
+    let graph = project.render(stack)?;
+    project.run_gate(stack, &graph)?;
+    println!("gate of stack `{stack}` holds");
+    Ok(())
+}
+
+/// A Lean stack's test executable passing says nothing about `sorry` in its theorems or about
+/// which graph they were about; only a gate does, so a stack without one is told so.
+fn note_missing_gate(project: &Project, stack: &str) -> Result<()> {
+    if project.stack_frontend(stack)? == Frontend::Lean {
+        eprintln!(
+            "note: stack `{stack}` has no [stacks.{stack}.gate], so its theorems are not checked for `sorry` \
+             and nothing ties them to the graph its `main` prints"
+        );
+    }
+    Ok(())
 }
 
 fn provider_command(
@@ -785,6 +822,7 @@ fn run_graph(
         check_stack(
             &project,
             &arguments.stack,
+            &graph,
             arguments.skip_tests,
             arguments.quiet,
         )?;
@@ -818,30 +856,51 @@ fn needs_credentials(command: &str) -> bool {
 }
 
 /// Lifecycle commands run against a graph only after the stack's configured test entry
-/// point has passed, so a policy suite kept in a separate executable gates `plan` and
-/// `apply` as well as `inframe test`. Both the override and the absence of a suite are said
-/// out loud: a green build of the main executable is not evidence that any policy holds.
-fn check_stack(project: &Project, stack: &str, skip: bool, quiet: bool) -> Result<()> {
+/// point has passed and its gate holds for `graph`, so a policy suite kept in a separate
+/// executable gates `plan` and `apply` as well as `inframe test`. Both the override and the
+/// absence of a suite are said out loud: a green build of the main executable is not evidence
+/// that any policy holds.
+fn check_stack(
+    project: &Project,
+    stack: &str,
+    graph: &GraphDocument,
+    skip: bool,
+    quiet: bool,
+) -> Result<()> {
+    let has_gate = project.gate(stack)?.is_some();
     if skip {
         if !quiet {
-            eprintln!("skipping the tests of stack `{stack}` (--skip-tests)");
+            let checks = if has_gate { "tests and gate" } else { "tests" };
+            eprintln!("skipping the {checks} of stack `{stack}` (--skip-tests)");
         }
         return Ok(());
     }
-    if project.test_entry_point(stack)?.is_none() {
+    if project.test_entry_point(stack)?.is_none() && !has_gate {
         if !quiet {
             eprintln!("note: stack `{stack}` has no test entry point, so no policies were checked");
         }
         return Ok(());
     }
-    let status = project.test(stack)?;
-    if !status.success() {
-        bail!(
-            "tests for stack `{stack}` failed ({status}); fix the violations, or pass --skip-tests to run OpenTofu regardless"
-        );
+    if project.test_entry_point(stack)?.is_some() {
+        let status = project.test(stack)?;
+        if !status.success() {
+            bail!(
+                "tests for stack `{stack}` failed ({status}); fix the violations, or pass --skip-tests to run OpenTofu regardless"
+            );
+        }
+        if !quiet {
+            eprintln!("tests for stack `{stack}` passed");
+        }
     }
-    if !quiet {
-        eprintln!("tests for stack `{stack}` passed");
+    if has_gate {
+        project.run_gate(stack, graph).with_context(|| {
+            format!("stack `{stack}` did not pass its gate; fix it, or pass --skip-tests to run OpenTofu regardless")
+        })?;
+        if !quiet {
+            eprintln!("gate of stack `{stack}` holds");
+        }
+    } else if !quiet {
+        note_missing_gate(project, stack)?;
     }
     Ok(())
 }

@@ -54,6 +54,12 @@ frontend = "lean"
 main = "platform"
 test = "platform-test"
 
+[stacks.lean-example.gate]
+module = "Infra.PlatformTest"
+program = "infrastructure"
+policy = "policies"
+proof = "platform_gate"
+
 [stacks.lean-example.backend]
 type = "local"
 ```
@@ -71,6 +77,10 @@ type = "local"
 - `[stacks.<name>]`: `main` and `test` override the frontend defaults; when
   both frontends are configured, `frontend` picks one. The `backend` table is
   OpenTofu's backend for that stack (see [Remote state](#remote-state)).
+- `[stacks.<name>.gate]` (Lean only): the statement that gates deployment.
+  `program` and `policy` are Lean names visible from `module`, and `proof`
+  names a theorem of `Inframe.Gated policy program`. See
+  [The deployment gate](#the-deployment-gate).
 
 The `example` stack here is PureScript and `lean-example` is Lean, and
 `make conformance` checks that they build byte-identical Graph IR.
@@ -291,7 +301,10 @@ serialize as `resource_attr`, secrets as `secret_env`, whatever the frontend
 constructors are called).
 
 `test` runs the stack's configured test entry point and preserves its exit
-status; the test library and structure remain the project's choice.
+status; the test library and structure remain the project's choice. Then, for
+a stack with a gate, it runs [the deployment gate](#the-deployment-gate). A Lean
+stack without a gate gets a note on every run, because a test executable that
+exits 0 says nothing about a `sorry` in the theorems beside it.
 
 ## Plan, apply, and the rest of the lifecycle
 
@@ -308,10 +321,10 @@ inframe destroy --stack platform
 
 Lifecycle commands rebuild the configured entry point and write deterministic
 OpenTofu JSON into `.inframe/stacks/<stack>/`. When the stack configures a
-`test` entry point, `init`, `validate`, `plan`, `apply`, `destroy`, and `tofu`
-run it after building and stop if it fails, so a policy suite kept in its own
-executable gates deployment and not only `inframe test`. `--skip-tests`
-overrides that and says so on stderr, and a stack without a test entry point is
+`test` entry point or a gate, `init`, `validate`, `plan`, `apply`, `destroy`,
+and `tofu` run them after building and stop if either fails, so a policy suite
+kept in its own executable gates deployment and not only `inframe test`.
+`--skip-tests` overrides both and says so on stderr, and a stack without a test entry point is
 pointed out every time (`--quiet` silences those notes and the build line,
 never errors). A graph passed with `--graph` bypasses the project and only the
 reference validator runs on it.
@@ -484,6 +497,53 @@ input of a parameterized stack, and the assertions for the concrete instance.
 `lean/integration-digitalocean/Infra/PlatformTest.lean` shows both side by
 side, including a proof by induction over an arbitrary database list.
 
+### The deployment gate
+
+A theorem in a test module proves what its author wrote, about whichever
+program they wrote it for, and Lean builds a module with a `sorry` in it with
+only a warning. A test executable passing is therefore not enough to deploy on.
+A Lean stack's gate names the statement in `inframe.toml` instead:
+
+```toml
+[stacks.lean-example.gate]
+module = "Infra.PlatformTest"   # imports everything below
+program = "infrastructure"      # the Infra program `main` emits
+policy = "policies"             # the Policy its graph must satisfy
+proof = "platform_gate"         # optional: a theorem of `Gated policies infrastructure`
+```
+
+```lean
+theorem platform_gate : Gated policies infrastructure :=
+  ⟨platform_valid, platform_policies .prod⟩
+```
+
+`inframe test`, `plan`, and `apply` write a module of their own to
+`.inframe/gates/<stack>/Gate.lean` and elaborate it with `lake env lean`. It:
+
+1. states `Inframe.Gated policy program`, meaning the program's graph passes
+   the validator and the policy, and checks that `proof` proves exactly that.
+   Without `proof` it evaluates the validator and the policy with
+   `#assert_valid` and `#assert_policy`, which scales past kernel `decide` but
+   is a check rather than a proof.
+2. runs `#assert_standard_axioms`. Every declaration imported from outside the
+   Lean toolchain (the stack, its bindings, and the core), and the gate's own
+   theorem, may depend only on `propext`, `Classical.choice`, and `Quot.sound`.
+   The gate fails, naming the declaration, on a `sorry` (`sorryAx`) anywhere,
+   including in a universal theorem the gate does not state, on
+   `native_decide` (an axiom trusting the compiler), and on an `axiom` the
+   stack declares.
+3. runs `#assert_compiled_as_proved`, which refuses a definition there with
+   `@[implemented_by]` or `@[extern]`. The kernel proves facts about a
+   definition's body, but compiled code, `main` included, would run the
+   replacement.
+4. writes the program's graph, and Inframe requires it to equal the graph the
+   stack's `main` printed. A `main` that emits a different program fails the
+   gate.
+
+The gate trusts the Lean toolchain and the kernel. It does not defend against
+a stack that runs metaprograms to tamper with the environment; `leanchecker`,
+which ships with the toolchain, re-checks compiled modules from scratch.
+
 A policy sees the graph, not the plan: a value read from a data source or
 another resource is a reference until OpenTofu plans. A rule over values has to
 say so rather than skip it, and `Policy.argumentValues` does: it hands the rule
@@ -505,7 +565,15 @@ the graph, and the `run` lemmas the proofs use cover everything a stack can do.
 - **Graph structure.** `Graph.Valid` is the reference validator as a theorem:
   names, references, provider selection, replacement triggers, moves, and
   acyclicity. The Rust validator re-checks the same rules on the emitted
-  document.
+  document. `Graph.Valid` also requires that no object repeat a key. A policy
+  reads the first entry and the encoder keeps the last, and the duplicate never
+  reaches the document Rust sees.
+- **What gates a deployment.** The statement in `[stacks.<name>.gate]`, which
+  Inframe states itself, and only with proofs free of `sorry`, `native_decide`,
+  and stack-declared axioms, about definitions whose compiled code is their
+  body (see [The deployment gate](#the-deployment-gate)).
+  Other theorems in the stack are checked for the same axioms but are about
+  whatever they state; review their statements like the policies.
 - **The provider schema, as far as it is in the types.** Required arguments,
   attribute types, and how many entries a nested block may have are in the
   generated records. Value-level rules (allowed strings, formats, "exactly one

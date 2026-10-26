@@ -36,5 +36,11 @@ frontend = "lean"
 main = "platform"
 test = "platform-test"
 
+[stacks.lean-example.gate]
+module = "Infra.PlatformTest"
+program = "infrastructure"
+policy = "policies"
+proof = "platform_gate"
+
 [stacks.lean-example.backend]
 type = "local"

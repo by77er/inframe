@@ -34,6 +34,11 @@ inductive ValidationError where
   | invalidImportTarget (target : Address)
   | duplicateImportTarget (target : Address)
   | emptyImportId (target : Address)
+  /-- An object (arguments, an object expression, an object literal, outputs, or provider
+  requirements) sets `key` twice. Policies read the first entry and the JSON encoder keeps the
+  last, so a graph that passed its policies could emit a different value; it is invalid
+  instead. -/
+  | duplicateKey (owner : String) (key : String)
   /-- The nodes along a dependency cycle, first node repeated at the end: `[a, b, a]` means
   `a` depends on `b`, which depends on `a`. -/
   | cycle (nodes : List Address)
@@ -59,6 +64,7 @@ def message : ValidationError → String
       s!"import target `{target}` is a data source; only managed resources can be imported"
   | .duplicateImportTarget target => s!"duplicate import target `{target}`"
   | .emptyImportId target => s!"import into `{target}` has an empty id"
+  | .duplicateKey owner key => s!"`{owner}` sets `{key}` more than once"
   | .cycle nodes => s!"dependency cycle: {" -> ".intercalate (nodes.map toString)}"
 
 instance : ToString ValidationError := ⟨message⟩
@@ -155,13 +161,53 @@ private def validatePath (owner : String) : List String → Except ValidationErr
     validateIdentifier owner element
     validatePath owner rest
 
+/-- Every key of one object is distinct. Lean's `Json.mkObj` keeps the last of two equal keys
+while `List.lookup`, and so every policy, reads the first, so the graph a policy checked and the
+document `emitGraph` prints agree only when no object repeats a key. -/
+private def validateUniqueKeys (owner : String) (seen : List String) :
+    List String → Except ValidationError Unit
+  | [] => .ok ()
+  | key :: rest =>
+    if seen.contains key then throw (.duplicateKey owner key)
+    else validateUniqueKeys owner (key :: seen) rest
+
+namespace Value
+
+mutual
+  /-- No object anywhere inside a literal repeats a key. -/
+  def validateKeys (owner : String) : Value → Except ValidationError Unit
+    | .null => .ok ()
+    | .bool _ => .ok ()
+    | .number _ => .ok ()
+    | .string _ => .ok ()
+    | .array items => validateKeysList owner items
+    | .object fields => do
+        validateUniqueKeys owner [] (fields.map (·.1))
+        validateKeysFields owner fields
+  termination_by structural x => x
+  def validateKeysList (owner : String) : List Value → Except ValidationError Unit
+    | [] => .ok ()
+    | item :: rest => do
+        validateKeys owner item
+        validateKeysList owner rest
+  termination_by structural x => x
+  def validateKeysFields (owner : String) : List (String × Value) → Except ValidationError Unit
+    | [] => .ok ()
+    | (_, value) :: rest => do
+        validateKeys owner value
+        validateKeysFields owner rest
+  termination_by structural x => x
+end
+
+end Value
+
 namespace ExprNode
 
 mutual
   /-- Checks that need no knowledge of the rest of the graph: reference kinds, attribute
-  paths, function names, and secret environment names. -/
+  paths, function names, secret environment names, and that no object repeats a key. -/
   def validateStructure (owner : String) : ExprNode → Except ValidationError Unit
-    | .literal _ => .ok ()
+    | .literal value => value.validateKeys owner
     | .resourceAttribute address path =>
         if address.isResource then validatePath owner path
         else throw (.referenceKind owner address)
@@ -169,7 +215,9 @@ mutual
         if address.isResource then throw (.referenceKind owner address)
         else validatePath owner path
     | .array items => validateStructureList owner items
-    | .object fields => validateStructureFields owner fields
+    | .object fields => do
+        validateUniqueKeys owner [] (fields.map (·.1))
+        validateStructureFields owner fields
     | .index collection key => do
         validateStructure owner collection
         validateStructure owner key
@@ -288,12 +336,17 @@ where
       if addresses.contains target then validateReferences owner addresses rest
       else throw (.missingReference owner target)
 
-private def validateArguments (owner : String) (addresses : List Address) :
+private def validateArgumentValues (owner : String) (addresses : List Address) :
     List (String × ExprNode) → Except ValidationError Unit
   | [] => .ok ()
   | (_, expression) :: rest => do
     validateExpr owner addresses expression
-    validateArguments owner addresses rest
+    validateArgumentValues owner addresses rest
+
+private def validateArguments (owner : String) (addresses : List Address)
+    (arguments : List (String × ExprNode)) : Except ValidationError Unit := do
+  validateUniqueKeys owner [] (arguments.map (·.1))
+  validateArgumentValues owner addresses arguments
 
 private def validateExplicit (owner : Address) (addresses : List Address) :
     List Address → Except ValidationError Unit
@@ -334,11 +387,13 @@ private def validateReplacementTriggers (owner : Address) (addresses : List Addr
     else if addresses.contains target then validateReplacementTriggers owner addresses rest
     else throw (.missingReference owner.toString target)
 
-private def validateProviderNames : List (String × ProviderRequirement) → Except ValidationError Unit
+private def validateProviderNames (seen : List String) :
+    List (String × ProviderRequirement) → Except ValidationError Unit
   | [] => .ok ()
   | (name, _) :: rest => do
     validateIdentifier "required_providers" name
-    validateProviderNames rest
+    if seen.contains name then throw (.duplicateKey "required_providers" name)
+    validateProviderNames (name :: seen) rest
 
 private def validateProviderConfigs (index : Nat) (seen : List String) :
     List ProviderConfigSpec → Except ValidationError Unit
@@ -401,13 +456,14 @@ private def validateDataSources (addresses : List Address) (configured : List St
     validateSelectedProvider owner.toString configured dataSource.provider
     validateDataSources addresses configured rest
 
-private def validateOutputs (addresses : List Address) :
+private def validateOutputs (addresses : List Address) (seen : List String) :
     List (String × OutputSpec) → Except ValidationError Unit
   | [] => .ok ()
   | (name, output) :: rest => do
     validateIdentifier "outputs" name
+    if seen.contains name then throw (.duplicateKey "outputs" name)
     validateExpr ("output." ++ name) addresses output.value
-    validateOutputs addresses rest
+    validateOutputs addresses (name :: seen) rest
 
 private def validateProviderArguments (index : Nat) (addresses : List Address) :
     List ProviderConfigSpec → Except ValidationError Unit
@@ -438,9 +494,10 @@ private def validateImports (addresses : List Address) (targets : List Address) 
 
 /-- The reference validation rules, ported from the Rust `GraphDocument::validate`: names,
 references, provider selection, replacement triggers, moves, and finally that the dependency
-edges form a DAG. -/
+edges form a DAG. One rule has no Rust counterpart because the encoder erases what it checks:
+no object repeats a key (`duplicateKey`). -/
 def validate (graph : Graph) : Except ValidationError Unit := do
-  validateProviderNames graph.requiredProviders
+  validateProviderNames [] graph.requiredProviders
   validateProviderConfigs 0 [] graph.providerConfigs
   let configured := graph.providerConfigs.map ProviderConfigSpec.address
   let addresses ← validateResourceNames [] graph.resources
@@ -448,7 +505,7 @@ def validate (graph : Graph) : Except ValidationError Unit := do
   let addresses ← validateStackReferenceNames addresses graph.stackReferences
   validateResources addresses configured graph.resources
   validateDataSources addresses configured graph.dataSources
-  validateOutputs addresses graph.outputs
+  validateOutputs addresses [] graph.outputs
   validateProviderArguments 0 addresses graph.providerConfigs
   validateMoves addresses [] graph.moves
   validateImports addresses [] graph.imports
