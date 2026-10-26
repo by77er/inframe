@@ -828,10 +828,10 @@ type = "local"
         .stderr(predicate::str::contains("was not found; install OpenTofu"));
 }
 
-/// Gate names are spliced into a Lean module, so only Lean names are accepted, and only Lean
-/// stacks have a gate.
+/// Gate names are spliced into a module, so only dotted names are accepted, and a PureScript
+/// gate cannot name a proof.
 #[test]
-fn rejects_gates_that_are_not_lean_names_or_not_lean_stacks() {
+fn rejects_gates_that_are_not_names_or_name_a_purescript_proof() {
     let directory = tempdir().unwrap();
     let project = directory.path().join("inframe.toml");
     let check = |config: &str, expected: &str| {
@@ -852,7 +852,7 @@ module = "Infra.PlatformTest"
 program = "infrastructure) (other"
 policy = "policies"
 "#,
-        "`stacks.dev.gate.program` must be a Lean name",
+        "`stacks.dev.gate.program` must be a dotted name",
     );
     check(
         r#"[lean]
@@ -861,7 +861,7 @@ module = "Infra.PlatformTest\nimport Evil"
 program = "infrastructure"
 policy = "policies"
 "#,
-        "`stacks.dev.gate.module` must be a Lean name",
+        "`stacks.dev.gate.module` must be a dotted name",
     );
     check(
         r#"[purescript]
@@ -870,9 +870,106 @@ package = "infra"
 module = "Infra.PlatformTest"
 program = "infrastructure"
 policy = "policies"
+proof = "holds"
 "#,
-        "stack `dev` configures a gate, which only Lean stacks have",
+        "stack `dev` is PureScript, which has no proofs",
     );
+}
+
+/// A PureScript stack's gate is a module Inframe writes, compiles with `purs` against the
+/// package's sources, and runs with `node`; it prints the graph it checked, which must be the
+/// graph `main` prints. A dotted name is imported qualified from its own module, and only the
+/// test sources that hold a module the gate imports are compiled.
+#[cfg(unix)]
+#[test]
+fn the_purescript_gate_compiles_its_own_module_and_binds_the_emitted_graph() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let project = directory.path().join("inframe.toml");
+    let purescript = directory.path().join("purescript");
+    fs::create_dir_all(purescript.join("app/test/Infra")).unwrap();
+    fs::write(purescript.join("app/test/Infra/PlatformTest.purs"), "").unwrap();
+    fs::write(
+        &project,
+        r#"[purescript]
+package = "app"
+main = "Infra.Platform"
+
+[stacks.dev.gate]
+module = "Infra.PlatformTest"
+program = "Infra.Platform.infrastructure"
+policy = "policies"
+
+[stacks.dev.backend]
+type = "local"
+"#,
+    )
+    .unwrap();
+    let bin = directory.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let tools = [
+        (
+            "spago",
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  run) cat <<'GRAPH'\n{GRAPH}\nGRAPH\n  ;;\n  build) exit 0 ;;\n  sources) printf '%s\\n' '.spago/p/prelude/src/**/*.purs' 'test/**/*.purs' 'app/src/**/*.purs' 'app/test/**/*.purs' ;;\n  *) exit 9 ;;\nesac\n"
+            ),
+        ),
+        (
+            "purs",
+            "#!/bin/sh\ncat \"$3\" > \"$INFRAME_GLOBS\"\n".to_owned(),
+        ),
+        (
+            "node",
+            format!(
+                "#!/bin/sh\nif [ \"$INFRAME_GATE\" = same ]; then cat <<'GRAPH'\n{GRAPH}\nGRAPH\nelse cat <<'GRAPH'\n{SECRET_GRAPH}\nGRAPH\nfi\n"
+            ),
+        ),
+    ];
+    for (name, script) in tools {
+        let path = bin.join(name);
+        fs::write(&path, script).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+    }
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let globs = directory.path().join("globs");
+    let run = |gate: &str| {
+        let mut command = Command::cargo_bin("inframe").unwrap();
+        command
+            .arg("--project")
+            .arg(&project)
+            .args(["test", "--stack", "dev"])
+            .env("PATH", &path)
+            .env("INFRAME_GATE", gate)
+            .env("INFRAME_GLOBS", &globs);
+        command
+    };
+
+    run("same")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gate of stack `dev` holds"));
+    let source =
+        fs::read_to_string(directory.path().join(".inframe/gates/dev/InframeGate.purs")).unwrap();
+    assert!(source.contains("import Infra.PlatformTest as Gated0\n"));
+    assert!(source.contains("import Infra.Platform as Gated1\n"));
+    assert!(source.contains("main = gate Gated0.policies Gated1.infrastructure\n"));
+    assert_eq!(
+        fs::read_to_string(&globs).unwrap(),
+        ".spago/p/prelude/src/**/*.purs\napp/src/**/*.purs\napp/test/**/*.purs\n"
+    );
+
+    run("other")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "checked the graph of `Infra.Platform.infrastructure`, but the stack's `main` prints a different graph",
+        ));
 }
 
 /// `inframe tofu` runs any subcommand in the stack's workspace, so state, import, and

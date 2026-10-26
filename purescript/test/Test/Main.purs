@@ -2,16 +2,20 @@ module Test.Main where
 
 import Prelude
 
+import Data.Array (null)
+import Data.Maybe (Maybe(..))
 import Data.String.CodeUnits (contains)
 import Data.String.Pattern (Pattern(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Test.Assert (assert)
-import Inframe.Builder (Infra, adopt, createBeforeDestroy, dependsOn, output, replaceTriggeredBy, resourceOptions, sensitiveOutput)
+import Inframe.Builder (Infra, adopt, buildGraph, createBeforeDestroy, dependsOn, output, replaceTriggeredBy, resourceOptions, sensitiveOutput)
 import Inframe.Core (ExprNode, Input, attribute, computed, ifThenElse, index, interpolate, lit, secretEnv, splat, template, text, unsafeArgument, unsafeCall)
 import Inframe.Internal.Builder (InputObject, addResource, inputObject, insertInputField, requireProvider)
 import Inframe.Internal.Core (inputNode, resourceAttr)
 import Inframe.Json (renderGraph)
+import Inframe.Policy (Outcome(..))
+import Inframe.Policy as Policy
 
 data TagResource
 
@@ -60,6 +64,29 @@ main = do
   -- A plain reference keeps the attribute in its path rather than wrapping it.
   assert $ contains (Pattern "\"team\"\n") rendered
   assert $ contains (Pattern "\"id\": \"existing-tag-id\"") rendered
+  policies
+
+-- | Policies report violations at their resource, a value only the plan knows as unknown
+-- | rather than passing, and compose with `all`.
+policies :: Effect Unit
+policies = do
+  let
+    graph = buildGraph program
+    tagsAreNamed = Policy.resourcesOfType "tags-are-named" "digitalocean_tag" \resource ->
+      if resource.name == "app" then Nothing else Just "unexpected tag"
+    noApp = Policy.resourcesOfType "no-app" "digitalocean_tag" \_ -> Just "no tags allowed"
+    purposes = Policy.argumentValues "purpose" "purpose" \_ -> Nothing
+    names = Policy.argumentValues "names" "name" \known ->
+      if null known then Just "no known names" else Nothing
+  assert $ Policy.holds tagsAreNamed graph
+  assert $ Policy.holds names graph
+  assert $ map _.address (Policy.violations noApp graph) == [ "digitalocean_tag.app" ]
+  assert $ map _.outcome (Policy.violations purposes graph) == [ Unknown ]
+  assert $ not (Policy.holds (Policy.all "both" [ tagsAreNamed, noApp ]) graph)
+  assert $ contains (Pattern "policy `both` is violated:\n  [no-app] digitalocean_tag.app: no tags allowed")
+    (Policy.report (Policy.all "both" [ tagsAreNamed, noApp ]) graph)
+  assert $ contains (Pattern "cannot be decided from the graph") (Policy.report purposes graph)
+  assert $ map _.outcome (Policy.violations noApp graph) == [ Violated ]
 
 appendField :: String -> ExprNode -> InputObject -> InputObject
 appendField = insertInputField

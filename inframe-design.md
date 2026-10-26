@@ -1047,6 +1047,8 @@ Recommended PureScript package split:
 Inframe.Core
 Inframe.Builder
 Inframe.Json
+Inframe.Policy
+Inframe.Gate
 Inframe.Internal.Core
 Inframe.Internal.Builder
 ```
@@ -1055,7 +1057,13 @@ Infrastructure programs use the small public surface in `Inframe.Core` and
 `Inframe.Builder`. Generated provider libraries use the `Inframe.Internal.*`
 construction primitives as a generator ABI; those primitives are not presented
 as an application-authoring API. `Inframe.Json` is the single Graph IR encoding
-boundary.
+boundary. `Inframe.Policy` is the twin of Lean's policies, evaluated rather than
+proved, with the same violated and unknown-until-plan outcomes. `Inframe.Gate`
+is the body of the module the CLI writes for a stack's gate. The CLI names the
+program and the policy, compiles that module against the package, and requires
+the graph it checked to equal the graph `main` printed. Arguments and object
+expressions are `Object` maps, so the repeated-key gap that Lean's validator
+closes cannot arise here.
 
 ---
 

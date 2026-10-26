@@ -28,6 +28,11 @@ frontend = "purescript"
 main = "Infra.Platform"
 test = "Infra.PlatformTest"
 
+[stacks.example.gate]
+module = "Infra.PlatformTest"
+program = "Infra.Platform.infrastructure"
+policy = "policies"
+
 [stacks.example.backend]
 type = "local"
 

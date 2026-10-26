@@ -4,9 +4,13 @@ package:
     - argonaut-codecs
     - argonaut-core
     - arrays
+    - console
+    - effect
+    - exceptions
     - foreign-object
     - maybe
     - prelude
+    - strings
     - tuples
   test:
     main: Test.Main

@@ -149,29 +149,32 @@ pub struct StackConfig {
     pub frontend: Option<Frontend>,
     pub main: Option<String>,
     pub test: Option<String>,
-    /// The statement a Lean stack must prove (or pass) before `plan` and `apply`.
+    /// The statement a stack must prove (or pass) before `plan` and `apply`.
     pub gate: Option<GateConfig>,
     #[serde(default)]
     pub backend: BackendConfig,
 }
 
-/// A Lean stack's deployment gate. Inframe writes a module that imports `module` and states
-/// `Inframe.Gated policy program` itself, so the statement is the project's and not the
-/// test module's; it rejects every declaration outside the Lean toolchain that rests on
-/// `sorry`, `native_decide`, or a declared axiom, or whose compiled code is swapped with
-/// `implemented_by`; and it requires the graph of `program` to be the graph the stack's
-/// `main` prints.
+/// A stack's deployment gate. Inframe writes a module that imports `module` and checks
+/// `policy` against `program` itself, so the statement is the project's and not the test
+/// module's, and it requires the graph of `program` to be the graph the stack's `main`
+/// prints. For Lean the module states `Inframe.Gated policy program` and proves it with
+/// `proof` (or evaluates it), and rejects every declaration outside the Lean toolchain that
+/// rests on `sorry`, `native_decide`, or a declared axiom, or whose compiled code is swapped
+/// with `implemented_by`. PureScript has no proofs, so its gate evaluates the policy.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateConfig {
     /// The module that defines, or imports, the names below.
     pub module: String,
-    /// The `Infra` program that is deployed.
+    /// The `Infra` program that is deployed. In PureScript a dotted name is a value of
+    /// another module (`Infra.Platform.infrastructure`).
     pub program: String,
     /// The `Policy` its graph must satisfy.
     pub policy: String,
-    /// A theorem of `Inframe.Gated policy program`. Without one the gate evaluates the
-    /// validator and the policy, which scales past kernel `decide` but is a check, not a proof.
+    /// Lean only: a theorem of `Inframe.Gated policy program`. Without one the gate evaluates
+    /// the validator and the policy, which scales past kernel `decide` but is a check, not a
+    /// proof.
     pub proof: Option<String>,
 }
 
@@ -287,8 +290,11 @@ impl Project {
             .to_path_buf();
         let project = Self { root, config };
         for (name, stack) in &project.config.stacks {
-            if stack.gate.is_some() && project.stack_frontend(name)? != Frontend::Lean {
-                bail!("stack `{name}` configures a gate, which only Lean stacks have");
+            let proof = stack.gate.as_ref().is_some_and(|gate| gate.proof.is_some());
+            if proof && project.stack_frontend(name)? == Frontend::PureScript {
+                bail!(
+                    "stack `{name}` is PureScript, which has no proofs; drop `stacks.{name}.gate.proof` and the gate evaluates its policy"
+                );
             }
         }
         Ok(project)
@@ -661,13 +667,34 @@ impl Project {
         let gate = self
             .gate(stack)?
             .with_context(|| format!("stack `{stack}` has no `[stacks.{stack}.gate]`"))?;
-        let config = self.lean_config()?;
-        let directory = self.root.join(&config.directory);
         let gate_directory = self.workspace_directory().join("gates").join(stack);
         fs::create_dir_all(&gate_directory)
             .with_context(|| format!("failed to create {}", gate_directory.display()))?;
         let gate_directory = std::path::absolute(&gate_directory)
             .with_context(|| format!("failed to resolve {}", gate_directory.display()))?;
+        let checked = match self.stack_frontend(stack)? {
+            Frontend::Lean => self.run_lean_gate(stack, gate, &gate_directory)?,
+            Frontend::PureScript => self.run_purescript_gate(stack, gate, &gate_directory)?,
+        };
+        if &checked != emitted {
+            bail!(
+                "the gate of stack `{stack}` checked the graph of `{}`, but the stack's `main` prints a different graph; \
+                 make `main` emit `{}` or point the gate at the program it emits",
+                gate.program,
+                gate.program
+            );
+        }
+        Ok(())
+    }
+
+    /// Elaborate the Lean gate module with `lake env lean`; it writes the graph it checked.
+    fn run_lean_gate(
+        &self,
+        stack: &str,
+        gate: &GateConfig,
+        gate_directory: &Path,
+    ) -> Result<GraphDocument> {
+        let directory = self.root.join(&self.lean_config()?.directory);
         let source_path = gate_directory.join("Gate.lean");
         let graph_path = gate_directory.join("graph.json");
         match fs::remove_file(&graph_path) {
@@ -678,7 +705,7 @@ impl Project {
                     .with_context(|| format!("failed to remove {}", graph_path.display()));
             }
         }
-        write_text(&source_path, &gate_source(stack, gate, &graph_path)?)?;
+        write_text(&source_path, &lean_gate_source(stack, gate, &graph_path)?)?;
 
         let mut build = Command::new("lake");
         build
@@ -687,8 +714,9 @@ impl Project {
             .arg("Inframe.Gate")
             .arg(&gate.module)
             .current_dir(&directory);
-        run_lake(
+        run_tool(
             &mut build,
+            Frontend::Lean,
             &directory,
             &format!("building the gate of stack `{stack}`"),
         )?;
@@ -698,25 +726,99 @@ impl Project {
             .arg("lean")
             .arg(&source_path)
             .current_dir(&directory);
-        run_lake(
+        run_tool(
             &mut check,
+            Frontend::Lean,
             &directory,
             &format!("the gate of stack `{stack}` failed"),
         )?;
-
-        let checked = read_graph_file(&graph_path).with_context(|| {
+        read_graph_file(&graph_path).with_context(|| {
             format!("the gate of stack `{stack}` did not write the graph it checked")
-        })?;
-        if &checked != emitted {
-            bail!(
-                "the gate of stack `{stack}` checked the graph of `{}`, but the stack's `main` prints a different graph; \
-                 make `main` emit `{}` (`def main : IO Unit := emitGraph {}`) or point the gate at the program it emits",
-                gate.program,
-                gate.program,
-                gate.program
-            );
-        }
-        Ok(())
+        })
+    }
+
+    /// Compile the PureScript gate module with `purs` against the package's sources (its
+    /// tests included) into the package's output directory, run it with `node`, and read the
+    /// graph it prints.
+    fn run_purescript_gate(
+        &self,
+        stack: &str,
+        gate: &GateConfig,
+        gate_directory: &Path,
+    ) -> Result<GraphDocument> {
+        let config = self.purescript_config()?;
+        let directory = self.root.join(&config.directory);
+        let source_path = gate_directory.join("InframeGate.purs");
+        write_text(&source_path, &purescript_gate_source(stack, gate))?;
+
+        let mut build = Command::new("spago");
+        build
+            .arg("build")
+            .arg("-p")
+            .arg(&config.package)
+            .arg("--quiet")
+            .current_dir(&directory);
+        run_tool(
+            &mut build,
+            Frontend::PureScript,
+            &directory,
+            &format!("building the gate of stack `{stack}`"),
+        )?;
+        let mut sources = Command::new("spago");
+        sources
+            .arg("sources")
+            .arg("-p")
+            .arg(&config.package)
+            .arg("--quiet")
+            .current_dir(&directory);
+        let globs = run_tool(
+            &mut sources,
+            Frontend::PureScript,
+            &directory,
+            &format!("listing the sources of stack `{stack}`"),
+        )?;
+        let globs = gate_source_globs(&String::from_utf8_lossy(&globs), gate, &directory);
+        let globs_path = gate_directory.join("sources.txt");
+        fs::write(&globs_path, globs)
+            .with_context(|| format!("failed to write {}", globs_path.display()))?;
+
+        let mut compile = Command::new("purs");
+        compile
+            .arg("compile")
+            .arg("--source-globs-file")
+            .arg(&globs_path)
+            .arg(&source_path)
+            .arg("--output")
+            .arg("output")
+            .current_dir(&directory);
+        run_tool(
+            &mut compile,
+            Frontend::PureScript,
+            &directory,
+            &format!("compiling the gate of stack `{stack}`"),
+        )?;
+        let module = std::path::absolute(directory.join("output/InframeGate/index.js"))
+            .context("failed to resolve the compiled gate module")?;
+        let module = serde_json::to_string(&module.to_string_lossy())
+            .context("failed to quote the compiled gate module path")?;
+        let mut run = Command::new("node");
+        run.arg("--input-type=module")
+            .arg("-e")
+            .arg(format!(
+                "import {{ pathToFileURL }} from 'node:url';\n\
+                 const gate = await import(pathToFileURL({module}).href);\n\
+                 try {{ gate.main(); }} catch (error) {{ console.error(error.message); process.exit(1); }}\n"
+            ))
+            .current_dir(&directory);
+        let printed = run_tool(
+            &mut run,
+            Frontend::PureScript,
+            &directory,
+            &format!("the gate of stack `{stack}` failed"),
+        )?;
+        serde_json::from_slice(&printed).with_context(|| {
+            format!("the gate of stack `{stack}` did not print the graph it checked")
+        })
     }
 
     fn purescript_config(&self) -> Result<&PureScriptConfig> {
@@ -759,9 +861,10 @@ impl Project {
     }
 }
 
-/// The module `run_gate` elaborates. Everything the project names is spliced in as a Lean name
-/// (checked by `valid_lean_name` when the project loads); the statement is fixed here.
-fn gate_source(stack: &str, gate: &GateConfig, graph_path: &Path) -> Result<String> {
+/// The module `run_lean_gate` elaborates. Everything the project names is spliced in as a
+/// name (checked by `valid_qualified_name` when the project loads); the statement is fixed
+/// here.
+fn lean_gate_source(stack: &str, gate: &GateConfig, graph_path: &Path) -> Result<String> {
     let graph_path = graph_path
         .to_str()
         .filter(|path| !path.chars().any(char::is_control))
@@ -790,17 +893,94 @@ fn gate_source(stack: &str, gate: &GateConfig, graph_path: &Path) -> Result<Stri
     ))
 }
 
-/// Run a Lake command, reporting its output if it fails.
-fn run_lake(command: &mut Command, directory: &Path, failure: &str) -> Result<()> {
+/// The module `run_purescript_gate` compiles. A dotted name is a value of the module before
+/// its last dot, imported qualified, since a PureScript module does not re-export what it
+/// imports; a bare name is a value of the gate's `module`.
+fn purescript_gate_source(stack: &str, gate: &GateConfig) -> String {
+    let mut modules = vec![gate.module.clone()];
+    let mut reference = |name: &str| {
+        let (module, value) = name
+            .rsplit_once('.')
+            .map_or((gate.module.as_str(), name), |(module, value)| {
+                (module, value)
+            });
+        let index = modules
+            .iter()
+            .position(|known| known == module)
+            .unwrap_or_else(|| {
+                modules.push(module.to_owned());
+                modules.len() - 1
+            });
+        format!("Gated{index}.{value}")
+    };
+    let policy = reference(&gate.policy);
+    let program = reference(&gate.program);
+    let imports: String = modules
+        .iter()
+        .enumerate()
+        .map(|(index, module)| format!("import {module} as Gated{index}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    format!(
+        "-- Written by `inframe` for stack `{stack}` on every run; edits are overwritten.\n\
+         module InframeGate (main) where\n\n\
+         import Prelude (Unit)\n\
+         import Effect (Effect)\n\
+         import Inframe.Gate (gate)\n\
+         {imports}\n\
+         main :: Effect Unit\n\
+         main = gate {policy} {program}\n"
+    )
+}
+
+/// The sources the PureScript gate compiles. `spago sources` lists the `test` globs of every
+/// workspace package, whose test-only dependencies are not installed for this one, so a test
+/// glob is kept only when it holds a module the gate imports, as `spago test` would.
+fn gate_source_globs(globs: &str, gate: &GateConfig, directory: &Path) -> String {
+    let modules: Vec<PathBuf> = [&gate.module, &gate.program, &gate.policy]
+        .into_iter()
+        .flat_map(|name| {
+            let module = name.rsplit_once('.').map(|(module, _)| module);
+            [Some(gate.module.as_str()), module]
+        })
+        .flatten()
+        .map(|module| PathBuf::from(format!("{}.purs", module.replace('.', "/"))))
+        .collect();
+    globs
+        .lines()
+        .filter(|glob| {
+            let Some(root) = glob.strip_suffix("/**/*.purs") else {
+                return true;
+            };
+            if Path::new(root).file_name() != Some(OsStr::new("test")) {
+                return true;
+            }
+            modules
+                .iter()
+                .any(|module| directory.join(root).join(module).is_file())
+        })
+        .flat_map(|glob| [glob, "\n"])
+        .collect()
+}
+
+/// Run a frontend tool, reporting its output if it fails, and return its stdout.
+fn run_tool(
+    command: &mut Command,
+    frontend: Frontend,
+    directory: &Path,
+    failure: &str,
+) -> Result<Vec<u8>> {
+    let program = command.get_program().to_string_lossy().into_owned();
     let output = match command.output() {
         Ok(output) => output,
         Err(error) if error.kind() == io::ErrorKind::NotFound => bail!(
-            "`lake` was not found on PATH; {}",
-            install_hint(Frontend::Lean)
+            "`{program}` was not found on PATH; {}",
+            install_hint(frontend)
         ),
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to start `lake` in {}", directory.display()));
+            return Err(error).with_context(|| {
+                format!("failed to start `{program}` in {}", directory.display())
+            });
         }
     };
     if !output.status.success() {
@@ -809,7 +989,7 @@ fn run_lake(command: &mut Command, directory: &Path, failure: &str) -> Result<()
             child_failure_report(failure, command, directory, &output)
         );
     }
-    Ok(())
+    Ok(output.stdout)
 }
 
 fn frontend_tool(frontend: Frontend) -> &'static str {
@@ -865,17 +1045,18 @@ fn child_failure_report(
     let stderr = String::from_utf8_lossy(&output.stderr);
     if stderr.trim().is_empty() {
         report.push_str("stderr: (empty)\n");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.trim().is_empty() {
-            let lines: Vec<&str> = stdout.lines().collect();
-            let tail = &lines[lines.len().saturating_sub(20)..];
-            report.push_str("stdout (tail):\n");
-            report.push_str(&tail.join("\n"));
-            report.push('\n');
-        }
     } else {
         report.push_str("stderr:\n");
         report.push_str(stderr.trim_end());
+        report.push('\n');
+    }
+    // Some tools (`purs`, `lean`) report their errors on stdout.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        let lines: Vec<&str> = stdout.lines().collect();
+        let tail = &lines[lines.len().saturating_sub(20)..];
+        report.push_str("stdout (tail):\n");
+        report.push_str(&tail.join("\n"));
         report.push('\n');
     }
     report
@@ -1028,7 +1209,7 @@ pub fn relative_path(from: &Path, to: &Path) -> String {
     }
 }
 
-/// Gate names are spliced into the module the gate writes, so each must be a Lean name.
+/// Gate names are spliced into the module the gate writes, so each must be a dotted name.
 fn validate_gate(stack: &str, gate: &GateConfig) -> Result<()> {
     for (field, value) in [
         ("module", Some(&gate.module)),
@@ -1036,9 +1217,9 @@ fn validate_gate(stack: &str, gate: &GateConfig) -> Result<()> {
         ("policy", Some(&gate.policy)),
         ("proof", gate.proof.as_ref()),
     ] {
-        if let Some(value) = value.filter(|value| !valid_lean_name(value)) {
+        if let Some(value) = value.filter(|value| !valid_qualified_name(value)) {
             bail!(
-                "`stacks.{stack}.gate.{field}` must be a Lean name such as `Infra.Platform.policies`, not `{value}`"
+                "`stacks.{stack}.gate.{field}` must be a dotted name such as `Infra.Platform.policies`, not `{value}`"
             );
         }
     }
@@ -1145,9 +1326,9 @@ fn valid_component_name(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
-/// A dotted Lean name of plain identifiers (`Infra.PlatformTest`, `policies`), which is all
-/// a gate splices into the module it writes.
-fn valid_lean_name(value: &str) -> bool {
+/// A dotted name of plain identifiers (`Infra.PlatformTest`, `policies`), which is all a gate
+/// splices into the module it writes, in either frontend.
+fn valid_qualified_name(value: &str) -> bool {
     value.split('.').all(|component| {
         let mut characters = component.chars();
         characters

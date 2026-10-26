@@ -355,15 +355,16 @@ fn gate_stack(project: &Project, stack: &str) -> Result<()> {
     Ok(())
 }
 
-/// A Lean stack's test executable passing says nothing about `sorry` in its theorems or about
-/// which graph they were about; only a gate does, so a stack without one is told so.
+/// A test entry point passing says nothing about which graph it checked, nor, in Lean, about
+/// a `sorry` in the theorems beside it; only a gate does, so a stack without one is told so.
 fn note_missing_gate(project: &Project, stack: &str) -> Result<()> {
-    if project.stack_frontend(stack)? == Frontend::Lean {
-        eprintln!(
-            "note: stack `{stack}` has no [stacks.{stack}.gate], so its theorems are not checked for `sorry` \
-             and nothing ties them to the graph its `main` prints"
-        );
-    }
+    let unchecked = match project.stack_frontend(stack)? {
+        Frontend::Lean => "its theorems are not checked for `sorry` and nothing ties them",
+        Frontend::PureScript => "nothing ties its tests",
+    };
+    eprintln!(
+        "note: stack `{stack}` has no [stacks.{stack}.gate], so {unchecked} to the graph its `main` prints"
+    );
     Ok(())
 }
 

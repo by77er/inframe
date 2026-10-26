@@ -67,7 +67,8 @@ wrong and it won't compile.
 
 PureScript is also available as a simpler option. It produces the same output
 for the same stack, but it can't check as much at compile time or do the proofs
-below.
+below. Its policies are evaluated rather than proved, behind the same
+deployment gate.
 
 ## Proofs
 

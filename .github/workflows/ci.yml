@@ -58,6 +58,8 @@ jobs:
           cargo run -q -p inframe-cli -- build --stack example
           cargo run -q -p inframe-cli -- graph validate --stack example
           cargo run -q -p inframe-cli -- test --stack example
+      - name: The deployment gate refuses a different main and a test that checks nothing
+        run: scripts/purescript-gate-probes.sh
       - name: Upload the PureScript graph for cross-frontend comparison
         uses: actions/upload-artifact@v4
         with:

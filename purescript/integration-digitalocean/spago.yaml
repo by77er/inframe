@@ -9,7 +9,9 @@ package:
   test:
     main: Infra.PlatformTest
     dependencies:
+      - argonaut-core
       - arrays
-      - assert
       - foreign-object
       - maybe
+      - strings
+      - tuples

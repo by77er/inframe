@@ -8,9 +8,13 @@
             "argonaut-codecs",
             "argonaut-core",
             "arrays",
+            "console",
+            "effect",
+            "exceptions",
             "foreign-object",
             "maybe",
             "prelude",
+            "strings",
             "tuples"
           ]
         },
@@ -34,10 +38,12 @@
         },
         "test": {
           "dependencies": [
+            "argonaut-core",
             "arrays",
-            "assert",
             "foreign-object",
-            "maybe"
+            "maybe",
+            "strings",
+            "tuples"
           ]
         }
       }
@@ -875,6 +881,17 @@
         "prelude",
         "tuples",
         "unfoldable"
+      ]
+    },
+    "exceptions": {
+      "type": "registry",
+      "version": "6.1.0",
+      "integrity": "sha256-nRrr+N0wk0TUFOWLR7e1n1oxcXo/X345bQUtoY9lW6A=",
+      "dependencies": [
+        "effect",
+        "either",
+        "maybe",
+        "prelude"
       ]
     },
     "exists": {

@@ -8,6 +8,7 @@ test:
 	scripts/lean-negative.sh lean
 	scripts/lean-negative.sh lean/integration-digitalocean
 	scripts/lean-gate-probes.sh
+	scripts/purescript-gate-probes.sh
 
 check:
 	cargo fmt --all -- --check
