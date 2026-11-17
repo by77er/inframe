@@ -1,6 +1,6 @@
 # Inframe
 
-Inframe is an infrastructure-as-code interface that's actually nice to use, I hope. I'm
+Inframe is an infrastructure-as-code interface that's actually nice to use. I'm
 not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a pure
 functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
