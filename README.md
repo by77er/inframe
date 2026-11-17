@@ -1,8 +1,8 @@
 # Inframe
 
 Inframe is an infrastructure-as-code interface that's actually nice to use. I'm
-not a big fan of Pulumi's impurity or HCL's... everything. Inframe chooses a pure
-functional approach in order to make composition, testing, and modularization
+not a big fan of Pulumi's impurity or HCL's opacity and clunky modularization. Inframe
+chooses a pure functional approach in order to make composition, testing, and modularization
 clear and easy to understand. It delegates the mechanics of resource creation
 and state management to OpenTofu, and generates typed adapters for Terraform
 providers in two frontend languages: Lean 4 and PureScript. Both provide a pure
