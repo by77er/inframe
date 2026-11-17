@@ -7,7 +7,6 @@ clear and easy to understand. It delegates the mechanics of resource creation
 and state management to OpenTofu, and generates typed adapters for Terraform
 providers in two frontend languages: Lean 4 and PureScript. Both provide a pure
 functional interface, but Lean 4 allows more sophisticated validation and improved ergonomics.
-
 Both frontends render the same intermediate representation.
 
 ## Example
