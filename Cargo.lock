@@ -290,6 +290,7 @@ dependencies = [
  "inframe-graph-ir",
  "inframe-opentofu",
  "inframe-provider-schema",
+ "inframe-serve",
  "predicates",
  "serde",
  "serde_json",
@@ -350,6 +351,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "inframe-serve"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "inframe-graph-ir",
+ "inframe-view",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "inframe-view"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

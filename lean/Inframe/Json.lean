@@ -144,6 +144,24 @@ def renderGraph (program : Infra α) : String :=
 def renderGraphPretty (program : Infra α) : String :=
   (encodeGraph (buildGraph program)).pretty
 
+/-- The environment variable naming the file `emitGraph` writes a program's origins to. The CLI
+sets it when it wants them (`inframe serve`); unset, nothing is written. -/
+def originsPathVariable : String := "INFRAME_ORIGINS"
+
+/-- Where each node of a graph was declared, as the document `inframe serve` reads:
+`{"format_version": "1.0", "origins": {"<key>": {"module", "declaration", "line"}}}` with the
+keys of `Graph.originOf?`. It is a companion to Graph IR, not a part of it, so both frontends
+keep rendering the same graph. -/
+def encodeOrigins (graph : Graph) : Json :=
+  Json.mkObj
+    [ ("format_version", .str "1.0")
+    , ("origins",
+        Json.mkObj (graph.origins.map fun (key, origin) =>
+          (key, Json.mkObj
+            [ ("module", .str origin.module)
+            , ("declaration", .str origin.declaration)
+            , ("line", .num origin.line) ]))) ]
+
 /-- Print a program's Graph IR document on stdout, the whole of a stack's `main`:
 
 ```lean
@@ -151,10 +169,14 @@ def main : IO Unit := emitGraph infrastructure
 ```
 
 The document is rendered compactly, written to the stream with `putStr`, and flushed, so no
-stack `main` has to know which printing path survives a large graph. -/
+stack `main` has to know which printing path survives a large graph. When `INFRAME_ORIGINS`
+names a file, the origins of the graph's nodes are written there first (see `encodeOrigins`). -/
 def emitGraph (program : Infra α) : IO Unit := do
+  let graph := buildGraph program
+  if let some path ← IO.getEnv originsPathVariable then
+    IO.FS.writeFile path ((encodeOrigins graph).compress ++ "\n")
   let stdout ← IO.getStdout
-  stdout.putStr (renderGraph program)
+  stdout.putStr (encodeGraph graph).compress
   stdout.putStr "\n"
   stdout.flush
 

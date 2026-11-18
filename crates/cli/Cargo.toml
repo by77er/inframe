@@ -9,6 +9,12 @@ rust-version.workspace = true
 name = "inframe"
 path = "src/main.rs"
 
+[features]
+default = ["serve"]
+# `inframe serve`, the live visualizer. On by default; build with `--no-default-features` for
+# a CLI without it (and without the page and the WebAssembly module it carries).
+serve = ["dep:inframe-serve"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -21,6 +27,7 @@ inframe-emit-purescript = { path = "../emit-purescript" }
 inframe-graph-ir = { path = "../graph-ir" }
 inframe-opentofu = { path = "../opentofu" }
 inframe-provider-schema = { path = "../provider-schema" }
+inframe-serve = { path = "../serve", optional = true }
 
 [dev-dependencies]
 assert_cmd.workspace = true

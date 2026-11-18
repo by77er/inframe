@@ -25,3 +25,11 @@ root = "Infra.PlatformMain"
 [[lean_exe]]
 name = "platform-test"
 root = "Infra.PlatformTest"
+
+[[lean_exe]]
+name = "atlas"
+root = "Infra.AtlasMain"
+
+[[lean_exe]]
+name = "storefront"
+root = "Infra.Storefront"

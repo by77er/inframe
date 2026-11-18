@@ -19,6 +19,8 @@ use inframe_provider_schema::{
 
 mod inspect;
 mod project;
+#[cfg(feature = "serve")]
+mod serve;
 
 use project::{
     DEFAULT_CONFIG, Frontend, FrontendTarget, INFRAME_REPOSITORY, Project, ProviderGeneration,
@@ -80,6 +82,11 @@ enum Command {
     Show(ExistingStackArgs),
     /// Run `tofu output -json` in an existing stack.
     Output(ExistingStackArgs),
+    /// Serve a live, browsable map of the project's stacks: what each declares, which module
+    /// and definition declares it, and how the nodes refer to each other. Rebuilds a stack
+    /// when its sources change. Never runs `OpenTofu`.
+    #[cfg(feature = "serve")]
+    Serve(serve::ServeArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -270,6 +277,8 @@ fn main() -> Result<()> {
         Command::Output(arguments) => {
             run_existing_json("output", &arguments, &cli.project, &cli.tofu_binary)
         }
+        #[cfg(feature = "serve")]
+        Command::Serve(arguments) => serve::run(&arguments, &cli.project),
     }
 }
 

@@ -107,9 +107,10 @@ default workspace unless `workspace` is given) and return its outputs. The logic
 validated at compile time. -/
 def read (name : String) (backend : RemoteBackend) (workspace : Option String := none)
     (options : DataSourceOptions Unit := dataSourceOptions)
-    (valid : validIdentifier name = true := by valid_identifier) : Infra RemoteState := do
+    (valid : validIdentifier name = true := by valid_identifier)
+    (origin : Origin := by origin_here) : Infra RemoteState := do
   let handle ← addDataSource options (Identifier.mk "terraform_remote_state") ⟨name, valid⟩
-    (arguments backend workspace)
+    (arguments backend workspace) origin
   pure { dataSource := handle, outputs := dataSourceAttr handle ["outputs"] }
 
 /-- One output of the other stack, `data.terraform_remote_state.<name>.outputs.<output>`. The

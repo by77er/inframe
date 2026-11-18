@@ -1408,3 +1408,100 @@ fn resolves_stack_references_from_the_project() {
             "stack `apps` reads stack `platform`, which is not declared in the project config",
         ));
 }
+
+/// `inframe serve` builds each stack, attaches the origins its entry point wrote to
+/// `INFRAME_ORIGINS`, reads the local state for presence only, and answers over HTTP.
+#[cfg(all(unix, feature = "serve"))]
+#[test]
+fn serves_a_live_model_with_origins_and_applied_state() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpStream;
+    use std::process::Stdio;
+
+    let directory = tempdir().unwrap();
+    fs::write(
+        directory.path().join("inframe.toml"),
+        "[lean]\ndirectory = \"infra\"\nmain = \"graph\"\n\n[stacks.dev]\n",
+    )
+    .unwrap();
+    fs::create_dir(directory.path().join("infra")).unwrap();
+    let path = fake_lake(
+        directory.path(),
+        r#"#!/bin/sh
+printf '%s' '{"format_version":"1.0","origins":{"terraform_data.a":{"module":"Infra.Main","declaration":"network","line":7}}}' > "$INFRAME_ORIGINS"
+printf '%s' '{"format_version":"1.0","required_providers":{},"provider_configs":[],"resources":[{"type":"terraform_data","name":"a","arguments":{},"depends_on":[]},{"type":"terraform_data","name":"b","arguments":{"input":{"kind":"resource_attr","address":"terraform_data.a","path":["id"]}},"depends_on":[]}],"data_sources":[],"outputs":{},"moves":[]}'
+"#,
+    );
+    let state = directory.path().join(".inframe/stacks/dev");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(
+        state.join("terraform.tfstate"),
+        r#"{"version":4,"serial":3,"resources":[{"mode":"managed","type":"terraform_data","name":"a","instances":[{"attributes":{"id":"not-for-the-browser"}}]}]}"#,
+    )
+    .unwrap();
+
+    let mut server = std::process::Command::new(assert_cmd::cargo::cargo_bin("inframe"))
+        .args(["serve", "--port", "0", "--poll-ms", "50", "--project"])
+        .arg(directory.path().join("inframe.toml"))
+        .env("PATH", path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut banner = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut banner)
+        .unwrap();
+    let address = banner
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("http://"))
+        .unwrap_or_else(|| panic!("no address in `{banner}`"))
+        .to_owned();
+    let get = |path: &str, host: &str| {
+        let mut stream = TcpStream::connect(&address).unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+
+    let mut model = String::new();
+    for _ in 0..200 {
+        model = get("/api/model", &address);
+        if model.contains(r#""status":"ready""#) && model.contains(r#""applied":true"#) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let page = get("/", &address);
+    let module = {
+        let mut stream = TcpStream::connect(&address).unwrap();
+        write!(stream, "GET /view.wasm HTTP/1.1\r\nHost: {address}\r\n\r\n").unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        response
+    };
+    let rebound = get("/api/model", "attacker.example");
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    assert!(model.starts_with("HTTP/1.1 200 OK"), "{model}");
+    assert!(
+        model.contains(r#""origin":{"module":"Infra.Main","declaration":"network","line":7}"#),
+        "{model}"
+    );
+    assert!(model.contains(r#""from":"dev/terraform_data.b","to":"dev/terraform_data.a","kind":"reference","via":["input → id"]"#), "{model}");
+    assert!(model.contains(r#""applied":false"#), "{model}");
+    assert!(!model.contains("not-for-the-browser"));
+    assert!(page.contains("<title>Inframe</title>"));
+    // The page's logic is served as a WebAssembly module, by its media type and magic.
+    let head = String::from_utf8_lossy(&module[..module.len().min(200)]).into_owned();
+    assert!(head.contains("Content-Type: application/wasm"), "{head}");
+    let body = module
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert_eq!(&module[body..body + 4], b"\0asm");
+    assert!(rebound.starts_with("HTTP/1.1 403"), "{rebound}");
+}

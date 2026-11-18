@@ -1,5 +1,8 @@
 //! Canonical, language-neutral desired-infrastructure graph.
 
+pub mod display;
+pub mod origins;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

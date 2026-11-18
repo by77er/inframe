@@ -306,6 +306,98 @@ a stack with a gate, it runs [the deployment gate](#the-deployment-gate). A Lean
 stack without a gate gets a note on every run, because a test executable that
 exits 0 says nothing about a `sorry` in the theorems beside it.
 
+## A live map of the project
+
+```bash
+inframe serve                    # http://127.0.0.1:7878
+inframe serve --stack platform --port 9000
+```
+
+`serve` builds every stack (or the ones named with `--stack`) and serves a page
+that draws the project as blocks on a tilted canvas: stacks, the modules and
+definitions inside them, and the nodes those declare. Drag to pan, scroll to
+zoom, double-click to zoom to something; *Flat*, *Tilt* and *Iso* set the
+camera angle. An outline on the left holds the same tree, and a panel on the
+right shows the selection: both fold away.
+
+There are two views.
+
+- **Explore** starts with each stack opened one level and everything below it
+  closed. Click a group to open it in place; click its `–`, or the group again
+  once it is selected, to close it. A node hidden inside a closed group is drawn
+  as that group, so associations stay visible at whatever depth is open.
+- **Everything** opens every group, and writes each node's configuration on the
+  node: a row to an argument, so a block is as large as what it configures. From
+  far off the blocks show their names; zoom in and the rows appear.
+
+The canvas has no edge, so nothing is fitted to a frame and nothing is cut short:
+a block is as wide as its name and type, and a group is as large as what stands
+on it. A group is packed into as square a shape as its contents allow, in the
+order of what needs what: what is needed first stands toward the far-left
+corner, and what needs it fans out from there.
+
+A group that holds more than sixteen nodes directly (a stack written as one long
+definition, say) is split by resource family, the first word of the type after
+its provider: `aws_iam_role` and `aws_iam_policy` sit together under `iam`.
+Changes are animated: blocks rise when a group opens and sink into it when it
+closes, the camera eases, a dragged canvas glides to a stop, and an association
+draws itself from the node that needs to the node that is needed. A browser set
+to reduce motion gets none of it.
+
+Select a node to see what it depends on and what uses it, with the argument that
+carries each association, drawn as arcs that point at what is needed. Select a
+module or a definition to see what it holds and which other modules it reaches
+into. A stack that reads another stack's exports points at the outputs it reads.
+A taller block carries more configuration. *Find* dims what does not match and
+`Enter` opens the way to the first match.
+
+The page is live. `serve` watches each stack's package (and a local checkout of
+the Lean core) and rebuilds a stack when a file under it changes; the page
+follows without a reload. A build that fails shows its error on the stack and
+keeps the last graph that built. Edits to `inframe.toml` are picked up too.
+
+The module and definition a node belongs to come from the stack's source, not
+from a naming convention. Every Lean builder (`create`, `read`, `configure`,
+`output`, `Stack.read`) takes a trailing `origin` argument that the
+`origin_here` tactic fills in with the module, enclosing declaration, and line
+of the call. The origins are kept beside the graph, never in it: they are not
+part of Graph IR, no policy or validator can read them, and `emitGraph` writes
+them only when `INFRAME_ORIGINS` names a file, which `serve` sets. A helper
+that wraps a builder is, by default, where its nodes are attributed; to
+attribute them to the helper's caller instead, forward the origin:
+
+```lean
+def bucket (name : String) (origin : Origin := by origin_here) : Infra SpacesBucket.SpacesBucket :=
+  SpacesBucket.create name { name := name, region := "nyc3" } (origin := origin)
+```
+
+Bindings generated before this existed do not pass an origin; run `inframe
+provider generate` again. The PureScript frontend does not record origins, so
+its stacks are grouped by provider and resource type, which is also available
+for Lean stacks under *Group by*.
+
+For a stack with a `local` backend, `serve` also reads the state file and marks
+each node as applied or not, and lists resources the state holds that the graph
+no longer declares. Only presence is read: attribute values in the state never
+leave the server. Other backends are not read. `serve` never runs OpenTofu, and
+it listens on loopback unless `--host` says otherwise.
+
+The canvas is drawn with WebGPU, so it needs a browser that has it (current
+Chrome, Edge and Safari; Firefox on Windows and macOS). Without it the outline
+and the details still work.
+
+`serve` is a feature of the CLI, on by default, and its code is kept apart from
+the rest: `crates/serve` is the server and the page, and `crates/view` is the
+model the server sends together with the page's logic (what is open, where
+things stand, the camera, what a click lands on), compiled to WebAssembly and
+tested as ordinary Rust. Nothing else depends on either. `cargo install --path
+crates/cli --no-default-features` builds a CLI without them. What stays in the
+core is only what records where nodes come from: the `origin` arguments of the
+Lean builders, and the reader of the origins document in `inframe-graph-ir`.
+The built WebAssembly module is kept in the repository so that building the CLI
+needs one toolchain: after changing `crates/view`, run `make view-wasm` (which
+needs the `wasm32-unknown-unknown` target) and commit the result.
+
 ## Plan, apply, and the rest of the lifecycle
 
 ```bash

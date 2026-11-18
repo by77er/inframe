@@ -144,6 +144,13 @@ inframe apply --stack lean-example     # creates real, billable resources
 inframe destroy --stack lean-example
 ```
 
+To look at what the project declares, run `inframe serve` and open the page it
+prints: every stack as blocks on a tilted canvas, grouped by the modules and
+definitions of its source, with the references between resources drawn in. Open
+groups as you go, or open everything at once and read each node's configuration
+on it. It rebuilds as
+you edit.
+
 For your own project, run `inframe project init` to create an `inframe.toml`,
 then see the [guide](GUIDE.md).
 

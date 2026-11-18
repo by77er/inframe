@@ -305,12 +305,13 @@ fn render_provider(out: &mut Output<'_>, package: &BindingPackage, module_root: 
     let _ = write!(
         out,
         "/-- Configure the default `{local_name}` provider. -/\n\
-         def configure (a : Args){} : Infra (Inframe.Provider {marker}) :=\n  \
-           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.toInputObject\n\n\
-         /-- Configure an aliased `{local_name}` provider. The alias is validated at compile time. -/\n\
-         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by valid_identifier){} :\n    \
+         def configure (a : Args){}\n    (origin : Origin := by origin_here) :\n    \
            Infra (Inframe.Provider {marker}) :=\n  \
-           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.toInputObject\n\n\
+           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" none a.toInputObject origin\n\n\
+         /-- Configure an aliased `{local_name}` provider. The alias is validated at compile time. -/\n\
+         def configureAs (alias : String) (a : Args) (valid : validIdentifier alias = true := by valid_identifier){}\n    (origin : Origin := by origin_here) :\n    \
+           Infra (Inframe.Provider {marker}) :=\n  \
+           addProvider (Identifier.mk \"{local_name}\") \"{}\" \"{version}\" (some ⟨alias, valid⟩) a.toInputObject origin\n\n\
          end {module_root}.Provider\n",
         obligation.consumed,
         Escaped(&provider.source),
@@ -472,9 +473,10 @@ fn render_item(
         out,
         "/-- Add `{}.<name>` to the graph with explicit options. The logical name is validated at\ncompile time. -/\n\
          def {operation_with} (name : String) (a : Args) (options : {options_type} {module_root}.Provider.{marker})\n    \
-           (valid : validIdentifier name = true := by valid_identifier){} : Infra {handle_name} := do\n  \
+           (valid : validIdentifier name = true := by valid_identifier){}\n    (origin : Origin := by origin_here) :\n    \
+           Infra {handle_name} := do\n  \
            requireProvider (Identifier.mk \"{local_name}\") \"{}\" \"= {}\"\n  \
-           let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.toInputObject\n  \
+           let handle ← {add} options (Identifier.mk \"{}\") ⟨name, valid⟩ a.toInputObject origin\n  \
            pure\n    {{ {handle_key} := handle",
         item.provider_type,
         obligation.consumed,
@@ -494,9 +496,9 @@ fn render_item(
         out,
         " }}\n\n\
          /-- Add `{}.<name>` to the graph with default options. -/\n\
-         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier){} :\n    \
+         def {operation} (name : String) (a : Args) (valid : validIdentifier name = true := by valid_identifier){}\n    (origin : Origin := by origin_here) :\n    \
            Infra {handle_name} :=\n  \
-           {operation_with} name a {default_options} valid{}\n\n\
+           {operation_with} name a {default_options} valid{} origin\n\n\
          end {module}\n",
         item.provider_type, obligation.forwarded, obligation.discharge
     );
@@ -1584,10 +1586,10 @@ mod tests {
             "def Args.blocksInRange (a : Args) : Bool :=\n  1 ≤ a.atLeastOne.length && 1 ≤ a.bounded.length && a.bounded.length ≤ 3 && a.outer.all OuterArgs.blocksInRange\n"
         ));
         assert!(source.contains(
-            "(valid : validIdentifier name = true := by valid_identifier)\n    (_blocks : a.blocksInRange = true := by blocks_in_range) : Infra Tag := do"
+            "(valid : validIdentifier name = true := by valid_identifier)\n    (_blocks : a.blocksInRange = true := by blocks_in_range)\n    (origin : Origin := by origin_here) :\n    Infra Tag := do"
         ));
         assert!(source.contains(
-            "(valid : validIdentifier name = true := by valid_identifier)\n    (blocks : a.blocksInRange = true := by blocks_in_range) :\n    Infra Tag :=\n  createWith name a resourceOptions valid blocks\n"
+            "(valid : validIdentifier name = true := by valid_identifier)\n    (blocks : a.blocksInRange = true := by blocks_in_range)\n    (origin : Origin := by origin_here) :\n    Infra Tag :=\n  createWith name a resourceOptions valid blocks origin\n"
         ));
         assert!(!source.contains("ExactlyOneArgs.blocksInRange"));
 
@@ -1595,7 +1597,7 @@ mod tests {
         let plain = render_package(&package(), "DigitalOcean", "abc", &core()).unwrap();
         let plain = &plain.files[Path::new("DigitalOcean/Resource/Tag.lean")];
         assert!(!plain.contains("blocksInRange"));
-        assert!(plain.contains("createWith name a resourceOptions valid\n"));
+        assert!(plain.contains("createWith name a resourceOptions valid origin\n"));
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1727,11 +1729,11 @@ mod tests {
         assert!(provider.contains("inductive DigitalOceanProvider"));
         assert!(
             provider.contains(
-                "def configure (a : Args) : Infra (Inframe.Provider DigitalOceanProvider)"
+                "def configure (a : Args)\n    (origin : Origin := by origin_here) :\n    Infra (Inframe.Provider DigitalOceanProvider)"
             )
         );
         assert!(provider.contains(
-            "addProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\" none a.toInputObject"
+            "addProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\" none a.toInputObject origin"
         ));
         assert!(provider.contains("structure Args where\n  token : Option (Input String) := none"));
         assert!(provider.contains("a.token.map fun value => (\"token\", inputNode value)"));
@@ -1821,7 +1823,7 @@ mod tests {
             "requireProvider (Identifier.mk \"digitalocean\") \"digitalocean/digitalocean\" \"= 2.100.0\""
         ));
         assert!(source.contains(
-            "addResource options (Identifier.mk \"digitalocean_tag\") ⟨name, valid⟩ a.toInputObject"
+            "addResource options (Identifier.mk \"digitalocean_tag\") ⟨name, valid⟩ a.toInputObject origin"
         ));
         assert!(source.contains("      id := resourceAttr handle [\"id\"]"));
         assert!(source.contains(
