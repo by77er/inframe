@@ -353,7 +353,7 @@ fn is_structured_json(value: &Value) -> bool {
         || matches!(value, Value::Object(fields) if !fields.is_empty())
 }
 
-fn format_expr(expression: &Expr) -> String {
+pub(crate) fn format_expr(expression: &Expr) -> String {
     match expression {
         Expr::Literal { value } => format_json(value),
         Expr::ResourceAttr { address, path } | Expr::DataSourceAttr { address, path } => {
@@ -421,7 +421,7 @@ fn format_reference(address: &Address, path: &[String]) -> String {
     }
 }
 
-fn format_json(value: &Value) -> String {
+pub(crate) fn format_json(value: &Value) -> String {
     match value {
         Value::Null => "null".to_owned(),
         Value::Bool(value) => value.to_string(),

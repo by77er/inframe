@@ -441,8 +441,35 @@ error: policy cannot be decided from the graph:
     (Identifier.mk "digitalocean_tag") (Identifier.mk "twice") InputObject.empty
   pure ()))
 
+/-! Origins: each node records the module, declaration and line of the call that added it,
+beside the graph and never in it. -/
+
+/-- A helper that forwards its caller's origin, so the node is attributed to the caller. -/
+def taggedFrom (name : Identifier) (origin : Origin := by origin_here) : Infra Unit := do
+  let _ : Resource TagResource ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") name (InputObject.ofList []) origin
+
+def originating : Infra Unit := do
+  let _ : Resource TagResource ← addResource (resourceOptions : ResourceOptions Unit)
+    (Identifier.mk "digitalocean_tag") (Identifier.mk "direct") (InputObject.ofList [])
+  taggedFrom (Identifier.mk "forwarded")
+  output "name" (lit "known" : Input String)
+
+theorem origins_name_the_calling_declaration :
+    ((buildGraph originating).originOf? "digitalocean_tag.direct").map
+        (fun origin => (origin.module, origin.declaration)) = some ("Test.Main", "originating") ∧
+    ((buildGraph originating).originOf? "digitalocean_tag.forwarded").map (·.declaration)
+      = some "originating" ∧
+    ((buildGraph originating).originOf? "output.name").map (·.declaration) = some "originating" ∧
+    (buildGraph originating).originOf? "digitalocean_tag.absent" = none := by
+  refine ⟨by decide, by decide, by decide, by decide⟩
+
 def main : IO Unit := do
   let rendered := (encodeGraph graph).compress
+  expect (contains (encodeOrigins (buildGraph originating)).compress
+      "\"digitalocean_tag.forwarded\":{\"declaration\":\"originating\"")
+    "the origins document names the forwarding caller"
+  expect (!contains (renderGraph originating) "origin") "Graph IR does not mention origins"
   expect (contains (renderGraph adopting) "\"imports\":[{\"id\":\"legacy-tag-id\",\"to\":\"digitalocean_tag.legacy\"}]")
     "imports are encoded"
   expect (!contains rendered "imports") "a graph that adopts nothing has no imports key"

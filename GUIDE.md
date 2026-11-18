@@ -306,6 +306,52 @@ a stack with a gate, it runs [the deployment gate](#the-deployment-gate). A Lean
 stack without a gate gets a note on every run, because a test executable that
 exits 0 says nothing about a `sorry` in the theorems beside it.
 
+## A live map of the project
+
+```bash
+inframe serve                    # http://127.0.0.1:7878
+inframe serve --stack platform --port 9000
+```
+
+`serve` builds every stack (or the ones named with `--stack`) and serves a page
+that shows them as nested boxes: project, stack, module, definition, node. Area
+follows how much configuration a node carries. Select a node to see what it
+depends on and what uses it, with the argument that carries each association;
+select a module or a definition to see what it holds and which other modules it
+reaches into. A stack that reads another stack's exports is drawn pointing at
+the outputs it reads.
+
+The page is live. `serve` watches each stack's package (and a local checkout of
+the Lean core) and rebuilds a stack when a file under it changes; the page
+follows without a reload. A build that fails shows its error on the stack and
+keeps the last graph that built. Edits to `inframe.toml` are picked up too.
+
+The module and definition a node belongs to come from the stack's source, not
+from a naming convention. Every Lean builder (`create`, `read`, `configure`,
+`output`, `Stack.read`) takes a trailing `origin` argument that the
+`origin_here` tactic fills in with the module, enclosing declaration, and line
+of the call. The origins are kept beside the graph, never in it: they are not
+part of Graph IR, no policy or validator can read them, and `emitGraph` writes
+them only when `INFRAME_ORIGINS` names a file, which `serve` sets. A helper
+that wraps a builder is, by default, where its nodes are attributed; to
+attribute them to the helper's caller instead, forward the origin:
+
+```lean
+def bucket (name : String) (origin : Origin := by origin_here) : Infra SpacesBucket.SpacesBucket :=
+  SpacesBucket.create name { name := name, region := "nyc3" } (origin := origin)
+```
+
+Bindings generated before this existed do not pass an origin; run `inframe
+provider generate` again. The PureScript frontend does not record origins, so
+its stacks are laid out by provider and resource type, which is also available
+for Lean stacks under *Group by*.
+
+For a stack with a `local` backend, `serve` also reads the state file and marks
+each node as applied or not, and lists resources the state holds that the graph
+no longer declares. Only presence is read: attribute values in the state never
+leave the server. Other backends are not read. `serve` never runs OpenTofu, and
+it listens on loopback unless `--host` says otherwise.
+
 ## Plan, apply, and the rest of the lifecycle
 
 ```bash

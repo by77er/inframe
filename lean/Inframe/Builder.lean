@@ -1,4 +1,5 @@
 import Inframe.Core
+import Inframe.Origin
 
 /-!
 # Pure graph builder
@@ -172,6 +173,9 @@ structure Graph where
   /-- Other stacks of the project whose outputs this graph reads, each the node
   `data.terraform_remote_state.<stack>`; the CLI supplies their backends. -/
   stackReferences : List String := []
+  /-- Where each node was declared, keyed as `Graph.originOf?` documents. Not part of Graph IR
+  and read by no validator or policy; `emitGraph` writes it beside the graph on request. -/
+  origins : List (String × Origin) := []
   deriving Repr
 
 namespace ProviderConfigSpec
@@ -234,6 +238,12 @@ def output? (graph : Graph) (name : String) : Option OutputSpec :=
 def resourcesOfType (graph : Graph) (resourceType : String) : List ResourceSpec :=
   graph.resources.filter (·.resourceType == resourceType)
 
+/-- Where the node `key` was declared: an address as OpenTofu prints it for a resource, a data
+source or a stack reference (`digitalocean_vpc.platform`, `data.….available`),
+`provider.<address>` for a provider configuration, and `output.<name>` for a root output. -/
+def originOf? (graph : Graph) (key : String) : Option Origin :=
+  graph.origins.lookup key
+
 /-- Every node address in the graph. -/
 def addresses (graph : Graph) : List Address :=
   graph.resources.map ResourceSpec.address ++ graph.dataSources.map DataSourceSpec.address
@@ -294,7 +304,7 @@ def requireProvider (localName : Identifier) (source version : String) : Infra U
 
 /-- Configure a provider, optionally under an alias, and return a typed handle. -/
 def addProvider (provider : Identifier) (source version : String) (alias : Option Identifier)
-    (values : InputObject) : Infra (Provider p) :=
+    (values : InputObject) (origin : Origin := by origin_here) : Infra (Provider p) :=
   ⟨fun graph =>
     let address := match alias with
       | none => provider.raw
@@ -302,11 +312,12 @@ def addProvider (provider : Identifier) (source version : String) (alias : Optio
     (providerHandle address,
       { graph with
         requiredProviders := Infra.replaceOrAppend provider.raw ⟨source, version⟩ graph.requiredProviders
-        providerConfigs := graph.providerConfigs ++ [⟨provider.raw, alias.map Identifier.raw, values.fields⟩] })⟩
+        providerConfigs := graph.providerConfigs ++ [⟨provider.raw, alias.map Identifier.raw, values.fields⟩]
+        origins := Infra.replaceOrAppend ("provider." ++ address) origin graph.origins })⟩
 
 /-- Append a managed resource and return its typed handle. -/
 def addResource (options : ResourceOptions p) (resourceType name : Identifier)
-    (values : InputObject) : Infra (Resource r) :=
+    (values : InputObject) (origin : Origin := by origin_here) : Infra (Resource r) :=
   ⟨fun graph =>
     let spec : ResourceSpec :=
       { resourceType := resourceType.raw
@@ -315,11 +326,14 @@ def addResource (options : ResourceOptions p) (resourceType name : Identifier)
         dependsOn := options.explicitDependencies
         provider := options.provider
         lifecycle := options.lifecycle }
-    (resourceHandle resourceType name, { graph with resources := graph.resources ++ [spec] })⟩
+    (resourceHandle resourceType name,
+      { graph with
+        resources := graph.resources ++ [spec]
+        origins := Infra.replaceOrAppend spec.address.toString origin graph.origins })⟩
 
 /-- Append a data source and return its typed handle. -/
 def addDataSource (options : DataSourceOptions p) (dataSourceType name : Identifier)
-    (values : InputObject) : Infra (DataSource r) :=
+    (values : InputObject) (origin : Origin := by origin_here) : Infra (DataSource r) :=
   ⟨fun graph =>
     let spec : DataSourceSpec :=
       { dataSourceType := dataSourceType.raw
@@ -328,23 +342,29 @@ def addDataSource (options : DataSourceOptions p) (dataSourceType name : Identif
         dependsOn := options.explicitDependencies
         provider := options.provider }
     (dataSourceHandle dataSourceType name,
-      { graph with dataSources := graph.dataSources ++ [spec] })⟩
+      { graph with
+        dataSources := graph.dataSources ++ [spec]
+        origins := Infra.replaceOrAppend spec.address.toString origin graph.origins })⟩
 
-private def outputWithSensitivity (sensitive : Bool) (name : String) (value : Input α) :
-    Infra Unit :=
+private def outputWithSensitivity (sensitive : Bool) (name : String) (value : Input α)
+    (origin : Origin) : Infra Unit :=
   Infra.modify fun graph =>
-    { graph with outputs := Infra.replaceOrAppend name ⟨inputNode value, sensitive⟩ graph.outputs }
+    { graph with
+      outputs := Infra.replaceOrAppend name ⟨inputNode value, sensitive⟩ graph.outputs
+      origins := Infra.replaceOrAppend ("output." ++ name) origin graph.origins }
 
 /-- Declare a root output from an input or a plain value. The name is validated at compile
 time. -/
 def output [IntoInput v α] (name : String) (value : v)
-    (_valid : validIdentifier name = true := by valid_identifier) : Infra Unit :=
-  outputWithSensitivity false name (toInput value : Input α)
+    (_valid : validIdentifier name = true := by valid_identifier)
+    (origin : Origin := by origin_here) : Infra Unit :=
+  outputWithSensitivity false name (toInput value : Input α) origin
 
 /-- Declare a root output that OpenTofu must redact. -/
 def sensitiveOutput [IntoInput v α] (name : String) (value : v)
-    (_valid : validIdentifier name = true := by valid_identifier) : Infra Unit :=
-  outputWithSensitivity true name (toInput value : Input α)
+    (_valid : validIdentifier name = true := by valid_identifier)
+    (origin : Origin := by origin_here) : Infra Unit :=
+  outputWithSensitivity true name (toInput value : Input α) origin
 
 /-- Declare that the node now at `destination` previously lived at `origin`, lowering to an
 OpenTofu `moved` block so the refactor does not replace the object. -/
@@ -364,11 +384,16 @@ def adopt [Managed h] (destination : h) (id : String) : Infra Unit :=
 `data.terraform_remote_state.<stack>`, whose backend the CLI fills in from `inframe.toml`.
 `Stack.read` is the typed way to use it. Reading a stack again reuses its node, so helpers can
 each read the stacks they need. -/
-def addStackReference (stack : Identifier) : Infra (DataSource r) :=
+def addStackReference (stack : Identifier) (origin : Origin := by origin_here) :
+    Infra (DataSource r) :=
   ⟨fun graph =>
     (dataSourceHandle (Identifier.mk "terraform_remote_state") stack,
       if graph.stackReferences.contains stack.raw then graph
-      else { graph with stackReferences := graph.stackReferences ++ [stack.raw] })⟩
+      else
+        { graph with
+          stackReferences := graph.stackReferences ++ [stack.raw]
+          origins :=
+            Infra.replaceOrAppend ("data.terraform_remote_state." ++ stack.raw) origin graph.origins })⟩
 
 /-- Run `program` and also return the managed resources it added, in creation order. This is
 the primitive for scope combinators that post-process everything created inside a block, for
@@ -398,35 +423,35 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
     lifecycle := options.lifecycle }
 
 @[simp] theorem run_addResource_fst (options : ResourceOptions p) (resourceType name : Identifier)
-    (values : InputObject) (graph : Graph) :
-    ((addResource (r := r) options resourceType name values).run graph).1
+    (values : InputObject) (origin : Origin) (graph : Graph) :
+    ((addResource (r := r) options resourceType name values origin).run graph).1
       = resourceHandle resourceType name := rfl
 
 @[simp] theorem run_addResource_resources (options : ResourceOptions p)
-    (resourceType name : Identifier) (values : InputObject) (graph : Graph) :
-    ((addResource (r := r) options resourceType name values).run graph).2.resources
+    (resourceType name : Identifier) (values : InputObject) (origin : Origin) (graph : Graph) :
+    ((addResource (r := r) options resourceType name values origin).run graph).2.resources
       = graph.resources ++ [resourceSpecOf options resourceType name values] := rfl
 
 @[simp] theorem run_addDataSource_fst (options : DataSourceOptions p)
-    (dataSourceType name : Identifier) (values : InputObject) (graph : Graph) :
-    ((addDataSource (r := r) options dataSourceType name values).run graph).1
+    (dataSourceType name : Identifier) (values : InputObject) (origin : Origin) (graph : Graph) :
+    ((addDataSource (r := r) options dataSourceType name values origin).run graph).1
       = dataSourceHandle dataSourceType name := rfl
 
 @[simp] theorem run_addDataSource_resources (options : DataSourceOptions p)
-    (dataSourceType name : Identifier) (values : InputObject) (graph : Graph) :
-    ((addDataSource (r := r) options dataSourceType name values).run graph).2.resources
+    (dataSourceType name : Identifier) (values : InputObject) (origin : Origin) (graph : Graph) :
+    ((addDataSource (r := r) options dataSourceType name values origin).run graph).2.resources
       = graph.resources := rfl
 
 @[simp] theorem run_addProvider_fst (provider : Identifier) (source version : String)
-    (alias : Option Identifier) (values : InputObject) (graph : Graph) :
-    ((addProvider (p := p) provider source version alias values).run graph).1
+    (alias : Option Identifier) (values : InputObject) (origin : Origin) (graph : Graph) :
+    ((addProvider (p := p) provider source version alias values origin).run graph).1
       = providerHandle (match alias with
           | none => provider.raw
           | some name => provider.raw ++ "." ++ name.raw) := rfl
 
 @[simp] theorem run_addProvider_resources (provider : Identifier) (source version : String)
-    (alias : Option Identifier) (values : InputObject) (graph : Graph) :
-    ((addProvider (p := p) provider source version alias values).run graph).2.resources
+    (alias : Option Identifier) (values : InputObject) (origin : Origin) (graph : Graph) :
+    ((addProvider (p := p) provider source version alias values origin).run graph).2.resources
       = graph.resources := rfl
 
 @[simp] theorem run_requireProvider (localName : Identifier) (source version : String)
@@ -434,12 +459,12 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
     ((requireProvider localName source version).run graph).2.resources = graph.resources := rfl
 
 @[simp] theorem run_output [IntoInput v α] (name : String) (value : v)
-    (valid : validIdentifier name = true) (graph : Graph) :
-    ((output (α := α) name value valid).run graph).2.resources = graph.resources := rfl
+    (valid : validIdentifier name = true) (origin : Origin) (graph : Graph) :
+    ((output (α := α) name value valid origin).run graph).2.resources = graph.resources := rfl
 
 @[simp] theorem run_sensitiveOutput [IntoInput v α] (name : String) (value : v)
-    (valid : validIdentifier name = true) (graph : Graph) :
-    ((sensitiveOutput (α := α) name value valid).run graph).2.resources = graph.resources := rfl
+    (valid : validIdentifier name = true) (origin : Origin) (graph : Graph) :
+    ((sensitiveOutput (α := α) name value valid origin).run graph).2.resources = graph.resources := rfl
 
 @[simp] theorem run_moved [Dependable h] (origin : Address) (destination : h) (graph : Graph) :
     ((moved origin destination).run graph).2.resources = graph.resources := rfl
@@ -447,12 +472,13 @@ def resourceSpecOf (options : ResourceOptions p) (resourceType name : Identifier
 @[simp] theorem run_adopt [Managed h] (destination : h) (id : String) (graph : Graph) :
     ((adopt destination id).run graph).2.resources = graph.resources := rfl
 
-@[simp] theorem run_addStackReference_fst (stack : Identifier) (graph : Graph) :
-    ((addStackReference (r := r) stack).run graph).1
+@[simp] theorem run_addStackReference_fst (stack : Identifier) (origin : Origin) (graph : Graph) :
+    ((addStackReference (r := r) stack origin).run graph).1
       = dataSourceHandle (Identifier.mk "terraform_remote_state") stack := rfl
 
-@[simp] theorem run_addStackReference_resources (stack : Identifier) (graph : Graph) :
-    ((addStackReference (r := r) stack).run graph).2.resources = graph.resources := by
+@[simp] theorem run_addStackReference_resources (stack : Identifier) (origin : Origin)
+    (graph : Graph) :
+    ((addStackReference (r := r) stack origin).run graph).2.resources = graph.resources := by
   unfold addStackReference
   dsimp only
   split <;> rfl

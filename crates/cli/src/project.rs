@@ -193,6 +193,33 @@ impl Default for BackendConfig {
     }
 }
 
+/// The environment variable a stack's entry point reads the origins path from.
+pub const ORIGINS_VARIABLE: &str = "INFRAME_ORIGINS";
+
+/// Where the stack's source declared one node.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub struct Origin {
+    /// The source module, for example `Infra.Platform`.
+    pub module: String,
+    /// The declaration the node is added in; empty at the top level of a module.
+    #[serde(default)]
+    pub declaration: String,
+    /// The one-based line of the call; `0` when unknown.
+    #[serde(default)]
+    pub line: u32,
+}
+
+/// Origins by node: a graph address, `provider.<address>`, or `output.<name>`.
+pub type Origins = BTreeMap<String, Origin>;
+
+/// The companion document a stack's entry point writes to `INFRAME_ORIGINS`. Unknown fields
+/// are ignored so that a newer core can say more than this build reads.
+#[derive(Debug, Deserialize)]
+struct OriginsDocument {
+    #[serde(default)]
+    origins: Origins,
+}
+
 #[derive(Debug)]
 pub struct Project {
     root: PathBuf,
@@ -332,15 +359,7 @@ impl Project {
     ) -> Result<GraphDocument> {
         graph.resolve_stack_references(|stack| {
             let (kind, mut config) = self.backend_json(stack)?;
-            if kind == "local" {
-                let producer = Workspace::new(workspace_base, stack)?;
-                let state = match config.get("path") {
-                    Some(Value::String(path)) => producer.root().join(path),
-                    Some(_) => {
-                        bail!("the `path` of stack `{stack}`'s local backend must be a string")
-                    }
-                    None => producer.root().join("terraform.tfstate"),
-                };
+            if let Some(state) = self.local_state_path(stack, workspace_base)? {
                 let state = std::path::absolute(&state).with_context(|| {
                     format!("failed to resolve the state path of stack `{stack}`")
                 })?;
@@ -471,6 +490,23 @@ impl Project {
             .join(self.frontend_directory(self.stack_frontend(stack)?)))
     }
 
+    /// Every directory whose files `stack`'s graph is built from: its frontend's package and,
+    /// for a Lean stack whose core library is a local checkout, that checkout.
+    pub fn stack_watch_directories(&self, stack: &str) -> Result<Vec<PathBuf>> {
+        let mut directories = vec![self.stack_source_directory(stack)?];
+        if self.stack_frontend(stack)? == Frontend::Lean {
+            if let Some(core) = self
+                .config
+                .lean
+                .as_ref()
+                .and_then(|lean| lean.core.path.as_ref())
+            {
+                directories.push(self.root.join(core));
+            }
+        }
+        Ok(directories)
+    }
+
     fn frontend_directory(&self, frontend: Frontend) -> PathBuf {
         match frontend {
             Frontend::PureScript => self
@@ -543,6 +579,66 @@ impl Project {
 
     /// Run the stack's `main` and check the Graph IR it prints, without writing it.
     pub fn render(&self, stack: &str) -> Result<GraphDocument> {
+        self.render_from(stack, None)
+    }
+
+    /// `render`, and also where the stack's source declared each node, when its frontend
+    /// says: the entry point is given `INFRAME_ORIGINS`, the path of a file to write them
+    /// to. Only the Lean core does; a frontend that ignores the variable yields `None`.
+    pub fn render_with_origins(&self, stack: &str) -> Result<(GraphDocument, Option<Origins>)> {
+        let directory = self.workspace_directory().join("origins");
+        fs::create_dir_all(&directory)
+            .with_context(|| format!("failed to create {}", directory.display()))?;
+        let path = std::path::absolute(directory.join(format!("{stack}.json")))
+            .context("failed to resolve the origins path")?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to remove {}", path.display()));
+            }
+        }
+        let graph = self.render_from(stack, Some(&path))?;
+        let origins = match fs::read(&path) {
+            Ok(bytes) => Some(
+                serde_json::from_slice::<OriginsDocument>(&bytes)
+                    .with_context(|| format!("failed to decode {}", path.display()))?
+                    .origins,
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to read {}", path.display()));
+            }
+        };
+        Ok((graph, origins))
+    }
+
+    /// Where the state of `stack` is kept when its backend is `local`: in the stack's own
+    /// directory under `workspace_base`. `None` for every other backend.
+    pub fn local_state_path(&self, stack: &str, workspace_base: &Path) -> Result<Option<PathBuf>> {
+        let backend = &self.stack(stack)?.backend;
+        if backend.kind != "local" {
+            return Ok(None);
+        }
+        let producer = Workspace::new(workspace_base, stack)?;
+        Ok(Some(match backend.config.get("path") {
+            Some(toml::Value::String(path)) => producer.root().join(path),
+            Some(_) => bail!("the `path` of stack `{stack}`'s local backend must be a string"),
+            None => producer.root().join("terraform.tfstate"),
+        }))
+    }
+
+    /// The backend type of `stack`, as `inframe.toml` spells it.
+    pub fn backend_kind(&self, stack: &str) -> Result<&str> {
+        Ok(&self.stack(stack)?.backend.kind)
+    }
+
+    /// The directory that holds `inframe.toml`.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn render_from(&self, stack: &str, origins: Option<&Path>) -> Result<GraphDocument> {
         let stack_config = self.stack(stack)?;
         let frontend = self.stack_frontend(stack)?;
         let (mut command, main) = match frontend {
@@ -558,6 +654,9 @@ impl Project {
                 (self.lake(config, main), main)
             }
         };
+        if let Some(origins) = origins {
+            command.env(ORIGINS_VARIABLE, origins);
+        }
         let tool = frontend_tool(frontend);
         let directory = self.root.join(self.frontend_directory(frontend));
         let output = match command.output() {

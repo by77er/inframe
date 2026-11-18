@@ -79,47 +79,53 @@ class StackExports (σ : Type) where
   ofOutputs : (String → ExprNode) → σ
 
 /-- Declare `outputs` as root outputs. Explicit recursion, so proofs can follow it. -/
-def publishOutputs : List ExportedOutput → Infra Unit
+def publishOutputs (origin : Origin) : List ExportedOutput → Infra Unit
   | [] => pure ()
   | exported :: rest => do
     if exported.sensitive then
-      sensitiveOutput exported.name.raw (unsafeInput exported.value : Input Value) exported.name.valid
+      sensitiveOutput exported.name.raw (unsafeInput exported.value : Input Value)
+        exported.name.valid origin
     else
-      output exported.name.raw (unsafeInput exported.value : Input Value) exported.name.valid
-    publishOutputs rest
+      output exported.name.raw (unsafeInput exported.value : Input Value) exported.name.valid origin
+    publishOutputs origin rest
 
 /-- Declare every field of `exports` as a root output. -/
-def publish [StackExports σ] (exports : σ) : Infra Unit :=
-  publishOutputs (StackExports.outputs exports)
+def publish [StackExports σ] (exports : σ) (origin : Origin := by origin_here) : Infra Unit :=
+  publishOutputs origin (StackExports.outputs exports)
 
-@[simp] theorem run_publishOutputs_resources (outputs : List ExportedOutput) (graph : Graph) :
-    ((publishOutputs outputs).run graph).2.resources = graph.resources := by
+@[simp] theorem run_publishOutputs_resources (origin : Origin) (outputs : List ExportedOutput)
+    (graph : Graph) :
+    ((publishOutputs origin outputs).run graph).2.resources = graph.resources := by
   induction outputs generalizing graph with
   | nil => rfl
   | cons exported rest ih =>
     simp only [publishOutputs]
     split <;> simp [ih]
 
-@[simp] theorem run_publish_resources [StackExports σ] (exports : σ) (graph : Graph) :
-    ((publish exports).run graph).2.resources = graph.resources :=
-  run_publishOutputs_resources _ graph
+@[simp] theorem run_publish_resources [StackExports σ] (exports : σ) (origin : Origin)
+    (graph : Graph) :
+    ((publish exports origin).run graph).2.resources = graph.resources :=
+  run_publishOutputs_resources origin _ graph
 
 /-- The project's stack `name` (its `[stacks.<name>]` table), whose program returns exports
 `σ`. -/
 structure Stack (σ : Type) where
   name : Identifier
   program : Infra σ
+  /-- Where the stack is defined, which is where its exports are attributed. -/
+  origin : Origin := .unknown
 
 namespace Stack
 
 /-- The project's stack `name`, built by `program`. -/
 def define (name : String) (program : Infra σ)
-    (valid : validIdentifier name = true := by valid_identifier) : Stack σ :=
-  ⟨⟨name, valid⟩, program⟩
+    (valid : validIdentifier name = true := by valid_identifier)
+    (origin : Origin := by origin_here) : Stack σ :=
+  ⟨⟨name, valid⟩, program, origin⟩
 
 /-- The producer's whole program: build the stack and publish its exports. -/
 def publishing [StackExports σ] (stack : Stack σ) : Infra Unit :=
-  stack.program >>= publish
+  stack.program >>= (publish · stack.origin)
 
 /-- The producer's Graph IR. -/
 def graph [StackExports σ] (stack : Stack σ) : Graph :=
@@ -135,15 +141,16 @@ def outputReference (stack : Stack σ) (name : String) : ExprNode :=
 
 /-- Read `stack`'s exports from its state through the stack reference
 `data.terraform_remote_state.<stack name>`; the CLI supplies the backend. -/
-def read [StackExports σ] (stack : Stack σ) : Infra σ := do
-  let _ : DataSource Unit ← addStackReference stack.name
+def read [StackExports σ] (stack : Stack σ) (origin : Origin := by origin_here) : Infra σ := do
+  let _ : DataSource Unit ← addStackReference stack.name origin
   pure (StackExports.ofOutputs stack.outputReference)
 
-@[simp] theorem run_read_fst [StackExports σ] (stack : Stack σ) (graph : Graph) :
-    (stack.read.run graph).1 = StackExports.ofOutputs stack.outputReference := rfl
+@[simp] theorem run_read_fst [StackExports σ] (stack : Stack σ) (origin : Origin) (graph : Graph) :
+    ((stack.read origin).run graph).1 = StackExports.ofOutputs stack.outputReference := rfl
 
-@[simp] theorem run_read_resources [StackExports σ] (stack : Stack σ) (graph : Graph) :
-    (stack.read.run graph).2.resources = graph.resources := by
+@[simp] theorem run_read_resources [StackExports σ] (stack : Stack σ) (origin : Origin)
+    (graph : Graph) :
+    ((stack.read origin).run graph).2.resources = graph.resources := by
   simp [read]
 
 end Stack

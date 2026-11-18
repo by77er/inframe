@@ -44,3 +44,19 @@ proof = "platform_gate"
 
 [stacks.lean-example.backend]
 type = "local"
+
+# A larger stack split across modules, and a stack that reads its exports: what
+# `inframe serve` is most worth pointing at.
+[stacks.atlas]
+frontend = "lean"
+main = "atlas"
+
+[stacks.atlas.backend]
+type = "local"
+
+[stacks.storefront]
+frontend = "lean"
+main = "storefront"
+
+[stacks.storefront.backend]
+type = "local"
