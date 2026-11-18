@@ -65,6 +65,9 @@ enum Command {
     Tilt {
         yaw: f32,
         pitch: f32,
+        /// Whether the camera has perspective; without, it is orthographic.
+        #[serde(default = "yes")]
+        perspective: bool,
     },
     Tip {
         id: String,
@@ -77,6 +80,10 @@ enum Command {
         mono: Vec<f32>,
     },
     Refresh,
+}
+
+const fn yes() -> bool {
+    true
 }
 
 impl View {
@@ -101,7 +108,11 @@ impl View {
             Command::FirstMatch => self.first_match(),
             Command::Fit => self.fit(),
             Command::Focus { id } => self.focus(&id),
-            Command::Tilt { yaw, pitch } => self.set_tilt(yaw, pitch),
+            Command::Tilt {
+                yaw,
+                pitch,
+                perspective,
+            } => self.set_tilt(yaw, pitch, perspective),
             Command::Motion { value } => self.set_motion(value),
             Command::Metrics { sans, mono } => self.set_metrics(view::Metrics { sans, mono }),
             Command::Refresh => {}

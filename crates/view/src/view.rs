@@ -354,9 +354,11 @@ impl View {
         }
     }
 
-    pub fn set_tilt(&mut self, yaw: f32, pitch: f32) {
+    /// Turn the camera, and choose between the perspective and the orthographic projection.
+    pub fn set_tilt(&mut self, yaw: f32, pitch: f32, perspective: bool) {
         self.goal.yaw = yaw;
         self.goal.pitch = pitch.clamp(0.3, 1.5607);
+        self.goal.perspective = if perspective { 1.0 } else { 0.0 };
         if self.following {
             self.follow();
         }
@@ -372,6 +374,7 @@ impl View {
                 zoom: self.goal.zoom,
                 yaw: self.goal.yaw,
                 pitch: self.goal.pitch,
+                perspective: self.goal.perspective,
                 ..self.camera
             };
             self.zoom_anchor = None;
@@ -411,11 +414,12 @@ impl View {
     #[must_use]
     pub fn pick(&self, x: f32, y: f32) -> Option<usize> {
         let rig = self.camera.rig(self.viewport.0, self.viewport.1);
-        let ray = rig.ray(x, y);
+        let (origin, ray) = rig.ray(x, y);
         let mut best: Option<(f32, usize)> = None;
         for (index, placed) in self.placed.iter().enumerate() {
             let rect = self.current(placed);
-            let hit = rig.hit(
+            let hit = Rig::hit(
+                origin,
                 ray,
                 [rect[0], rect[1], rect[2]],
                 [rect[0] + rect[3], rect[1] + rect[4], rect[2] + rect[5]],
@@ -1072,6 +1076,7 @@ impl View {
             (&mut self.camera.y, goal.y),
             (&mut self.camera.yaw, goal.yaw),
             (&mut self.camera.pitch, goal.pitch),
+            (&mut self.camera.perspective, goal.perspective),
         ] {
             let next = ease(*current, goal, k);
             moving |= next != goal;

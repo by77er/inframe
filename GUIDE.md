@@ -316,8 +316,10 @@ inframe serve --stack platform --port 9000
 `serve` builds every stack (or the ones named with `--stack`) and serves a page
 that draws the project as blocks on a tilted canvas: stacks, the modules and
 definitions inside them, and the nodes those declare. Drag to pan, scroll to
-zoom, double-click to zoom to something; *Flat*, *Tilt* and *Iso* set the
-camera angle. An outline on the left holds the same tree, and a panel on the
+zoom, double-click to zoom to something. *Tilt* is a perspective camera at a
+gentle angle; *Iso* is a true isometric view and *Flat* a plan view, both
+orthographic, so parallel edges stay parallel and a block is the same size
+wherever it stands. An outline on the left holds the same tree, and a panel on the
 right shows the selection: both fold away.
 
 There are two views.
