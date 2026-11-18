@@ -1,0 +1,35 @@
+[package]
+name = "inframe-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The model `inframe serve` shows and the logic of showing it, shared by the server and, compiled to WebAssembly, the page"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+# The workspace lints, except that `unsafe_code` is denied rather than forbidden: the
+# WebAssembly exports in `abi.rs` need `no_mangle` and raw pointers, and allow it there only.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -2 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+struct_excessive_bools = "allow"
+trivially_copy_pass_by_ref = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+many_single_char_names = "allow"
+similar_names = "allow"
+implicit_hasher = "allow"
+# Easing lands exactly on its goal, and "still moving" is the test for not having landed.
+float_cmp = "allow"

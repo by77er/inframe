@@ -145,8 +145,10 @@ inframe destroy --stack lean-example
 ```
 
 To look at what the project declares, run `inframe serve` and open the page it
-prints: a live map of every stack, nested by the modules and definitions of its
-source, with the references between resources drawn in. It rebuilds as you edit.
+prints: every stack as blocks on a tilted canvas, grouped by the modules and
+definitions of its source, with the references between resources drawn in. Open
+groups as you go, or switch to the map to see everything at once. It rebuilds as
+you edit.
 
 For your own project, run `inframe project init` to create an `inframe.toml`,
 then see the [guide](GUIDE.md).

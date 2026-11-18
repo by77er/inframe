@@ -21,6 +21,7 @@ inframe-emit-purescript = { path = "../emit-purescript" }
 inframe-graph-ir = { path = "../graph-ir" }
 inframe-opentofu = { path = "../opentofu" }
 inframe-provider-schema = { path = "../provider-schema" }
+inframe-view = { path = "../view" }
 
 [dev-dependencies]
 assert_cmd.workspace = true

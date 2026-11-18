@@ -1,4 +1,4 @@
-.PHONY: test check generate validate-fixture conformance conformance-tofu
+.PHONY: test check generate validate-fixture conformance conformance-tofu view-wasm
 
 test:
 	cargo test --workspace
@@ -31,3 +31,9 @@ validate-fixture:
 # Literals with template markers must come back from OpenTofu exactly as written.
 conformance-tofu:
 	scripts/check-template-escapes.sh
+
+# The page of `inframe serve` runs `crates/view` as WebAssembly. The built module is kept in
+# the repository; rebuild it after changing that crate (needs the wasm32-unknown-unknown target).
+view-wasm:
+	cargo build -p inframe-view --target wasm32-unknown-unknown --profile wasm
+	cp target/wasm32-unknown-unknown/wasm/inframe_view.wasm crates/cli/src/serve/view.wasm

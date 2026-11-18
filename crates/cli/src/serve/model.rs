@@ -11,44 +11,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use inframe_graph_ir::{
     Address, Expr, GraphDocument, Lifecycle, REMOTE_STATE_DATA_SOURCE, TemplatePart,
 };
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::inspect::{format_expr, format_json};
-use crate::project::{Origin, Origins};
+use crate::project::Origins;
+pub use inframe_view::model::{
+    Argument, BuildStatus, Edge, EdgeKind, Model, Node, NodeKind, Origin, ProjectInfo, StackModel,
+    StateModel,
+};
 
 /// The rows shown for one node; a node configured past this is cut off and says so.
 const MAX_ARGUMENT_ROWS: usize = 160;
 /// The characters shown of one value; multi-kilobyte literals are cut off here.
 const MAX_VALUE_LENGTH: usize = 320;
-
-#[derive(Debug, Serialize)]
-pub struct Model {
-    /// Increases every time anything below changes; the event stream announces it.
-    pub version: u64,
-    pub project: ProjectInfo,
-    pub stacks: Vec<StackModel>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProjectInfo {
-    pub name: String,
-    pub root: String,
-    /// Why `inframe.toml` could not be loaded, when the stacks shown are from its last
-    /// readable version.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuildStatus {
-    /// Being built for the first time, or rebuilt after a source change.
-    Building,
-    Ready,
-    /// The last build failed; the nodes shown, if any, are those of the last good build.
-    Failed,
-}
 
 /// What the server knows about one stack: its configuration, the result of its last build,
 /// and what its state holds.
@@ -129,124 +104,6 @@ impl AppliedState {
         }
         Ok(state)
     }
-}
-
-#[derive(Debug, Serialize)]
-pub struct StackModel {
-    pub name: String,
-    pub frontend: &'static str,
-    pub backend: String,
-    pub gated: bool,
-    pub status: BuildStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub built_at_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_ms: Option<u64>,
-    /// Whether the frontend said where nodes were declared; without it the source hierarchy
-    /// is not available and the stack is laid out by provider and type alone.
-    pub has_origins: bool,
-    pub state: StateModel,
-    pub nodes: Vec<Node>,
-    pub edges: Vec<Edge>,
-    /// Managed resources the state holds but the graph no longer declares: the next apply
-    /// destroys them.
-    pub unmanaged: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StateModel {
-    pub tracked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub serial: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeKind {
-    Provider,
-    Resource,
-    Data,
-    /// Another stack of the project whose outputs this stack reads.
-    StackReference,
-    Output,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Node {
-    /// Unique across the project: `<stack>/<key>`.
-    pub id: String,
-    pub kind: NodeKind,
-    /// The address as `OpenTofu` prints it, or `provider.<address>` / `output.<name>`.
-    pub address: String,
-    /// The provider type (`digitalocean_vpc`); empty for outputs.
-    #[serde(rename = "type")]
-    pub type_name: String,
-    pub name: String,
-    /// The provider's local name, for grouping.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<Origin>,
-    pub arguments: Vec<Argument>,
-    /// Arguments past the row limit, not listed.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub hidden_arguments: usize,
-    /// Lifecycle settings and other flags worth a badge (`create before destroy`, `sensitive`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub flags: Vec<String>,
-    /// How much configuration the node carries: one plus its argument leaves.
-    pub weight: usize,
-    /// Whether the state holds the node; absent when the state is not tracked.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub applied: Option<bool>,
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)]
-const fn is_zero(value: &usize) -> bool {
-    *value == 0
-}
-
-/// One leaf of a node's configuration: nested blocks and objects are flattened into dotted
-/// paths (`node_pool.auto_scale`, `rule[0].type`).
-#[derive(Debug, Serialize)]
-pub struct Argument {
-    pub name: String,
-    pub value: String,
-    /// The nodes the value refers to, by id.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EdgeKind {
-    /// An argument or output value reads an attribute of the target.
-    Reference,
-    /// An explicit `depends_on`.
-    DependsOn,
-    /// `replace_triggered_by`.
-    ReplaceTrigger,
-    /// The node is created through the target provider configuration.
-    Provider,
-    /// A stack reference reads the target output of another stack.
-    Stack,
-}
-
-/// `from` needs `to`.
-#[derive(Debug, Serialize)]
-pub struct Edge {
-    pub from: String,
-    pub to: String,
-    pub kind: EdgeKind,
-    /// What carries the association, for example `private_network_uuid → id`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub via: Vec<String>,
 }
 
 /// Assemble the document from every stack's snapshot. Cross-stack edges need all of them: a
@@ -346,7 +203,7 @@ fn stack_model(
         .collect();
     StackModel {
         name: stack.name.clone(),
-        frontend: stack.frontend,
+        frontend: stack.frontend.to_owned(),
         backend: stack.backend.clone(),
         gated: stack.gated,
         status: stack.status,

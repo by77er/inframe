@@ -314,12 +314,27 @@ inframe serve --stack platform --port 9000
 ```
 
 `serve` builds every stack (or the ones named with `--stack`) and serves a page
-that shows them as nested boxes: project, stack, module, definition, node. Area
-follows how much configuration a node carries. Select a node to see what it
-depends on and what uses it, with the argument that carries each association;
-select a module or a definition to see what it holds and which other modules it
-reaches into. A stack that reads another stack's exports is drawn pointing at
-the outputs it reads.
+that draws the project as blocks on a tilted canvas: stacks, the modules and
+definitions inside them, and the nodes those declare. Drag to pan, scroll to
+zoom, double-click to zoom to something; *Flat*, *Tilt* and *Iso* set the
+camera angle. An outline on the left holds the same tree, and a panel on the
+right shows the selection: both fold away.
+
+There are two views.
+
+- **Explore** starts with each stack opened one level and everything below it
+  closed. Click a group to open it in place; click its `–`, or the group again
+  once it is selected, to close it. A node hidden inside a closed group is drawn
+  as that group, so associations stay visible at whatever depth is open.
+- **Map** opens everything at once and fills a rectangle, each node's area
+  following how much configuration it carries.
+
+Select a node to see what it depends on and what uses it, with the argument that
+carries each association, drawn as arcs that point at what is needed. Select a
+module or a definition to see what it holds and which other modules it reaches
+into. A stack that reads another stack's exports points at the outputs it reads.
+A taller block carries more configuration. *Find* dims what does not match and
+`Enter` opens the way to the first match.
 
 The page is live. `serve` watches each stack's package (and a local checkout of
 the Lean core) and rebuilds a stack when a file under it changes; the page
@@ -343,7 +358,7 @@ def bucket (name : String) (origin : Origin := by origin_here) : Infra SpacesBuc
 
 Bindings generated before this existed do not pass an origin; run `inframe
 provider generate` again. The PureScript frontend does not record origins, so
-its stacks are laid out by provider and resource type, which is also available
+its stacks are grouped by provider and resource type, which is also available
 for Lean stacks under *Group by*.
 
 For a stack with a `local` backend, `serve` also reads the state file and marks
@@ -351,6 +366,16 @@ each node as applied or not, and lists resources the state holds that the graph
 no longer declares. Only presence is read: attribute values in the state never
 leave the server. Other backends are not read. `serve` never runs OpenTofu, and
 it listens on loopback unless `--host` says otherwise.
+
+The canvas is drawn with WebGPU, so it needs a browser that has it (current
+Chrome, Edge and Safari; Firefox on Windows and macOS). Without it the outline
+and the details still work. What is open, where things stand, the camera, and
+what a click lands on are decided by `crates/view`, compiled to WebAssembly and
+served with the page; the same crate defines the model the server sends, and its
+tests run as ordinary Rust. The built module is kept in the repository so that
+building the CLI needs one toolchain: after changing `crates/view`, run `make
+view-wasm` (which needs the `wasm32-unknown-unknown` target) and commit the
+result.
 
 ## Plan, apply, and the rest of the lifecycle
 

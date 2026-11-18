@@ -196,18 +196,7 @@ impl Default for BackendConfig {
 /// The environment variable a stack's entry point reads the origins path from.
 pub const ORIGINS_VARIABLE: &str = "INFRAME_ORIGINS";
 
-/// Where the stack's source declared one node.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
-pub struct Origin {
-    /// The source module, for example `Infra.Platform`.
-    pub module: String,
-    /// The declaration the node is added in; empty at the top level of a module.
-    #[serde(default)]
-    pub declaration: String,
-    /// The one-based line of the call; `0` when unknown.
-    #[serde(default)]
-    pub line: u32,
-}
+pub use inframe_view::model::Origin;
 
 /// Origins by node: a graph address, `provider.<address>`, or `output.<name>`.
 pub type Origins = BTreeMap<String, Origin>;

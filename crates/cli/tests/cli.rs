@@ -1474,6 +1474,13 @@ printf '%s' '{"format_version":"1.0","required_providers":{},"provider_configs":
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let page = get("/", &address);
+    let module = {
+        let mut stream = TcpStream::connect(&address).unwrap();
+        write!(stream, "GET /view.wasm HTTP/1.1\r\nHost: {address}\r\n\r\n").unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        response
+    };
     let rebound = get("/api/model", "attacker.example");
     server.kill().unwrap();
     server.wait().unwrap();
@@ -1487,5 +1494,14 @@ printf '%s' '{"format_version":"1.0","required_providers":{},"provider_configs":
     assert!(model.contains(r#""applied":false"#), "{model}");
     assert!(!model.contains("not-for-the-browser"));
     assert!(page.contains("<title>Inframe</title>"));
+    // The page's logic is served as a WebAssembly module, by its media type and magic.
+    let head = String::from_utf8_lossy(&module[..module.len().min(200)]).into_owned();
+    assert!(head.contains("Content-Type: application/wasm"), "{head}");
+    let body = module
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert_eq!(&module[body..body + 4], b"\0asm");
     assert!(rebound.starts_with("HTTP/1.1 403"), "{rebound}");
 }

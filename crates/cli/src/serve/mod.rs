@@ -22,7 +22,10 @@ use anyhow::{Context, Result};
 use crate::project::{self, Project};
 use model::{AppliedState, BuildStatus, Built, ProjectInfo, StackSnapshot, StateSnapshot};
 
-const PAGE: &str = include_str!("ui.html");
+const PAGE: &str = include_str!("page.html");
+/// The page's logic: `inframe-view` built for WebAssembly by `make view-wasm` and kept in
+/// the repository, so that building the CLI needs no second toolchain.
+const VIEW_WASM: &[u8] = include_bytes!("view.wasm");
 
 /// How often the event stream says it is still there, so a closed tab is noticed.
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -41,6 +44,10 @@ pub struct ServeArgs {
     /// How often sources and state are checked for changes, in milliseconds.
     #[arg(long, default_value_t = 700, value_parser = clap::value_parser!(u64).range(50..))]
     poll_ms: u64,
+    /// Serve `page.html` and `view.wasm` from this directory instead of the copies built into
+    /// the binary, for working on the page itself.
+    #[arg(long, hide = true)]
+    assets: Option<PathBuf>,
 }
 
 /// The model as last published, shared between the watcher and the request threads.
@@ -116,12 +123,14 @@ pub fn run(arguments: &ServeArgs, project_path: &Path) -> Result<()> {
 
     thread::spawn(move || watcher.run());
     let loopback = arguments.host.is_loopback();
+    let assets = Arc::new(arguments.assets.clone());
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let published = Arc::clone(&published);
+        let assets = Arc::clone(&assets);
         thread::spawn(move || {
             // A connection that fails mid-response is the browser's to retry.
-            let _ = handle(&stream, &published, loopback);
+            let _ = handle(&stream, &published, loopback, assets.as_deref());
         });
     }
     Ok(())
@@ -380,7 +389,12 @@ fn now_ms() -> u64 {
 /// Answer one request. Only `GET` exists, and when the server listens on loopback the
 /// `Host` header has to name this machine: a page elsewhere that resolves its own name to
 /// 127.0.0.1 would otherwise read the model through the visitor's browser.
-fn handle(stream: &TcpStream, published: &Published, loopback: bool) -> io::Result<()> {
+fn handle(
+    stream: &TcpStream,
+    published: &Published,
+    loopback: bool,
+    assets: Option<&Path>,
+) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -418,12 +432,14 @@ fn handle(stream: &TcpStream, published: &Published, loopback: bool) -> io::Resu
         );
     }
     match path {
-        "/" | "/index.html" => respond(
-            stream,
-            "200 OK",
-            "text/html; charset=utf-8",
-            PAGE.as_bytes(),
-        ),
+        "/" | "/index.html" => {
+            let page = asset(assets, "page.html", PAGE.as_bytes());
+            respond(stream, "200 OK", "text/html; charset=utf-8", &page)
+        }
+        "/view.wasm" => {
+            let module = asset(assets, "view.wasm", VIEW_WASM);
+            respond(stream, "200 OK", "application/wasm", &module)
+        }
         "/api/model" => {
             let (_, document) = published.get();
             respond(stream, "200 OK", "application/json", document.as_bytes())
@@ -431,6 +447,17 @@ fn handle(stream: &TcpStream, published: &Published, loopback: bool) -> io::Resu
         "/api/events" => events(stream, published),
         _ => respond(stream, "404 Not Found", "text/plain", b"not found\n"),
     }
+}
+
+/// A built-in asset, or the file of that name under `--assets` when it can be read.
+fn asset(
+    directory: Option<&Path>,
+    name: &str,
+    built_in: &'static [u8],
+) -> std::borrow::Cow<'static, [u8]> {
+    directory
+        .and_then(|directory| fs::read(directory.join(name)).ok())
+        .map_or(built_in.into(), Into::into)
 }
 
 fn names_this_machine(host: &str) -> bool {

@@ -1,0 +1,1158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inframe</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1 15 5 8 9 1 5z' fill='%232a78d6'/%3E%3Cpath d='M1 5v6l7 4V9z' fill='%231c5cab'/%3E%3Cpath d='M15 5v6l-7 4V9z' fill='%2386b6ef'/%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: light;
+  --plane: #eeede9;
+  --surface: #fcfcfb;
+  --surface-2: #f6f6f3;
+  --surface-3: #ebeae5;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #898781;
+  --hairline: #e1e0d9;
+  --border: rgba(11, 11, 11, .10);
+  --border-strong: rgba(11, 11, 11, .22);
+  --resource: #2a78d6;
+  --read: #1baf7a;
+  --output: #eb6834;
+  --neutral: #898781;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --focus: #2a78d6;
+  --shadow: 0 1px 2px rgba(11, 11, 11, .06), 0 8px 24px rgba(11, 11, 11, .10);
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --surface-2: #222221; --surface-3: #2e2e2c;
+    --ink: #f0efec; --ink-2: #c3c2b7; --ink-3: #898781; --hairline: #2c2c2a;
+    --border: rgba(255, 255, 255, .10); --border-strong: rgba(255, 255, 255, .24);
+    --resource: #3987e5; --read: #199e70; --output: #d95926; --focus: #5598e7;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px rgba(0, 0, 0, .5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --surface-2: #222221; --surface-3: #2e2e2c;
+  --ink: #f0efec; --ink-2: #c3c2b7; --ink-3: #898781; --hairline: #2c2c2a;
+  --border: rgba(255, 255, 255, .10); --border-strong: rgba(255, 255, 255, .24);
+  --resource: #3987e5; --read: #199e70; --output: #d95926; --focus: #5598e7;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px rgba(0, 0, 0, .5);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--plane); color: var(--ink); font: 13px/1.45 var(--sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.mono { font-family: var(--mono); font-size: 12px; }
+svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+#app { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
+header.bar { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--hairline); min-width: 0; z-index: 3; }
+.brand { display: flex; align-items: baseline; gap: 8px; min-width: 0; white-space: nowrap; margin: 0 6px 0 2px; }
+.brand b { font-size: 14px; letter-spacing: -.01em; }
+.brand span { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.field { display: flex; align-items: center; gap: 6px; color: var(--ink-3); white-space: nowrap; }
+.segmented { display: inline-flex; padding: 2px; background: var(--surface-3); border-radius: 8px; }
+.segmented button { border: 0; background: none; padding: 4px 10px; border-radius: 6px; color: var(--ink-2); }
+.segmented button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, .08); font-weight: 600; }
+.search { position: relative; margin-left: auto; flex: 0 1 250px; min-width: 110px; }
+.search input { width: 100%; padding: 6px 44px 6px 30px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+.search input::placeholder { color: var(--ink-3); }
+.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--ink-3); }
+.search output { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--ink-3); font-size: 11px; pointer-events: none; }
+.live { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; color: var(--ink-2); }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
+.live[data-state="building"] i { background: var(--warning); animation: pulse 1s ease-in-out infinite; }
+.live[data-state="offline"] i, .live[data-state="failed"] i { background: var(--critical); }
+@keyframes pulse { 50% { opacity: .35; } }
+.ghost { border: 1px solid transparent; background: none; padding: 6px; border-radius: 8px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+.ghost:hover { background: var(--surface-3); color: var(--ink); }
+.ghost[aria-pressed="true"] { background: var(--surface-3); color: var(--ink); border-color: var(--border); }
+
+main { display: grid; grid-template-columns: var(--left, 264px) minmax(0, 1fr) var(--right, 340px); min-height: 0; transition: grid-template-columns .22s cubic-bezier(.2, .7, .2, 1); }
+main.no-left { --left: 0px; }
+main.no-right { --right: 0px; }
+aside { background: var(--surface); min-height: 0; overflow: hidden auto; }
+main.no-left #outline, main.no-right #inspector { visibility: hidden; }
+#outline { border-right: 1px solid var(--hairline); }
+#outline > div { width: 263px; padding: 10px 6px 24px; }
+#inspector { border-left: 1px solid var(--hairline); }
+#inspector > div { width: 339px; padding: 16px 16px 32px; }
+.eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+#outline .eyebrow { display: flex; justify-content: space-between; align-items: center; padding: 2px 6px 6px 10px; }
+#outline .eyebrow button { border: 0; background: none; color: var(--ink-3); font: inherit; letter-spacing: 0; text-transform: none; font-weight: 500; padding: 2px 6px; border-radius: 6px; }
+#outline .eyebrow button:hover { background: var(--surface-3); color: var(--ink); }
+
+.row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 6px; border: 0; background: none; border-radius: 6px; text-align: left; min-width: 0; }
+.row:hover { background: var(--surface-3); }
+.row[aria-current="true"] { background: color-mix(in oklab, var(--resource) 15%, transparent); }
+.row .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.row .label small { color: var(--ink-3); font: 11px var(--mono); margin-left: 6px; }
+.row .count { color: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.row.dim { opacity: .38; }
+.twist { width: 16px; height: 16px; flex: none; color: var(--ink-3); display: grid; place-items: center; border-radius: 4px; transition: transform .12s; }
+.twist:hover { background: var(--border); color: var(--ink); }
+.row[data-open="false"] .twist { transform: rotate(-90deg); }
+.dot { width: 9px; height: 9px; border-radius: 3px; flex: none; background: var(--neutral); }
+.dot[data-kind="resource"] { background: var(--resource); }
+.dot[data-kind="data"], .dot[data-kind="stack_reference"] { background: var(--read); }
+.dot[data-kind="output"] { background: var(--output); }
+.dot[data-kind="group"] { background: none; border: 1.5px solid var(--ink-3); }
+
+#stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--plane); }
+#gpu { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline-offset: -2px; }
+#gpu.grabbing { cursor: grabbing; }
+#gpu.pointing { cursor: pointer; }
+.float { position: absolute; display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 12px; background: color-mix(in oklab, var(--surface) 92%, transparent); border: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(8px); }
+#tools { right: 12px; bottom: 12px; }
+#tools .sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+#tools output { min-width: 42px; text-align: center; color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 12px; }
+#hint { left: 12px; bottom: 12px; padding: 6px 10px; color: var(--ink-2); font-size: 12px; gap: 10px; }
+#hint b { font-weight: 600; color: var(--ink); }
+kbd { font: 11px var(--mono); padding: 1px 5px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--ink-2); }
+#unsupported { position: absolute; inset: 0; display: none; place-content: center; padding: 32px; text-align: center; color: var(--ink-2); }
+#unsupported div { max-width: 440px; }
+#unsupported h2 { color: var(--ink); margin: 0 0 8px; font-size: 18px; }
+#stage.unsupported #unsupported { display: grid; }
+#stage.unsupported #tools, #stage.unsupported #hint { display: none; }
+
+#tip { position: fixed; z-index: 10; max-width: 340px; padding: 8px 10px; border-radius: 8px; pointer-events: none; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow); opacity: 0; transition: opacity .1s; }
+#tip.on { opacity: 1; }
+#tip b { display: block; overflow-wrap: anywhere; font: 600 12px var(--mono); }
+#tip span { display: block; color: var(--ink-2); overflow-wrap: anywhere; }
+
+#inspector h2 { margin: 6px 0 2px; font-size: 18px; line-height: 1.25; letter-spacing: -.01em; overflow-wrap: anywhere; }
+#inspector .address { color: var(--ink-2); overflow-wrap: anywhere; }
+#inspector section { margin-top: 18px; }
+#inspector section > .eyebrow { display: flex; justify-content: space-between; margin-bottom: 6px; }
+.kind { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12px; }
+.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 12px; margin: 14px 0 0; }
+.facts dt { color: var(--ink-3); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.status { display: inline-flex; align-items: center; gap: 6px; }
+.badges, .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.action { border: 1px solid var(--border-strong); background: var(--surface); padding: 4px 10px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; }
+.action:hover { background: var(--surface-3); }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.link { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; align-items: center; padding: 5px 8px; margin: 0 -8px; width: calc(100% + 16px); border: 0; background: none; border-radius: 6px; text-align: left; }
+.link:hover { background: var(--surface-3); }
+.link .to { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link .via { grid-column: 2; color: var(--ink-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.args { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.args td { padding: 4px 0; border-top: 1px solid var(--hairline); vertical-align: top; overflow-wrap: anywhere; }
+.args td:first-child { width: 44%; padding-right: 10px; color: var(--ink-2); }
+.args tr:first-child td { border-top: 0; }
+.ref { border: 0; padding: 0; background: none; color: inherit; text-decoration: underline; text-decoration-color: var(--ink-3); text-underline-offset: 2px; font: inherit; text-align: left; }
+.ref:hover { text-decoration-color: var(--ink); }
+.note { color: var(--ink-3); margin: 6px 0 0; }
+.callout { margin-top: 12px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); display: flex; gap: 8px; }
+.callout svg { margin-top: 2px; color: var(--critical); }
+.callout[data-tone="warning"] svg { color: var(--ink-2); }
+pre.error { margin: 8px 0 0; padding: 10px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
+.legend { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; color: var(--ink-2); }
+.legend li { display: flex; align-items: center; gap: 8px; }
+.swatch { width: 18px; height: 12px; border-radius: 3px; flex: none; border: 1px solid var(--border-strong); }
+.mark { width: 10px; height: 10px; flex: none; border-radius: 2px; background: var(--good); margin: 0 4px; }
+.mark[data-applied="false"] { background: color-mix(in oklab, var(--ink-3) 45%, transparent); }
+.stat { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid var(--hairline); }
+.stat:first-of-type { border-top: 0; }
+.stat span:last-child { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1100px) { .field > span { display: none; } }
+@media (max-width: 760px) { .brand span, #hint { display: none; } }
+@media (prefers-reduced-motion: reduce) { main { transition: none; } .live i { animation: none !important; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <button class="ghost" id="toggle-left" title="Outline" aria-label="Show or hide the outline" aria-pressed="true">
+      <svg class="icon" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/></svg>
+    </button>
+    <div class="brand"><b>Inframe</b><span id="project"></span></div>
+    <label class="field"><span>View</span>
+      <span class="segmented" id="mode" role="group" aria-label="View">
+        <button data-value="explore" title="Groups stay closed until you open them">Explore</button><button data-value="map" title="Everything at once; area follows how much configuration a node carries">Map</button>
+      </span></label>
+    <label class="field"><span>Group by</span>
+      <span class="segmented" id="grouping" role="group" aria-label="Group by">
+        <button data-value="source">Source</button><button data-value="provider">Provider</button><button data-value="kind">Kind</button>
+      </span></label>
+    <button class="ghost" id="all-links" aria-pressed="false" title="Show every association at once">
+      <svg class="icon" viewBox="0 0 16 16"><circle cx="3.5" cy="4" r="1.8"/><circle cx="12.5" cy="4" r="1.8"/><circle cx="8" cy="12.5" r="1.8"/><path d="M5.3 4h5.4M4.4 5.6l2.7 5.3M11.6 5.6l-2.7 5.3"/></svg>
+    </button>
+    <div class="search">
+      <svg class="icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input id="search" type="search" placeholder="Find a node   /" aria-label="Find a node" autocomplete="off" spellcheck="false">
+      <output id="matches"></output>
+    </div>
+    <div class="live" id="live" data-state="building" role="status"><i></i><span>Connecting…</span></div>
+    <button class="ghost" id="theme" title="Switch theme" aria-label="Switch theme">
+      <svg class="icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>
+    </button>
+    <button class="ghost" id="toggle-right" title="Details" aria-label="Show or hide details" aria-pressed="true">
+      <svg class="icon" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M10 2.5v11"/></svg>
+    </button>
+  </header>
+  <main>
+    <aside id="outline" aria-label="Outline"><div></div></aside>
+    <div id="stage">
+      <canvas id="gpu" tabindex="0" aria-label="The project's stacks, drawn as blocks. The outline beside it holds the same tree for the keyboard."></canvas>
+      <div class="float" id="hint"></div>
+      <div class="float" id="tools">
+        <span class="segmented" id="tilt" role="group" aria-label="Camera angle">
+          <button data-value="flat" title="Straight down">Flat</button><button data-value="tilt" title="A gentle tilt">Tilt</button><button data-value="iso" title="Isometric">Iso</button>
+        </span>
+        <span class="sep"></span>
+        <button class="ghost" id="zoom-out" title="Zoom out  (−)" aria-label="Zoom out"><svg class="icon" viewBox="0 0 16 16"><path d="M3.5 8h9"/></svg></button>
+        <output id="zoom-level">100%</output>
+        <button class="ghost" id="zoom-in" title="Zoom in  (+)" aria-label="Zoom in"><svg class="icon" viewBox="0 0 16 16"><path d="M3.5 8h9M8 3.5v9"/></svg></button>
+        <button class="ghost" id="fit" title="Fit everything  (0)" aria-label="Fit everything"><svg class="icon" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg></button>
+      </div>
+      <div id="unsupported"><div><h2>This view needs WebGPU</h2><p>The canvas is drawn with WebGPU, which this browser does not provide. The outline and the details on either side still work. Recent Chrome, Edge and Safari have it; Firefox has it on Windows and macOS.</p></div></div>
+    </div>
+    <aside id="inspector" aria-label="Details"><div></div></aside>
+  </main>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script type="module">
+const $ = (selector) => document.querySelector(selector);
+const el = (tag, attributes = {}, ...children) => {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attributes)) {
+    if (value == null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) if (child != null && child !== false) node.append(child);
+  return node;
+};
+const ICONS = {
+  resource: '<path d="M8 1.8 13.5 5v6L8 14.2 2.5 11V5z"/><path d="M2.7 5.1 8 8.2l5.3-3.1M8 8.2v6"/>',
+  data: '<circle cx="7" cy="7" r="4.3"/><path d="m10.2 10.2 3.3 3.3"/>',
+  stack_reference: '<path d="M8 2 14 5 8 8 2 5z"/><path d="m2 8 6 3 6-3M2 11l6 3 6-3"/>',
+  output: '<path d="M5 11 11.5 4.5M6 4.5h5.5V10"/>',
+  provider: '<path d="M6 2v3M10 2v3M4 5h8v2.5a4 4 0 0 1-8 0zM8 11.5V14"/>',
+  group: '<rect x="2" y="2.5" width="12" height="11" rx="2"/><path d="M2 6h12"/>',
+  alert: '<path d="M8 2.2 14.3 13H1.7z"/><path d="M8 6.5v3M8 11.3v.2"/>',
+  info: '<circle cx="8" cy="8" r="6"/><path d="M8 7.2v4M8 4.8v.2"/>',
+  chevron: '<path d="m4 6 4 4 4-4"/>',
+  open: '<path d="M3.5 8h9M8 3.5v9"/>', close: '<path d="M3.5 8h9"/>',
+  focus: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3"/>',
+};
+const icon = (name, cls = "icon") => {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", cls); svg.setAttribute("viewBox", "0 0 16 16");
+  svg.innerHTML = ICONS[name] || ICONS.group;
+  return svg;
+};
+const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+const stored = (key, fallback) => { try { return localStorage.getItem(key) || fallback; } catch { return fallback; } };
+const store = (key, value) => { try { localStorage.setItem(key, value); } catch { /* private window */ } };
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+/* ---------- the view: all state and logic live in WebAssembly ---------- */
+
+const { instance } = await WebAssembly.instantiateStreaming(fetch("/view.wasm"));
+const core = instance.exports;
+const encoder = new TextEncoder(), decoder = new TextDecoder();
+const INSTANCE_FLOATS = 9;
+const FLAG = { slab: 1, selected: 2, related: 4, dim: 8, hover: 16, match: 32, failed: 64, building: 128, mark: 256, container: 512 };
+
+function command(op, fields = {}) {
+  const bytes = encoder.encode(JSON.stringify({ op, ...fields }));
+  const pointer = core.iv_alloc(bytes.length);
+  new Uint8Array(core.memory.buffer, pointer, bytes.length).set(bytes);
+  core.iv_command(pointer, bytes.length);
+  const answer = JSON.parse(decoder.decode(new Uint8Array(core.memory.buffer, core.iv_result_ptr(), core.iv_result_len())));
+  if (answer.error) throw new Error(`view: ${answer.error}`);
+  return answer;
+}
+
+const ui = { scene: { boxes: [], links: [] }, outline: [], inspect: null, summary: {}, connected: false, hovered: null, labelsStale: true, size: [1, 1], zoom: 1 };
+
+/* Run a command that changes what is shown, and redraw everything beside the canvas. */
+function act(op, fields) {
+  take(command(op, fields));
+  wake();
+}
+function take(answer) {
+  ui.scene = answer.scene; ui.outline = answer.outline; ui.inspect = answer.inspect; ui.summary = answer.summary;
+  ui.revision = core.iv_revision();
+  ui.labelsStale = true;
+  renderOutline(); renderInspector(); renderBar();
+}
+
+/* ---------- theme ---------- */
+
+const hex = (value) => { const v = value.trim().replace("#", ""); return [0, 2, 4].map((at) => parseInt(v.slice(at, at + 2), 16) / 255); };
+const mix = (a, b, t) => a.map((channel, index) => channel * t + b[index] * (1 - t));
+let palette = null;
+function readTheme() {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name) => hex(style.getPropertyValue(name));
+  const dark = style.colorScheme.includes("dark");
+  const [surface, surface2, surface3, plane, ink, ink2, ink3] = ["--surface", "--surface-2", "--surface-3", "--plane", "--ink", "--ink-2", "--ink-3"].map(token);
+  const tone = (name, top, side) => { const color = token(name); return { top: mix(color, surface, top), side: mix(color, surface, side), band: color }; };
+  const flat = (top, side) => ({ top, side, band: side });
+  const slabSide = dark ? mix(ink3, plane, .34) : mix(ink3, surface, .36);
+  palette = {
+    dark, plane, ink, ink2, ink3, focus: token("--focus"), critical: token("--critical"), warning: token("--warning"),
+    tones: [
+      tone("--neutral", dark ? .3 : .2, dark ? .58 : .5),
+      tone("--resource", dark ? .36 : .2, dark ? .82 : .72),
+      tone("--read", dark ? .36 : .22, dark ? .82 : .74),
+      tone("--output", dark ? .38 : .22, dark ? .84 : .74),
+      flat(dark ? mix(ink3, surface, .26) : surface, dark ? mix(ink3, plane, .52) : mix(ink3, surface, .5)),
+      flat(surface2, slabSide),
+      flat(dark ? mix(surface3, surface2, .5) : surface, slabSide),
+      flat(surface, slabSide),
+      flat(token("--good"), mix(token("--good"), [0, 0, 0], .7)),
+      flat(mix(ink3, surface, .45), mix(ink3, surface, .6)),
+    ],
+  };
+  ui.labelsStale = true;
+  wake();
+}
+
+/* ---------- WebGPU ---------- */
+
+const canvas = $("#gpu");
+const gpu = { ready: false };
+
+const SHADER_COMMON = /* wgsl */`
+struct Scene {
+  view_proj: mat4x4f,
+  viewport: vec2f, dpr: f32, zoom: f32,
+  plane: vec4f, ink: vec4f, focus: vec4f, critical: vec4f, warning: vec4f,
+  top: array<vec4f, 10>, side: array<vec4f, 10>, band: array<vec4f, 10>,
+}
+@group(0) @binding(0) var<uniform> scene: Scene;
+fn has(flags: u32, bit: u32) -> bool { return (flags & bit) != 0u; }
+`;
+
+const SHADER_BOX = SHADER_COMMON + /* wgsl */`
+struct Out {
+  @builtin(position) position: vec4f,
+  @location(0) face: vec2f,          // position on the face, in world units
+  @location(1) extent: vec2f,        // the face's size, in world units
+  @location(2) @interpolate(flat) tone: u32,
+  @location(3) @interpolate(flat) flags: u32,
+  @location(4) @interpolate(flat) side: u32,   // 0 top, 1 front, 2 flank, 3 back
+}
+@vertex fn vertex(@location(0) corner: vec3f, @location(1) uv: vec2f, @location(2) side: f32,
+                  @location(3) origin: vec3f, @location(4) size: vec3f, @location(5) paint: vec3f) -> Out {
+  var out: Out;
+  let grown = vec3f(size.xy, size.z * paint.z);
+  out.position = scene.view_proj * vec4f(origin + corner * grown, 1.0);
+  out.side = u32(side);
+  if (out.side == 0u) { out.extent = grown.xy; }
+  else if (out.side == 2u) { out.extent = grown.yz; }
+  else { out.extent = grown.xz; }
+  out.face = uv * out.extent;
+  out.tone = u32(paint.x);
+  out.flags = u32(paint.y);
+  return out;
+}
+@fragment fn fragment(in: Out) -> @location(0) vec4f {
+  let edge = min(min(in.face.x, in.extent.x - in.face.x), min(in.face.y, in.extent.y - in.face.y));
+  let pixel = max(fwidth(edge), 1e-4);
+  let top = in.side == 0u;
+  let dark = scene.plane.r < 0.5;
+  var color = scene.side[in.tone].rgb;
+  if (top) { color = scene.top[in.tone].rgb; }
+  else if (in.side == 1u) { color *= 0.95; }
+  else if (in.side == 2u) { color *= 0.8; }
+  else { color *= 0.7; }
+  // The band along the left edge of the top: a node's kind, or a stack's trouble.
+  if (top && in.face.x < 4.5 && !has(in.flags, 256u)) {
+    if (has(in.flags, 64u)) { color = scene.critical.rgb; }
+    else if (has(in.flags, 128u)) { color = scene.warning.rgb; }
+    else if (in.tone <= 3u) { color = scene.band[in.tone].rgb; }
+  }
+  if (has(in.flags, 16u)) { color = mix(color, scene.ink.rgb, select(0.05, 0.1, dark)); }
+  if (top && has(in.flags, 2u)) { color = mix(color, scene.focus.rgb, 0.16); }
+  // A hairline on every edge; heavier and in the focus color when selected or related.
+  var line = scene.ink.rgb;
+  var weight = select(0.2, 0.3, dark);
+  var width = 1.0;
+  if (has(in.flags, 2u)) { line = scene.focus.rgb; weight = 1.0; width = 2.6; }
+  else if (has(in.flags, 4u) || has(in.flags, 32u)) { line = scene.focus.rgb; weight = 0.9; width = 1.6; }
+  if (has(in.flags, 256u)) { weight = 0.0; }
+  color = mix(color, line, weight * (1.0 - smoothstep(width * pixel * 0.6, width * pixel * 1.3, edge)));
+  if (has(in.flags, 8u)) { color = mix(color, scene.plane.rgb, 0.74); }
+  return vec4f(color, 1.0);
+}`;
+
+const SHADER_SHADOW = SHADER_COMMON + /* wgsl */`
+struct Out { @builtin(position) position: vec4f, @location(0) local: vec2f, @location(1) half: vec2f, @location(2) strength: f32 }
+const SPREAD = 22.0;
+@vertex fn vertex(@builtin(vertex_index) index: u32, @location(3) origin: vec3f, @location(4) size: vec3f, @location(5) paint: vec3f) -> Out {
+  var corners = array<vec2f, 6>(vec2f(0, 0), vec2f(1, 0), vec2f(0, 1), vec2f(0, 1), vec2f(1, 0), vec2f(1, 1));
+  let corner = corners[index];
+  var out: Out;
+  out.half = size.xy * 0.5;
+  out.local = (corner * 2.0 - 1.0) * (out.half + SPREAD);
+  let lift = size.z * paint.z;
+  let center = origin.xy + out.half + vec2f(lift * 0.22, lift * 0.34);
+  out.position = scene.view_proj * vec4f(center + out.local, origin.z + 0.15, 1.0);
+  let flags = u32(paint.y);
+  out.strength = clamp(lift / 26.0, 0.25, 1.0);
+  if (has(flags, 256u)) { out.strength = 0.0; }
+  if (has(flags, 8u)) { out.strength *= 0.35; }
+  return out;
+}
+@fragment fn fragment(in: Out) -> @location(0) vec4f {
+  let away = length(max(abs(in.local) - in.half, vec2f(0.0)));
+  let alpha = 1.0 - smoothstep(0.0, SPREAD, away);
+  return vec4f(0.0, 0.0, 0.0, alpha * alpha * in.strength * select(0.2, 0.5, scene.plane.r < 0.5));
+}`;
+
+const SHADER_GROUND = SHADER_COMMON + /* wgsl */`
+struct Out { @builtin(position) position: vec4f, @location(0) world: vec2f }
+@vertex fn vertex(@builtin(vertex_index) index: u32, @location(0) center: vec2f, @location(1) reach: f32) -> Out {
+  var corners = array<vec2f, 6>(vec2f(-1, -1), vec2f(1, -1), vec2f(-1, 1), vec2f(-1, 1), vec2f(1, -1), vec2f(1, 1));
+  var out: Out;
+  out.world = center + corners[index] * reach;
+  out.position = scene.view_proj * vec4f(out.world, -0.2, 1.0);
+  return out;
+}
+@fragment fn fragment(in: Out) -> @location(0) vec4f {
+  // A dot every 40 units, fading out as the dots crowd together.
+  let spacing = 40.0;
+  let cell = abs(fract(in.world / spacing + 0.5) - 0.5) * spacing;
+  let pixel = max(fwidth(in.world.x), fwidth(in.world.y));
+  let dot = 1.0 - smoothstep(1.1, 1.1 + pixel * 1.5, length(cell));
+  let fade = clamp((spacing / pixel - 9.0) / 14.0, 0.0, 1.0);
+  return vec4f(scene.ink.rgb, dot * fade * select(0.2, 0.26, scene.plane.r < 0.5));
+}`;
+
+const SHADER_TEXT = SHADER_COMMON + /* wgsl */`
+@group(1) @binding(0) var atlas: texture_2d<f32>;
+@group(1) @binding(1) var smooth_sampler: sampler;
+struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f, @location(1) color: vec4f }
+@vertex fn vertex(@builtin(vertex_index) index: u32, @location(0) origin: vec3f, @location(1) size: vec2f,
+                  @location(2) uv: vec4f, @location(3) color: vec4f) -> Out {
+  var corners = array<vec2f, 6>(vec2f(0, 0), vec2f(1, 0), vec2f(0, 1), vec2f(0, 1), vec2f(1, 0), vec2f(1, 1));
+  let corner = corners[index];
+  var out: Out;
+  out.position = scene.view_proj * vec4f(origin.xy + corner * size, origin.z, 1.0);
+  out.uv = mix(uv.xy, uv.zw, corner);
+  out.color = color;
+  return out;
+}
+@fragment fn fragment(in: Out) -> @location(0) vec4f {
+  let coverage = textureSample(atlas, smooth_sampler, in.uv).a;
+  return vec4f(in.color.rgb, in.color.a * coverage);
+}`;
+
+const SHADER_LINE = SHADER_COMMON + /* wgsl */`
+struct Out { @builtin(position) position: vec4f, @location(0) color: vec4f }
+@vertex fn vertex(@builtin(vertex_index) index: u32, @location(0) start: vec3f, @location(1) finish: vec3f,
+                  @location(2) widths: vec2f, @location(3) color: vec4f) -> Out {
+  var ends = array<f32, 6>(0, 0, 1, 1, 0, 1);
+  var sides = array<f32, 6>(-1, 1, -1, -1, 1, 1);
+  let a = scene.view_proj * vec4f(start, 1.0);
+  let b = scene.view_proj * vec4f(finish, 1.0);
+  let pa = a.xy / a.w * scene.viewport * 0.5;
+  let pb = b.xy / b.w * scene.viewport * 0.5;
+  let along = normalize(pb - pa + vec2f(1e-5, 0.0));
+  let across = vec2f(-along.y, along.x);
+  let end = ends[index];
+  let clip = mix(a, b, end);
+  let offset = across * sides[index] * mix(widths.x, widths.y, end) * 0.5;
+  var out: Out;
+  out.position = vec4f(clip.xy + offset / (scene.viewport * 0.5) * clip.w, 0.0, clip.w);
+  out.color = color;
+  return out;
+}
+@fragment fn fragment(in: Out) -> @location(0) vec4f { return in.color; }`;
+
+/* The five faces of a unit box that can be seen from above: corner, face uv, side. */
+const FACES = (() => {
+  const quad = (a, b, c, d, side) => [[a, [0, 0]], [b, [1, 0]], [c, [0, 1]], [c, [0, 1]], [b, [1, 0]], [d, [1, 1]]].flatMap(([p, uv]) => [...p, ...uv, side]);
+  return new Float32Array([
+    ...quad([0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1], 0),
+    ...quad([0, 1, 1], [1, 1, 1], [0, 1, 0], [1, 1, 0], 1),
+    ...quad([1, 0, 1], [1, 1, 1], [1, 0, 0], [1, 1, 0], 2),
+    ...quad([0, 0, 1], [0, 1, 1], [0, 0, 0], [0, 1, 0], 2),
+    ...quad([0, 0, 1], [1, 0, 1], [0, 0, 0], [1, 0, 0], 3),
+  ]);
+})();
+
+async function startGpu() {
+  if (!navigator.gpu) throw new Error("no WebGPU");
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("no adapter");
+  const device = await adapter.requestDevice();
+  const context = canvas.getContext("webgpu");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({ device, format, alphaMode: "opaque" });
+  const sceneLayout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} }] });
+  const atlasLayout = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} }, { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} }] });
+  const uniforms = device.createBuffer({ size: UNIFORM_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const blend = { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
+  const boxInstance = { arrayStride: INSTANCE_FLOATS * 4, stepMode: "instance", attributes: [
+    { shaderLocation: 3, offset: 0, format: "float32x3" }, { shaderLocation: 4, offset: 12, format: "float32x3" }, { shaderLocation: 5, offset: 24, format: "float32x3" }] };
+  const pipeline = (code, buffers, { layouts = [sceneLayout], depthWrite = false, depthCompare = "less-equal", blended = true } = {}) => {
+    const module = device.createShaderModule({ code });
+    return device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: layouts }),
+      vertex: { module, entryPoint: "vertex", buffers },
+      fragment: { module, entryPoint: "fragment", targets: [{ format, blend: blended ? blend : undefined }] },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: "depth24plus", depthWriteEnabled: depthWrite, depthCompare },
+      multisample: { count: 4 },
+    });
+  };
+  Object.assign(gpu, {
+    // Chromium loses the device if the objects it came from are collected; hold on to them.
+    instance: navigator.gpu, adapter, device, context, format, uniforms,
+    sceneGroup: device.createBindGroup({ layout: sceneLayout, entries: [{ binding: 0, resource: { buffer: uniforms } }] }),
+    atlasLayout,
+    sampler: device.createSampler({ magFilter: "linear", minFilter: "linear" }),
+    faces: device.createBuffer({ size: FACES.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }),
+    boxes: pipeline(SHADER_BOX, [{ arrayStride: 24, attributes: [
+      { shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x2" }, { shaderLocation: 2, offset: 20, format: "float32" }] }, boxInstance],
+      { depthWrite: true, depthCompare: "less", blended: false }),
+    shadows: pipeline(SHADER_SHADOW, [boxInstance]),
+    ground: pipeline(SHADER_GROUND, [{ arrayStride: 12, stepMode: "instance", attributes: [
+      { shaderLocation: 0, offset: 0, format: "float32x2" }, { shaderLocation: 1, offset: 8, format: "float32" }] }]),
+    text: pipeline(SHADER_TEXT, [{ arrayStride: 52, stepMode: "instance", attributes: [
+      { shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x2" },
+      { shaderLocation: 2, offset: 20, format: "float32x4" }, { shaderLocation: 3, offset: 36, format: "float32x4" }] }], { layouts: [sceneLayout, atlasLayout] }),
+    lines: pipeline(SHADER_LINE, [{ arrayStride: 48, stepMode: "instance", attributes: [
+      { shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x3" },
+      { shaderLocation: 2, offset: 24, format: "float32x2" }, { shaderLocation: 3, offset: 32, format: "float32x4" }] }], { depthCompare: "always" }),
+    groundBuffer: device.createBuffer({ size: 12, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }),
+    buffers: {}, ready: true,
+  });
+  device.queue.writeBuffer(gpu.faces, 0, FACES);
+  device.queue.writeBuffer(gpu.groundBuffer, 0, new Float32Array([0, 0, 200000]));
+  device.addEventListener("uncapturederror", (event) => console.error(`WebGPU: ${event.error.message}`));
+  // A lost device (a driver reset, a sleeping laptop) is replaced once; if that fails too,
+  // say so and leave the outline and details working.
+  device.lost.then((info) => {
+    gpu.ready = false;
+    if (info.reason === "destroyed") return;
+    console.error(`WebGPU device lost: ${info.message}`);
+    gpu.retries = (gpu.retries || 0) + 1;
+    atlas.texture = null; atlas.group = null; atlas.scale = 0; gpu.width = 0; gpu.buffers = {};
+    const giveUp = () => $("#stage").classList.add("unsupported");
+    if (gpu.retries > 1) giveUp(); else startGpu().then(() => { ui.labelsStale = true; wake(); }, giveUp);
+  });
+}
+const UNIFORM_FLOATS = 16 + 4 + 5 * 4 + 30 * 4;
+
+/* A vertex buffer that grows to hold what it is given. */
+function upload(name, data, floats) {
+  const bytes = floats * 4;
+  let buffer = gpu.buffers[name];
+  if (!buffer || buffer.size < bytes) {
+    buffer = gpu.buffers[name] = gpu.device.createBuffer({ size: Math.max(4096, bytes * 2), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  }
+  if (floats) gpu.device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, bytes);
+  return buffer;
+}
+
+function targets(width, height) {
+  if (gpu.width === width && gpu.height === height) return;
+  Object.assign(gpu, { width, height });
+  gpu.color = gpu.device.createTexture({ size: [width, height], sampleCount: 4, format: gpu.format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  gpu.depth = gpu.device.createTexture({ size: [width, height], sampleCount: 4, format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+}
+
+/* ---------- text: rasterized once per zoom level into an atlas, drawn lying on the tops ---------- */
+
+const atlas = { canvas: document.createElement("canvas"), entries: [], scale: 0, texture: null, group: null };
+const FONT = getComputedStyle(document.body).fontFamily;
+const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono");
+
+/* What is written on a box, fitted to the size it is heading for. Roles: 0 name, 1 detail, 2 control. */
+function wording(box, k) {
+  const lines = [], w = box.w, d = box.d;
+  if (box.slab) {
+    const room = w - 24 - (box.openable ? 22 : 0);
+    if (room < 30 || d < 20) return lines;
+    // An open group is titled along its near edge, where its own children cannot hide it.
+    const size = (box.depth === 0 ? 14 : 12.5) * Math.min(k, 1.25);
+    lines.push({ text: box.label, weight: 650, size, family: FONT, x: 12, y: d - 6 - size * 1.4, width: room, role: 0, then: box.sub });
+    if (box.openable) lines.push({ text: "–", weight: 600, size: 15, family: FONT, x: w - 24, y: d - 27, width: 14, role: 2 });
+    return lines;
+  }
+  if (w < 34 || d < 17) return lines;
+  const tight = w < 96;
+  const left = tight ? 9 : 13;
+  const room = w - left - (tight ? 5 : 10) - (box.openable ? 16 : 0);
+  // Zoomed out, text is drawn larger in the world so that it stays readable on screen; a
+  // block that is then too short for two lines keeps its name.
+  const name = (tight ? 11.5 : 13) * k, detail = 10.5 * k;
+  const single = d < 16 + name * 1.4 + detail * 1.3;
+  lines.push({ text: box.label, weight: 650, size: name, family: FONT, x: left, y: single ? Math.max(2, (d - name * 1.4) / 2) : 8, width: room, role: 0 });
+  if (!single) lines.push({ text: box.sub, weight: 400, size: detail, family: box.container ? FONT : MONO, x: left, y: 9 + name * 1.4, width: room, role: 1 });
+  if (box.openable) lines.push({ text: "+", weight: 600, size: 15, family: FONT, x: w - 22, y: 5, width: 14, role: 2 });
+  return lines;
+}
+
+function elide(context, text, width) {
+  if (context.measureText(text).width <= width) return text;
+  let low = 0, high = text.length;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (context.measureText(`${text.slice(0, middle)}…`).width <= width) low = middle; else high = middle - 1;
+  }
+  return low ? `${text.slice(0, low)}…` : "";
+}
+
+function rasterize(scale, k) {
+  const context = atlas.canvas.getContext("2d", { willReadFrequently: true });
+  const side = Math.min(4096, gpu.device.limits.maxTextureDimension2D);
+  for (let attempt = 0; attempt < 6; attempt += 1, scale *= 0.75) {
+    const placed = [];
+    let x = 1, y = 1, row = 0, fits = true;
+    ui.scene.boxes.forEach((box, index) => {
+      for (const line of wording(box, k)) {
+        context.font = `${line.weight} ${line.size * scale}px ${line.family}`;
+        const text = elide(context, line.text, line.width * scale);
+        if (!text) continue;
+        let tail = "";
+        if (line.then && text === line.text) {
+          const used = context.measureText(`${text}  `).width;
+          context.font = `400 ${line.size * 0.86 * scale}px ${line.family}`;
+          tail = elide(context, line.then, line.width * scale - used);
+        }
+        const width = Math.ceil(line.width * scale) + 2, height = Math.ceil(line.size * scale * 1.4) + 2;
+        if (x + width > side) { x = 1; y += row + 1; row = 0; }
+        if (y + height > side) fits = false;
+        placed.push({ index, line, text, tail, x, y, width, height });
+        x += width + 1; row = Math.max(row, height);
+      }
+    });
+    if (!fits) continue;
+    atlas.canvas.width = side; atlas.canvas.height = Math.max(4, Math.min(side, y + row + 2));
+    context.clearRect(0, 0, atlas.canvas.width, atlas.canvas.height);
+    context.textBaseline = "top"; context.fillStyle = "#fff";
+    for (const entry of placed) {
+      const { line } = entry;
+      context.font = `${line.weight} ${line.size * scale}px ${line.family}`;
+      context.fillText(entry.text, entry.x, entry.y + line.size * scale * 0.14);
+      if (entry.tail) {
+        const used = context.measureText(`${entry.text}  `).width;
+        context.globalAlpha = 0.62;
+        context.font = `400 ${line.size * 0.86 * scale}px ${line.family}`;
+        context.fillText(entry.tail, entry.x + used, entry.y + line.size * scale * 0.24);
+        context.globalAlpha = 1;
+      }
+    }
+    atlas.texture = gpu.device.createTexture({ size: [atlas.canvas.width, atlas.canvas.height], format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    // Raw bytes rather than copyExternalImageToTexture, which not every browser accepts for a 2D canvas.
+    const pixels = context.getImageData(0, 0, atlas.canvas.width, atlas.canvas.height);
+    gpu.device.queue.writeTexture({ texture: atlas.texture }, pixels.data, { bytesPerRow: atlas.canvas.width * 4 }, [atlas.canvas.width, atlas.canvas.height]);
+    atlas.group = gpu.device.createBindGroup({ layout: gpu.atlasLayout, entries: [{ binding: 0, resource: atlas.texture.createView() }, { binding: 1, resource: gpu.sampler }] });
+    atlas.entries = placed.map((entry) => ({
+      index: entry.index, role: entry.line.role, dx: entry.line.x, dy: entry.line.y, w: entry.width / scale, h: entry.height / scale,
+      uv: [entry.x / atlas.canvas.width, entry.y / atlas.canvas.height, (entry.x + entry.width) / atlas.canvas.width, (entry.y + entry.height) / atlas.canvas.height],
+    }));
+    atlas.scale = scale;
+    return;
+  }
+}
+
+/* ---------- the frame ---------- */
+
+let frameRequested = false, lastFrame = 0, settle = 0;
+function wake() { settle = 0; if (!frameRequested) { frameRequested = true; requestAnimationFrame(frame); } }
+
+function frame(now) {
+  frameRequested = false;
+  const dt = lastFrame ? Math.min(100, now - lastFrame) : 16;
+  lastFrame = now;
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (!width || !height) return;
+  const moving = core.iv_frame(dt, width, height) !== 0;
+  // A resize can re-lay the map out inside the frame; fetch the boxes that are now drawn.
+  if (core.iv_revision() !== ui.revision) take(command("refresh"));
+  const count = core.iv_instance_count();
+  ui.boxes = new Float32Array(core.memory.buffer, core.iv_instances_ptr(), count * INSTANCE_FLOATS);
+  ui.matrix = new Float32Array(core.memory.buffer, core.iv_matrix_ptr(), 16);
+  ui.zoom = core.iv_zoom_level(); ui.size = [width, height]; ui.moving = moving;
+  $("#zoom-level").textContent = `${Math.round(ui.zoom * 100)}%`;
+  if (gpu.ready && palette) draw(count, width, height, moving);
+  // Keep drawing while things move, and twice more once they stop so that text sharpens.
+  if (moving || settle < 2) { if (!moving) settle += 1; frameRequested = true; requestAnimationFrame(frame); } else lastFrame = 0;
+}
+
+function draw(count, width, height, moving) {
+  const { boxes, matrix, zoom } = ui;
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  const pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) { canvas.width = pixelWidth; canvas.height = pixelHeight; }
+  targets(pixelWidth, pixelHeight);
+  const { device } = gpu;
+
+  // Text is redrawn when what is shown changes, and when the zoom has moved far enough
+  // from the size it was drawn at to blur or waste it.
+  const wanted = Math.min(4, Math.max(0.6, zoom * dpr * 1.6));
+  if (ui.labelsStale || (!moving && (wanted > atlas.scale * 1.25 || wanted < atlas.scale * 0.55))) {
+    rasterize(wanted, 1 / Math.min(1, Math.max(0.6, zoom)));
+    ui.labelsStale = false;
+  }
+
+  const uniform = new Float32Array(UNIFORM_FLOATS);
+  uniform.set(matrix, 0);
+  uniform.set([pixelWidth, pixelHeight, dpr, zoom], 16);
+  const colors = [palette.plane, palette.ink, palette.focus, palette.critical, palette.warning,
+    ...palette.tones.map((tone) => tone.top), ...palette.tones.map((tone) => tone.side), ...palette.tones.map((tone) => tone.band)];
+  colors.forEach((color, index) => uniform.set([color[0], color[1], color[2], 1], 20 + index * 4));
+  device.queue.writeBuffer(gpu.uniforms, 0, uniform);
+
+  const boxBuffer = upload("boxes", boxes, count * INSTANCE_FLOATS);
+
+  // Labels ride on their boxes: each frame takes the box's current place.
+  const text = new Float32Array(atlas.entries.length * 13);
+  let written = 0;
+  for (const entry of atlas.entries) {
+    const at = entry.index * INSTANCE_FLOATS;
+    if (at + INSTANCE_FLOATS > boxes.length) continue;
+    const flags = boxes[at + 7], grow = boxes[at + 8];
+    const color = entry.role === 0 ? palette.ink : entry.role === 1 ? palette.ink2 : palette.ink3;
+    const alpha = (flags & FLAG.dim ? 0.32 : 1) * Math.min(1, grow * grow);
+    text.set([boxes[at] + entry.dx, boxes[at + 1] + entry.dy, boxes[at + 2] + boxes[at + 5] * grow + 0.25, entry.w, entry.h,
+      entry.uv[0], entry.uv[1], entry.uv[2], entry.uv[3], color[0], color[1], color[2], alpha], written * 13);
+    written += 1;
+  }
+  const textBuffer = upload("text", text, written * 13);
+
+  const segments = [];
+  for (const link of ui.scene.links) arc(segments, boxes, link, dpr);
+  const lineData = new Float32Array(segments);
+  const lineBuffer = upload("lines", lineData, lineData.length);
+
+  const commands = device.createCommandEncoder();
+  const pass = commands.beginRenderPass({
+    colorAttachments: [{ view: gpu.color.createView(), resolveTarget: gpu.context.getCurrentTexture().createView(),
+      clearValue: [palette.plane[0], palette.plane[1], palette.plane[2], 1], loadOp: "clear", storeOp: "discard" }],
+    depthStencilAttachment: { view: gpu.depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "discard" },
+  });
+  pass.setBindGroup(0, gpu.sceneGroup);
+  pass.setPipeline(gpu.ground); pass.setVertexBuffer(0, gpu.groundBuffer); pass.draw(6, 1);
+  if (count) {
+    pass.setPipeline(gpu.boxes); pass.setVertexBuffer(0, gpu.faces); pass.setVertexBuffer(1, boxBuffer); pass.draw(30, count);
+    pass.setPipeline(gpu.shadows); pass.setVertexBuffer(0, boxBuffer); pass.draw(6, count);
+  }
+  if (written && atlas.group) { pass.setPipeline(gpu.text); pass.setBindGroup(1, atlas.group); pass.setVertexBuffer(0, textBuffer); pass.draw(6, written); }
+  if (lineData.length) { pass.setPipeline(gpu.lines); pass.setVertexBuffer(0, lineBuffer); pass.draw(6, lineData.length / 12); }
+  pass.end();
+  device.queue.submit([commands.finish()]);
+}
+
+function project(x, y, z) {
+  const m = ui.matrix;
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+  return [((m[0] * x + m[4] * y + m[8] * z + m[12]) / w + 1) / 2 * ui.size[0], (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / w) / 2 * ui.size[1]];
+}
+
+/* One association: an arc from the top of one box to the top of another, ending in an arrowhead. */
+function arc(out, boxes, link, dpr) {
+  const a = link.from * INSTANCE_FLOATS, b = link.to * INSTANCE_FLOATS;
+  if (b + INSTANCE_FLOATS > boxes.length || a + INSTANCE_FLOATS > boxes.length) return;
+  const top = (at) => [boxes[at] + boxes[at + 3] / 2, boxes[at + 1] + boxes[at + 4] / 2, boxes[at + 2] + boxes[at + 5] * boxes[at + 8]];
+  const from = top(a), to = top(b);
+  const span = Math.hypot(to[0] - from[0], to[1] - from[1]);
+  const rise = Math.min(150, 26 + span * 0.2);
+  const steps = 22;
+  const point = (t) => [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t + rise * 4 * t * (1 - t)];
+  const provider = link.kind === "provider";
+  const ink = link.muted || provider ? [...palette.ink3, link.muted ? 0.5 : 0.8] : [...palette.ink, 0.95];
+  const halo = [...palette.plane, 0.75];
+  const width = (link.muted ? 1.1 : provider ? 1.2 : Math.min(4, 1.7 + Math.log2(link.count) * 0.7)) * dpr;
+  const head = 1 - Math.min(0.3, 15 / Math.max(span, 1));
+  const points = Array.from({ length: steps + 1 }, (_, index) => point(Math.min(index / steps, head)));
+  if (!link.muted) for (let index = 0; index < steps; index += 1) out.push(...points[index], ...points[index + 1], width + 3 * dpr, width + 3 * dpr, ...halo);
+  for (let index = 0; index < steps; index += 1) {
+    if (provider && index % 2) continue;
+    out.push(...points[index], ...points[index + 1], width, width, ...ink);
+  }
+  out.push(...point(head), ...point(1), (link.muted ? 6 : 10) * dpr, 0, ...ink);
+}
+
+/* ---------- pointer and keyboard on the canvas ---------- */
+
+const pointers = new Map();
+let drag = null;
+const local = (event) => { const rect = canvas.getBoundingClientRect(); return [event.clientX - rect.left, event.clientY - rect.top]; };
+const boxAt = (x, y) => { const index = core.iv_pick(x, y); return index >= 0 && index < ui.scene.boxes.length ? index : -1; };
+
+function hover(id, event) {
+  const tip = $("#tip");
+  if (ui.hovered !== id) {
+    ui.hovered = id;
+    ui.scene.links = command("hover", { id }).links;
+    canvas.classList.toggle("pointing", Boolean(id));
+    if (id && event) {
+      const { tip: content } = command("tip", { id });
+      tip.replaceChildren(el("b", { text: content.title }), ...content.lines.filter(Boolean).map((line) => el("span", { text: line })));
+      tip.classList.add("on");
+    } else tip.classList.remove("on");
+    wake();
+  }
+  if (id && event) {
+    tip.style.left = `${Math.max(8, Math.min(event.clientX + 14, innerWidth - tip.offsetWidth - 8))}px`;
+    tip.style.top = `${event.clientY + 20 + tip.offsetHeight > innerHeight ? event.clientY - tip.offsetHeight - 12 : event.clientY + 20}px`;
+  }
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  canvas.setPointerCapture(event.pointerId);
+  pointers.set(event.pointerId, local(event));
+  drag = pointers.size === 1 ? { start: local(event), last: local(event), moved: false } : null;
+  hover(null);
+});
+canvas.addEventListener("pointermove", (event) => {
+  const at = local(event);
+  if (pointers.has(event.pointerId)) {
+    const before = pointers.get(event.pointerId);
+    if (pointers.size === 2) {
+      // Two fingers: the midpoint drags the ground and the spread zooms.
+      const [other] = [...pointers.entries()].filter(([id]) => id !== event.pointerId).map(([, point]) => point);
+      const spread = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+      const middle = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      const [from, to] = [middle(before, other), middle(at, other)];
+      core.iv_pan(from[0], from[1], to[0], to[1]);
+      core.iv_zoom(to[0], to[1], spread(at, other) / Math.max(1, spread(before, other)));
+    } else if (drag) {
+      if (!drag.moved && Math.hypot(at[0] - drag.start[0], at[1] - drag.start[1]) > 4) { drag.moved = true; canvas.classList.add("grabbing"); }
+      if (drag.moved) { core.iv_pan(drag.last[0], drag.last[1], at[0], at[1]); drag.last = at; }
+    }
+    pointers.set(event.pointerId, at);
+    wake();
+    return;
+  }
+  const index = boxAt(at[0], at[1]);
+  hover(index >= 0 ? ui.scene.boxes[index].id : null, event);
+});
+const release = (event) => {
+  const clicked = drag && !drag.moved && event.type === "pointerup";
+  const at = local(event);
+  pointers.delete(event.pointerId);
+  canvas.classList.remove("grabbing");
+  drag = null;
+  if (!clicked) return;
+  const index = boxAt(at[0], at[1]);
+  if (index < 0) { if (ui.summary.selected) act("select", { id: null }); return; }
+  const box = ui.scene.boxes[index];
+  // The – at the end of an open group's label closes it in one click.
+  const base = index * INSTANCE_FLOATS;
+  let close = false;
+  if (box.slab && box.openable) {
+    const [x, y] = project(ui.boxes[base] + ui.boxes[base + 3] - 17, ui.boxes[base + 1] + ui.boxes[base + 4] - 15, ui.boxes[base + 2] + ui.boxes[base + 5]);
+    close = Math.hypot(x - at[0], y - at[1]) < Math.max(11, 13 * ui.zoom);
+  }
+  act(close ? "toggle" : "click", { id: box.id });
+};
+canvas.addEventListener("pointerup", release);
+canvas.addEventListener("pointercancel", release);
+canvas.addEventListener("pointerleave", () => hover(null));
+canvas.addEventListener("dblclick", (event) => {
+  const at = local(event);
+  const index = boxAt(at[0], at[1]);
+  if (index >= 0) act("focus", { id: ui.scene.boxes[index].id }); else act("fit");
+});
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const at = local(event);
+  const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+  core.iv_zoom(at[0], at[1], Math.exp(-step * (event.ctrlKey ? 0.01 : 0.0016)));
+  hover(null);
+  wake();
+}, { passive: false });
+
+const zoomBy = (factor) => { core.iv_zoom(ui.size[0] / 2, ui.size[1] / 2, factor); wake(); };
+$("#zoom-in").addEventListener("click", () => zoomBy(1.3));
+$("#zoom-out").addEventListener("click", () => zoomBy(1 / 1.3));
+$("#fit").addEventListener("click", () => act("fit"));
+
+const TILTS = { flat: [0, 1.5607], tilt: [-0.2, 0.96], iso: [-0.6, 0.7] };
+function segmented(id, key, fallback, apply) {
+  const root = $(id);
+  const sync = (value) => root.querySelectorAll("button").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.value === value)));
+  root.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    store(`inframe.${key}`, button.dataset.value);
+    sync(button.dataset.value);
+    apply(button.dataset.value);
+  });
+  const initial = root.querySelector(`button[data-value="${stored(`inframe.${key}`, fallback)}"]`) ? stored(`inframe.${key}`, fallback) : fallback;
+  sync(initial);
+  return initial;
+}
+const tilt = segmented("#tilt", "tilt", "tilt", (value) => act("tilt", { yaw: TILTS[value][0], pitch: TILTS[value][1] }));
+const mode = segmented("#mode", "mode", "explore", (value) => act("mode", { value }));
+const grouping = segmented("#grouping", "grouping", "source", (value) => act("grouping", { value }));
+
+$("#all-links").addEventListener("click", (event) => {
+  const on = event.currentTarget.getAttribute("aria-pressed") !== "true";
+  event.currentTarget.setAttribute("aria-pressed", String(on));
+  act("all_links", { value: on });
+});
+$("#search").addEventListener("input", (event) => act("query", { text: event.target.value }));
+$("#search").addEventListener("keydown", (event) => { if (event.key === "Enter") act("first_match"); });
+$("#theme").addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  store("inframe.theme", document.documentElement.dataset.theme);
+  readTheme();
+});
+if (stored("inframe.theme", "")) document.documentElement.dataset.theme = stored("inframe.theme", "");
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readTheme);
+
+for (const side of ["left", "right"]) {
+  const button = $(`#toggle-${side}`), main = $("main");
+  const set = (shown, remember) => {
+    main.classList.toggle(`no-${side}`, !shown);
+    button.setAttribute("aria-pressed", String(shown));
+    if (remember) store(`inframe.${side}`, shown ? "shown" : "hidden");
+  };
+  // Narrow windows start with the panels away; a choice made by hand is kept.
+  const narrow = side === "left" ? innerWidth < 1100 : innerWidth < 760;
+  set(stored(`inframe.${side}`, narrow ? "hidden" : "shown") === "shown", false);
+  button.addEventListener("click", () => set(main.classList.contains(`no-${side}`), true));
+}
+
+addEventListener("keydown", (event) => {
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (event.key === "/" && !typing) { event.preventDefault(); $("#search").focus(); }
+  else if (event.key === "Escape") {
+    if (typing && $("#search").value) { $("#search").value = ""; act("query", { text: "" }); }
+    else if (typing) document.activeElement.blur();
+    else if (ui.summary.selected) act("select", { id: null });
+  } else if (!typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (event.key === "+" || event.key === "=") zoomBy(1.3);
+    else if (event.key === "-") zoomBy(1 / 1.3);
+    else if (event.key === "0" || event.key === "f") act("fit");
+    else if (event.key.startsWith("Arrow") && document.activeElement === canvas) {
+      const step = 80, [x, y] = [ui.size[0] / 2, ui.size[1] / 2];
+      const delta = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[event.key];
+      core.iv_pan(x, y, x + delta[0], y + delta[1]); wake(); event.preventDefault();
+    }
+  }
+});
+new ResizeObserver(() => { lastFrame = 0; wake(); }).observe($("#stage"));
+
+/* ---------- outline ---------- */
+
+function renderOutline() {
+  const outline = $("#outline > div");
+  const exploring = ui.summary.mode === "explore";
+  const rows = ui.outline.map((row) => {
+    const button = el("button", { class: `row${row.dim ? " dim" : ""}`, type: "button", "data-open": row.open == null ? null : String(row.open),
+      "aria-current": String(row.selected), "aria-expanded": row.open == null ? null : String(row.open), style: `padding-left:${6 + row.depth * 14}px`,
+      onclick: () => act("select", { id: row.id, reveal: true }), ondblclick: () => act("focus", { id: row.id }),
+      onpointerenter: () => hover(row.id), onpointerleave: () => hover(null) });
+    button.append(...[row.open == null || !exploring ? el("span", { class: "twist", style: "visibility:hidden" })
+        : el("span", { class: "twist", title: row.open ? "Close" : "Open", onclick: (event) => { event.stopPropagation(); act("toggle", { id: row.id }); } }, icon("chevron")),
+      el("span", { class: "dot", "data-kind": row.tone }),
+      el("span", { class: "label" }, row.label, row.small ? el("small", { text: row.small }) : null),
+      row.count == null ? null : el("span", { class: "count", text: String(row.count) })].filter(Boolean));
+    return button;
+  });
+  const scroll = $("#outline").scrollTop;
+  outline.replaceChildren(el("div", { class: "eyebrow" }, el("span", { text: "Outline" }),
+    exploring ? el("button", { type: "button", text: "Close all", onclick: () => act("collapse_all") }) : null), ...rows);
+  $("#outline").scrollTop = scroll;
+  const current = outline.querySelector('[aria-current="true"]');
+  if (current) current.scrollIntoView({ block: "nearest" });
+}
+
+/* ---------- inspector ---------- */
+
+const section = (title, count, ...children) => el("section", {}, el("div", { class: "eyebrow" }, el("span", { text: title }), count == null ? null : el("span", { text: String(count) })), ...children);
+const linkRow = (row) => el("li", {}, el("button", { class: "link", type: "button", title: row.id,
+  onclick: () => act("select", { id: row.id, reveal: true }), onpointerenter: () => hover(row.id), onpointerleave: () => hover(null) },
+  el("span", { class: "dot", "data-kind": row.tone }), el("span", { class: `to${row.mono ? " mono" : ""}`, text: row.label }),
+  row.note ? el("span", { class: "via", text: row.note }) : null));
+const links = (title, rows, empty) => section(title, rows.length, rows.length ? el("ul", { class: "list" }, rows.map(linkRow)) : el("p", { class: "note", text: empty }));
+
+/* A printed value, with each address it refers to turned into a link to that node. */
+function valueCell(argument) {
+  const cell = el("td", { class: "mono" });
+  const addresses = (argument.references || []).map((id) => [id, id.slice(id.indexOf("/") + 1)]).sort((a, b) => b[1].length - a[1].length);
+  let rest = argument.value;
+  while (rest) {
+    let first = null;
+    for (const [id, address] of addresses) { const at = rest.indexOf(address); if (at >= 0 && (!first || at < first.at)) first = { at, id, address }; }
+    if (!first) { cell.append(rest); break; }
+    cell.append(rest.slice(0, first.at), el("button", { class: "ref", type: "button", text: first.address, onclick: () => act("select", { id: first.id, reveal: true }) }));
+    rest = rest.slice(first.at + first.address.length);
+  }
+  return cell;
+}
+
+function inspectNode(data) {
+  const { node } = data;
+  const facts = el("dl", { class: "facts" });
+  const fact = (name, value) => value && facts.append(el("dt", { text: name }), el("dd", {}, value));
+  fact("Stack", data.stack);
+  fact("State", node.applied == null ? (node.kind === "provider" || node.kind === "stack_reference" ? null : el("span", { title: data.state_reason || "" }, "Not tracked"))
+    : el("span", { class: "status" }, el("span", { class: "mark", "data-applied": String(node.applied) }), node.applied ? "Applied" : "Not applied yet"));
+  fact("Declared in", node.origin
+    ? el("span", { class: "mono", text: `${node.origin.module}${node.origin.declaration ? ` › ${node.origin.declaration}` : ""}${node.origin.line ? `  :${node.origin.line}` : ""}` })
+    : el("span", { class: "note", text: data.has_origins ? "No origin recorded" : `The ${data.frontend} frontend does not record origins` }));
+  if (node.kind === "resource" || node.kind === "data") fact("Type", el("span", { class: "mono", text: node.type }));
+  if (node.kind === "provider") fact("Source", el("span", { class: "mono", text: node.type }));
+  const hidden = node.hidden_arguments || 0;
+  return [
+    el("span", { class: "kind" }, icon(node.kind), data.kind_label),
+    el("h2", { text: node.name }),
+    el("div", { class: "address mono", text: node.address }),
+    node.flags && node.flags.length ? el("div", { class: "badges" }, node.flags.map((flag) => el("span", { class: "chip", text: flag }))) : null,
+    el("div", { class: "actions" }, el("button", { class: "action", type: "button", onclick: () => act("focus", { id: data.id }) }, icon("focus"), "Zoom to")),
+    facts,
+    links("Depends on", data.depends, "Nothing: this node can be created first."),
+    links("Used by", data.used_by, "Nothing reads this node."),
+    node.kind === "stack_reference" ? null : section(node.kind === "output" ? "Value" : "Configuration", node.kind === "output" ? null : node.arguments.length + hidden,
+      node.arguments.length ? el("table", { class: "args" }, el("tbody", {}, node.arguments.map((argument) => el("tr", {},
+        el("td", { class: "mono", text: node.kind === "output" ? argument.name.replace(/^value\.?/, "") || "value" : argument.name }), valueCell(argument)))))
+        : el("p", { class: "note", text: "No arguments set." }),
+      hidden ? el("p", { class: "note", text: `${hidden} more not shown.` }) : null),
+  ];
+}
+
+const ROLE = { stack: "Stack", module: "Module", definition: "Definition", provider: "Provider", type: "Resource type", kind: "Group", loose: "Group" };
+function inspectGroup(data) {
+  const { stack } = data;
+  const parts = [
+    el("span", { class: "kind" }, icon("group"), ROLE[data.role] || "Group"),
+    el("h2", { text: data.title }),
+    el("div", { class: "address", text: stack ? `${stack.frontend} frontend · ${stack.backend} backend${stack.gated ? " · gated" : ""}` : data.trail }),
+    el("div", { class: "actions" },
+      data.openable ? el("button", { class: "action", type: "button", onclick: () => act("toggle", { id: data.id }) }, icon(data.open ? "close" : "open"), data.open ? "Close" : "Open") : null,
+      data.openable ? el("button", { class: "action", type: "button", onclick: () => act("expand_all", { id: data.id }) }, "Open everything inside") : null,
+      el("button", { class: "action", type: "button", onclick: () => act("focus", { id: data.id }) }, icon("focus"), "Zoom to")),
+  ];
+  if (stack) {
+    if (stack.error) parts.push(el("div", { class: "callout" }, icon("alert"), el("div", { text: stack.nodes.length ? "The last build failed. What is shown is from the last build that succeeded." : "This stack has not built." })),
+      el("pre", { class: "error", text: stack.error }));
+    const facts = el("dl", { class: "facts" });
+    const fact = (name, value) => facts.append(el("dt", { text: name }), el("dd", { text: value }));
+    if (stack.built_at_ms) fact("Built", `${clock(stack.built_at_ms)} in ${(stack.build_ms / 1000).toFixed(1)}s`);
+    fact("State", !stack.state.tracked ? stack.state.reason : stack.state.serial == null ? "Nothing applied yet" : `Serial ${stack.state.serial}, written ${new Date(stack.state.updated_ms).toLocaleString()}`);
+    if (!stack.has_origins && stack.nodes.length) fact("Source", `The ${stack.frontend} frontend does not record where nodes are declared, so this stack is grouped by provider.`);
+    parts.push(facts);
+    if (stack.unmanaged.length) parts.push(section("In state, no longer declared", stack.unmanaged.length,
+      el("div", { class: "callout", "data-tone": "warning" }, icon("info"), el("div", { text: "The next apply destroys these." })),
+      el("ul", { class: "list" }, stack.unmanaged.map((address) => el("li", { class: "mono", text: address, style: "padding:3px 0" })))));
+  }
+  parts.push(
+    data.counts.length ? section("Contains", data.nodes, data.counts.map((count) => el("div", { class: "stat" }, el("span", { class: "kind" }, icon(count.kind), count.label), el("span", { text: String(count.count) })))) : null,
+    data.children.length ? section("Inside", data.children.length, el("ul", { class: "list" }, data.children.map(linkRow))) : null,
+    links("Depends on", data.depends, "Nothing outside this group."),
+    links("Used by", data.used_by, "Nothing outside this group."));
+  return parts;
+}
+
+function overview(data) {
+  const swatch = (name, share = 26) => el("span", { class: "swatch", style: `background:color-mix(in oklab, var(${name}) ${share}%, var(--surface))` });
+  return [
+    el("span", { class: "eyebrow", text: "Project" }),
+    el("h2", { text: data.project.name }),
+    el("div", { class: "address mono", text: data.project.root }),
+    data.project.error ? el("div", { class: "callout" }, icon("alert"), el("div", {}, "inframe.toml could not be read; showing its last readable version.", el("pre", { class: "error", text: data.project.error }))) : null,
+    section("Stacks", data.stacks.length, el("ul", { class: "list" }, data.stacks.map((stack) => linkRow({ id: stack.id, label: stack.name, tone: "group",
+      note: stack.status === "building" ? "Building…" : stack.status === "failed" && !stack.nodes ? "Build failed"
+        : `${plural(stack.nodes, "node", "nodes")} · ${plural(stack.edges, "association", "associations")}${stack.status === "failed" ? " · last build failed" : ""}` })))),
+    section("Reading the canvas", null, el("ul", { class: "legend" },
+      el("li", {}, swatch("--resource"), icon("resource"), "Managed resource"),
+      el("li", {}, swatch("--read"), icon("data"), "Data source, or another stack read"),
+      el("li", {}, swatch("--output"), icon("output"), "Root output"),
+      el("li", {}, swatch("--neutral"), icon("provider"), "Provider configuration"),
+      el("li", {}, swatch("--surface", 100), icon("group"), "A group: a stack, module or definition"),
+      data.marks ? el("li", {}, el("span", { class: "mark", "data-applied": "true" }), "In the stack's state") : null,
+      data.marks ? el("li", {}, el("span", { class: "mark", "data-applied": "false" }), "Declared, not applied yet") : null)),
+    section("Getting around", null, el("p", { class: "note", style: "margin:0;line-height:1.7" },
+      "A taller block carries more configuration. An arrow points at what a node needs. Drag to pan, scroll to zoom, double-click to zoom to something. ",
+      el("kbd", { text: "/" }), " finds, ", el("kbd", { text: "0" }), " fits, ", el("kbd", { text: "Esc" }), " clears.")),
+  ];
+}
+
+function renderInspector() {
+  const inspector = $("#inspector"), data = ui.inspect;
+  if (!data) return;
+  const key = data.id || data.type;
+  const scroll = inspector.dataset.for === key ? inspector.scrollTop : 0;
+  inspector.dataset.for = key;
+  const parts = data.type === "node" ? inspectNode(data) : data.type === "group" ? inspectGroup(data) : data.type === "project" ? overview(data) : [];
+  inspector.firstElementChild.replaceChildren(...parts.filter(Boolean));
+  inspector.scrollTop = scroll;
+}
+
+/* ---------- top bar and live updates ---------- */
+
+function renderBar() {
+  const summary = ui.summary, live = $("#live");
+  $("#project").textContent = summary.project || "";
+  if (summary.project) document.title = `${summary.project} · Inframe`;
+  $("#matches").textContent = summary.matches == null ? "" : String(summary.matches);
+  let state = "live", text = "Live";
+  const building = summary.building || [], failed = summary.failed || [];
+  if (!ui.connected) { state = "offline"; text = "Disconnected · retrying"; }
+  else if (building.length) { state = "building"; text = `Building ${building.join(", ")}`; }
+  else if (failed.length) { state = "failed"; text = `${plural(failed.length, "stack", "stacks")} failed to build`; }
+  else if (summary.built_at_ms) text = `Live · built ${clock(summary.built_at_ms)}`;
+  live.dataset.state = state;
+  live.querySelector("span").textContent = text;
+  live.title = "Stacks rebuild when their sources change";
+  $("#hint").replaceChildren(summary.mode === "map"
+    ? el("span", {}, el("b", { text: "Map" }), "  everything at once")
+    : el("span", {}, el("b", { text: "Explore" }), "  click a group to open it"),
+    el("span", { text: "drag to pan · scroll to zoom" }));
+}
+
+let loading = null;
+async function refresh() {
+  if (loading) return loading;
+  loading = (async () => {
+    try {
+      const model = await (await fetch("/api/model", { cache: "no-store" })).json();
+      if (model.stacks && model.version !== ui.version) { ui.version = model.version; act("model", { model }); }
+    } finally { loading = null; }
+  })();
+  return loading;
+}
+function connect() {
+  const events = new EventSource("/api/events");
+  events.addEventListener("open", () => { ui.connected = true; renderBar(); });
+  events.addEventListener("model", (event) => { ui.connected = true; if (Number(event.data) !== ui.version) refresh().catch(() => {}); });
+  events.addEventListener("error", () => { ui.connected = false; renderBar(); });
+}
+
+command("mode", { value: mode });
+command("grouping", { value: grouping });
+command("tilt", { yaw: TILTS[tilt][0], pitch: TILTS[tilt][1] });
+readTheme();
+try { await startGpu(); } catch (error) { console.error(`WebGPU did not start: ${error.message}`); $("#stage").classList.add("unsupported"); }
+refresh().then(connect, connect);
+// For driving the page from a console or a test.
+window.inframe = { ui, act, command };
+</script>
+</body>
+</html>
