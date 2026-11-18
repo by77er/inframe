@@ -185,7 +185,7 @@ pre.error { margin: 8px 0 0; padding: 10px; border-radius: 8px; background: var(
     <div class="brand"><b>Inframe</b><span id="project"></span></div>
     <label class="field"><span>View</span>
       <span class="segmented" id="mode" role="group" aria-label="View">
-        <button data-value="explore" title="Groups stay closed until you open them">Explore</button><button data-value="map" title="Everything at once; area follows how much configuration a node carries">Map</button>
+        <button data-value="explore" title="Groups stay closed until you open them">Explore</button><button data-value="everything" title="Every group open and every node showing its configuration">Everything</button>
       </span></label>
     <label class="field"><span>Group by</span>
       <span class="segmented" id="grouping" role="group" aria-label="Group by">
@@ -589,29 +589,37 @@ const atlas = { canvas: document.createElement("canvas"), entries: [], scale: 0,
 const FONT = getComputedStyle(document.body).fontFamily;
 const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono");
 
-/* What is written on a box, fitted to the size it is heading for. Roles: 0 name, 1 detail, 2 control. */
-function wording(box, k) {
+/* What is written on a box. Blocks are sized by the view to hold their text, so this fits
+   by construction; `grow` marks lines that may be drawn larger when zoomed out, as far as the
+   block has room. Roles: 0 name, 1 detail, 2 control, 3 a configuration name, 4 its value. */
+function wording(box, k, detail) {
   const lines = [], w = box.w, d = box.d;
   if (box.slab) {
     const room = w - 24 - (box.openable ? 22 : 0);
     if (room < 30 || d < 20) return lines;
     // An open group is titled along its near edge, where its own children cannot hide it.
-    const size = (box.depth === 0 ? 14 : 12.5) * Math.min(k, 1.25);
-    lines.push({ text: box.label, weight: 650, size, family: FONT, x: 12, y: d - 6 - size * 1.4, width: room, role: 0, then: box.sub });
+    const size = box.depth === 0 ? 14 : 12.5;
+    lines.push({ text: box.label, weight: 650, size, grow: Math.min(k, 1.5), family: FONT, x: 12, bottom: d - 6, width: room, role: 0, then: box.sub });
     if (box.openable) lines.push({ text: "–", weight: 600, size: 15, family: FONT, x: w - 24, y: d - 27, width: 14, role: 2 });
     return lines;
   }
-  if (w < 34 || d < 17) return lines;
-  const tight = w < 96;
-  const left = tight ? 9 : 13;
-  const room = w - left - (tight ? 5 : 10) - (box.openable ? 16 : 0);
-  // Zoomed out, text is drawn larger in the world so that it stays readable on screen; a
-  // block that is then too short for two lines keeps its name.
-  const name = (tight ? 11.5 : 13) * k, detail = 10.5 * k;
-  const single = d < 16 + name * 1.4 + detail * 1.3;
-  lines.push({ text: box.label, weight: 650, size: name, family: FONT, x: left, y: single ? Math.max(2, (d - name * 1.4) / 2) : 8, width: room, role: 0 });
-  if (!single) lines.push({ text: box.sub, weight: 400, size: detail, family: box.container ? FONT : MONO, x: left, y: 9 + name * 1.4, width: room, role: 1 });
+  const left = 13, room = w - left - 10 - (box.openable ? 18 : 0);
+  const rows = box.rows || [];
+  // Zoomed out, a block's name and kind grow to fill it; zoomed in on a block that carries
+  // its configuration, they keep to the top and the configuration is written under them.
+  const scale = detail ? 1 : Math.min(k, (d - 14) / 32.4);
+  lines.push({ text: box.label, weight: 650, size: 13, grow: scale, family: FONT, x: left, y: 8, width: room, role: 0 });
+  lines.push({ text: box.sub, weight: 400, size: 10.5, grow: scale, family: box.container ? FONT : MONO, x: left, y: 9 + 13 * 1.4, below: true, width: room, role: 1 });
   if (box.openable) lines.push({ text: "+", weight: 600, size: 15, family: FONT, x: w - 22, y: 5, width: 14, role: 2 });
+  if (detail) {
+    // The node's configuration, a row to an argument: the block is as deep as there is to say.
+    rows.forEach(([name, value], index) => {
+      const y = 50 + index * 15;
+      lines.push({ text: name, weight: 400, size: 10, family: MONO, x: left, y, width: box.split - left - 10, role: 3 });
+      lines.push({ text: value, weight: 400, size: 10, family: MONO, x: box.split, y, width: w - box.split - 10, role: 4 });
+    });
+    if (box.more) lines.push({ text: `+ ${box.more} more`, weight: 400, size: 10, family: FONT, x: left, y: 50 + rows.length * 15, width: room, role: 3 });
+  }
   return lines;
 }
 
@@ -625,27 +633,57 @@ function elide(context, text, width) {
   return low ? `${text.slice(0, low)}…` : "";
 }
 
+/* Whether a box is near enough to the view for its configuration to be worth drawing. */
+function inView(index) {
+  const at = index * INSTANCE_FLOATS, b = ui.boxes;
+  if (!b || at + INSTANCE_FLOATS > b.length) return true;
+  const [x, y] = project(b[at] + b[at + 3] / 2, b[at + 1] + b[at + 4] / 2, b[at + 2]);
+  const reach = Math.max(b[at + 3], b[at + 4]) * ui.zoom;
+  return x > -reach - 200 && x < ui.size[0] + reach + 200 && y > -reach - 200 && y < ui.size[1] + reach + 200;
+}
+
 function rasterize(scale, k) {
   const context = atlas.canvas.getContext("2d", { willReadFrequently: true });
   const side = Math.min(4096, gpu.device.limits.maxTextureDimension2D);
+  // Configuration is drawn once it would be legible, and only for what is in view: the
+  // canvas has no edge, but the text that fits in a texture does.
+  const legible = ui.zoom * 10 >= 4.2;
+  atlas.detailed = legible;
+  atlas.origin = project(0, 0, 0);
   for (let attempt = 0; attempt < 6; attempt += 1, scale *= 0.75) {
     const placed = [];
     let x = 1, y = 1, row = 0, fits = true;
     ui.scene.boxes.forEach((box, index) => {
-      for (const line of wording(box, k)) {
+      const detail = legible && box.rows && box.rows.length > 0 && inView(index);
+      const lines = wording(box, k, detail);
+      // Lines that grow when zoomed out grow together, and never past the room their block has.
+      let grown = Infinity;
+      for (const line of lines) {
+        if (!(line.grow > 1)) continue;
         context.font = `${line.weight} ${line.size * scale}px ${line.family}`;
+        const natural = context.measureText(line.then ? `${line.text}  ${line.then}` : line.text).width / scale;
+        grown = Math.min(grown, line.grow, line.width / Math.max(natural, 1));
+      }
+      // A little short of exactly filling the room, so that rounding never tips a line into being cut.
+      grown = Number.isFinite(grown) ? Math.max(1, grown * 0.97) : 1;
+      let shift = 0;
+      for (const line of lines) {
+        const size = line.grow > 1 ? line.size * grown : line.size;
+        context.font = `${line.weight} ${size * scale}px ${line.family}`;
+        if (line.role === 0) shift = (size - line.size) * 1.4;
         const text = elide(context, line.text, line.width * scale);
         if (!text) continue;
         let tail = "";
         if (line.then && text === line.text) {
           const used = context.measureText(`${text}  `).width;
-          context.font = `400 ${line.size * 0.86 * scale}px ${line.family}`;
+          context.font = `400 ${size * 0.86 * scale}px ${line.family}`;
           tail = elide(context, line.then, line.width * scale - used);
         }
-        const width = Math.ceil(line.width * scale) + 2, height = Math.ceil(line.size * scale * 1.4) + 2;
+        const width = Math.ceil(line.width * scale) + 2, height = Math.ceil(size * scale * 1.4) + 2;
         if (x + width > side) { x = 1; y += row + 1; row = 0; }
         if (y + height > side) fits = false;
-        placed.push({ index, line, text, tail, x, y, width, height });
+        const dy = line.bottom == null ? line.y + (line.below ? shift : 0) : line.bottom - size * 1.4;
+        placed.push({ index, line, size, dy, text, tail, x, y, width, height });
         x += width + 1; row = Math.max(row, height);
       }
     });
@@ -654,14 +692,14 @@ function rasterize(scale, k) {
     context.clearRect(0, 0, atlas.canvas.width, atlas.canvas.height);
     context.textBaseline = "top"; context.fillStyle = "#fff";
     for (const entry of placed) {
-      const { line } = entry;
-      context.font = `${line.weight} ${line.size * scale}px ${line.family}`;
-      context.fillText(entry.text, entry.x, entry.y + line.size * scale * 0.14);
+      const { line, size } = entry;
+      context.font = `${line.weight} ${size * scale}px ${line.family}`;
+      context.fillText(entry.text, entry.x, entry.y + size * scale * 0.14);
       if (entry.tail) {
         const used = context.measureText(`${entry.text}  `).width;
         context.globalAlpha = 0.62;
-        context.font = `400 ${line.size * 0.86 * scale}px ${line.family}`;
-        context.fillText(entry.tail, entry.x + used, entry.y + line.size * scale * 0.24);
+        context.font = `400 ${size * 0.86 * scale}px ${line.family}`;
+        context.fillText(entry.tail, entry.x + used, entry.y + size * scale * 0.24);
         context.globalAlpha = 1;
       }
     }
@@ -672,7 +710,7 @@ function rasterize(scale, k) {
     gpu.device.queue.writeTexture({ texture: atlas.texture }, pixels.data, { bytesPerRow: atlas.canvas.width * 4 }, [atlas.canvas.width, atlas.canvas.height]);
     atlas.group = gpu.device.createBindGroup({ layout: gpu.atlasLayout, entries: [{ binding: 0, resource: atlas.texture.createView() }, { binding: 1, resource: gpu.sampler }] });
     atlas.entries = placed.map((entry) => ({
-      index: entry.index, role: entry.line.role, dx: entry.line.x, dy: entry.line.y, w: entry.width / scale, h: entry.height / scale,
+      index: entry.index, role: entry.line.role, dx: entry.line.x, dy: entry.dy, w: entry.width / scale, h: entry.height / scale,
       uv: [entry.x / atlas.canvas.width, entry.y / atlas.canvas.height, (entry.x + entry.width) / atlas.canvas.width, (entry.y + entry.height) / atlas.canvas.height],
     }));
     atlas.scale = scale;
@@ -737,8 +775,14 @@ function draw(count, width, height, moving) {
   // Text is redrawn when what is shown changes, and when the zoom has moved far enough
   // from the size it was drawn at to blur or waste it.
   const wanted = Math.min(4, Math.max(0.6, zoom * dpr * 1.6));
-  if (ui.labelsStale || (!moving && (wanted > atlas.scale * 1.25 || wanted < atlas.scale * 0.55))) {
-    rasterize(wanted, 1 / Math.min(1, Math.max(0.6, zoom)));
+  // ... and, where blocks carry their configuration, when the view has moved on to other blocks
+  // or has zoomed across the point where configuration becomes legible.
+  const detailed = ui.scene.boxes.some((box) => box.rows && box.rows.length);
+  const origin = atlas.origin ? project(0, 0, 0) : null;
+  const wandered = detailed && origin && (Math.hypot(origin[0] - atlas.origin[0], origin[1] - atlas.origin[1]) > Math.min(width, height) * 0.3
+    || (zoom * 10 >= 4.2) !== atlas.detailed);
+  if (ui.labelsStale || (!moving && (wanted > atlas.scale * 1.25 || wanted < atlas.scale * 0.55 || wandered))) {
+    rasterize(wanted, Math.min(3.5, Math.max(1, 0.9 / zoom)));
     ui.labelsStale = false;
   }
 
@@ -759,7 +803,7 @@ function draw(count, width, height, moving) {
     const at = entry.index * INSTANCE_FLOATS;
     if (at + INSTANCE_FLOATS > boxes.length) continue;
     const grow = boxes[at + 8], lift = boxes[at + 9], dim = boxes[at + 10];
-    const color = entry.role === 0 ? palette.ink : entry.role === 1 ? palette.ink2 : palette.ink3;
+    const color = entry.role === 0 || entry.role === 4 ? palette.ink : entry.role === 1 ? palette.ink2 : palette.ink3;
     const alpha = (1 - 0.68 * dim) * Math.min(1, grow * grow);
     text.set([boxes[at] + entry.dx, boxes[at + 1] + entry.dy, boxes[at + 2] + lift + boxes[at + 5] * grow + 0.25, entry.w, entry.h,
       entry.uv[0], entry.uv[1], entry.uv[2], entry.uv[3], color[0], color[1], color[2], alpha], written * 13);
@@ -1176,8 +1220,8 @@ function renderBar() {
   live.dataset.state = state;
   live.querySelector("span").textContent = text;
   live.title = "Stacks rebuild when their sources change";
-  $("#hint").replaceChildren(summary.mode === "map"
-    ? el("span", {}, el("b", { text: "Map" }), "  everything at once")
+  $("#hint").replaceChildren(summary.mode === "everything"
+    ? el("span", {}, el("b", { text: "Everything" }), "  zoom in to read a node's configuration")
     : el("span", {}, el("b", { text: "Explore" }), "  click a group to open it"),
     el("span", { text: "drag to pan · scroll to zoom" }));
 }
@@ -1202,6 +1246,12 @@ function connect() {
 
 command("motion", { value: !still });
 reduced.addEventListener("change", () => { still = reduced.matches; command("motion", { value: !still }); });
+// Blocks are sized to their text, so the view is told how wide this browser draws each character.
+{
+  const measure = document.createElement("canvas").getContext("2d");
+  const widths = (font) => { measure.font = font; return Array.from({ length: 95 }, (_, index) => measure.measureText(String.fromCharCode(32 + index)).width / 100); };
+  command("metrics", { sans: widths(`650 100px ${FONT}`), mono: widths(`400 100px ${MONO}`) });
+}
 command("mode", { value: mode });
 command("grouping", { value: grouping });
 command("tilt", { yaw: TILTS[tilt][0], pitch: TILTS[tilt][1] });

@@ -80,6 +80,9 @@ pub struct Item {
     pub leaves: Vec<usize>,
     /// How much configuration the item holds: the sum of its nodes' weights.
     pub weight: f32,
+    /// Its place in the order of dependencies among its siblings: 0 needs none of them, and
+    /// an item ranks one past the highest-ranked sibling it needs.
+    pub rank: u32,
 }
 
 impl Item {
@@ -191,6 +194,7 @@ impl Tree {
             children: Vec::new(),
             leaves: Vec::new(),
             weight: 0.0,
+            rank: 0,
         });
         if let Some(parent) = parent {
             self.items[parent].children.push(index);
@@ -455,6 +459,39 @@ impl Tree {
         }
     }
 
+    /// Rank every item among its siblings from `needs`, pairs of nodes where the first needs
+    /// the second. An association between two nodes orders the two children of their nearest
+    /// common group that hold them. Where groups need each other in a circle, the edge that
+    /// would close the circle is ignored.
+    pub fn rank(&mut self, needs: &[(usize, usize)]) {
+        let mut wants: Vec<Vec<usize>> = vec![Vec::new(); self.items.len()];
+        let path = |tree: &Self, node: usize| {
+            let mut path = vec![tree.leaf_of[node]];
+            while let Some(parent) = tree.items[*path.last().expect("starts with the leaf")].parent
+            {
+                path.push(parent);
+            }
+            path.reverse();
+            path
+        };
+        for &(from, to) in needs {
+            let (a, b) = (path(self, from), path(self, to));
+            if let Some(split) = a.iter().zip(&b).position(|(x, y)| x != y) {
+                if !wants[a[split]].contains(&b[split]) {
+                    wants[a[split]].push(b[split]);
+                }
+            }
+        }
+        let mut state = vec![0_u8; self.items.len()];
+        let mut ranks = vec![0_u32; self.items.len()];
+        for item in 0..self.items.len() {
+            visit(item, &wants, &mut state, &mut ranks);
+        }
+        for (item, rank) in self.items.iter_mut().zip(ranks) {
+            item.rank = rank;
+        }
+    }
+
     #[must_use]
     pub fn find(&self, id: &str) -> Option<usize> {
         self.items.iter().position(|item| item.id == id)
@@ -524,6 +561,25 @@ fn emit(tree: &mut Tree, parent: usize, stack: &StackModel, mut module: &Module,
     for child in &module.modules {
         emit(tree, item, stack, child, &child.segment);
     }
+}
+
+/// The rank of `item` among its siblings: one past the highest rank it needs. `state` is 0
+/// for unvisited, 1 on the way, 2 done; an item met again on the way would close a circle
+/// and is passed over.
+fn visit(item: usize, wants: &[Vec<usize>], state: &mut [u8], ranks: &mut [u32]) -> u32 {
+    if state[item] == 2 {
+        return ranks[item];
+    }
+    state[item] = 1;
+    let mut rank = 0;
+    for &needed in &wants[item] {
+        if state[needed] != 1 {
+            rank = rank.max(visit(needed, wants, state, ranks) + 1);
+        }
+    }
+    state[item] = 2;
+    ranks[item] = rank;
+    rank
 }
 
 /// `digitalocean_vpc` as `vpc` under its provider, keeping a `data.` prefix.

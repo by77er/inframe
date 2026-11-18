@@ -72,6 +72,10 @@ enum Command {
     Motion {
         value: bool,
     },
+    Metrics {
+        sans: Vec<f32>,
+        mono: Vec<f32>,
+    },
     Refresh,
 }
 
@@ -99,6 +103,7 @@ impl View {
             Command::Focus { id } => self.focus(&id),
             Command::Tilt { yaw, pitch } => self.set_tilt(yaw, pitch),
             Command::Motion { value } => self.set_motion(value),
+            Command::Metrics { sans, mono } => self.set_metrics(view::Metrics { sans, mono }),
             Command::Refresh => {}
             Command::Hover { id } => {
                 self.hover(id.as_deref());

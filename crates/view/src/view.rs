@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::{Value, json};
 
 use crate::camera::{Camera, Rig, ZOOM_RANGE};
-use crate::layout::{Mode, Placed, layout};
+use crate::layout::{Mode, Placed, Sizes, layout};
 use crate::model::{BuildStatus, Edge, EdgeKind, Model, NodeKind, StackModel};
 use crate::tree::{Grouping, KIND_ORDER, Role, Tree, kind_label, kind_plural, strip_provider};
 
@@ -118,7 +118,8 @@ pub struct View {
     following: bool,
     fitted: bool,
     viewport: (f32, f32),
-    map_aspect: f32,
+    /// How wide each character is drawn, so that blocks can be sized to their text.
+    metrics: Option<Metrics>,
     anims: HashMap<String, Anim>,
     ghosts: Vec<Ghost>,
     /// Whether the tree was rebuilt since the last layout, so that item indices of the
@@ -131,6 +132,19 @@ pub struct View {
     instances: Vec<f32>,
     matrix: [f32; 16],
 }
+
+/// Advance widths, in ems, of the printable ASCII characters in the two faces the canvas
+/// writes with: the bold sans of names and the monospace of types and values.
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    pub sans: Vec<f32>,
+    pub mono: Vec<f32>,
+}
+
+/// The configuration rows a node shows when everything is open.
+const MAX_ROWS: usize = 12;
+const ROW: f32 = 15.0;
+const ROW_SIZE: f32 = 10.0;
 
 fn ease(current: f32, goal: f32, k: f32) -> f32 {
     if (goal - current).abs() < 1e-3 {
@@ -145,7 +159,6 @@ impl View {
     pub fn new() -> Self {
         Self {
             following: true,
-            map_aspect: 1.6,
             viewport: (1200.0, 800.0),
             ..Self::default()
         }
@@ -416,6 +429,137 @@ impl View {
         best.map(|(_, index)| index)
     }
 
+    /// The page's measure of its two faces; blocks are sized from it from then on.
+    pub fn set_metrics(&mut self, metrics: Metrics) {
+        self.metrics = Some(metrics);
+        if self.model.is_some() {
+            self.relayout();
+        }
+    }
+
+    /// How wide `text` is drawn at `size`, from the page's metrics or a fair guess without.
+    fn width(&self, text: &str, mono: bool, size: f32) -> f32 {
+        let table = self
+            .metrics
+            .as_ref()
+            .map(|metrics| if mono { &metrics.mono } else { &metrics.sans });
+        let fallback = if mono { 0.6 } else { 0.58 };
+        let ems: f32 = text
+            .chars()
+            .map(|character| {
+                let index = (character as usize).wrapping_sub(32);
+                table
+                    .and_then(|table| table.get(index))
+                    .copied()
+                    .unwrap_or(fallback)
+            })
+            .sum();
+        ems * size
+    }
+
+    /// What is written on an item: its name, and a line saying what it is.
+    fn caption(&self, index: usize) -> (String, String) {
+        let item = &self.tree.items[index];
+        let Some(model) = &self.model else {
+            return (item.label.clone(), String::new());
+        };
+        if let Some(node) = item.node {
+            let data = self.tree.node(model, node);
+            let sub = match data.kind {
+                NodeKind::Output => "output".to_owned(),
+                NodeKind::StackReference => "stack".to_owned(),
+                NodeKind::Provider => "provider".to_owned(),
+                NodeKind::Resource | NodeKind::Data => {
+                    let prefix = if data.kind == NodeKind::Data {
+                        "data."
+                    } else {
+                        ""
+                    };
+                    strip_provider(
+                        &format!("{prefix}{}", data.type_name),
+                        data.provider.as_deref().unwrap_or(""),
+                    )
+                }
+            };
+            return (data.name.clone(), sub);
+        }
+        let count = item.leaves.len();
+        let noun = if count == 1 { "node" } else { "nodes" };
+        let sub = match (item.role, self.stack(index)) {
+            (Role::Stack, Some(stack)) if stack.status == BuildStatus::Building => {
+                format!("{} · building…", stack.frontend)
+            }
+            (Role::Stack, Some(stack)) if stack.status == BuildStatus::Failed && count == 0 => {
+                format!("{} · build failed", stack.frontend)
+            }
+            (Role::Stack, Some(stack)) if stack.status == BuildStatus::Failed => {
+                format!("{} · {count} {noun} · last build failed", stack.frontend)
+            }
+            (Role::Stack, Some(stack)) => format!("{} · {count} {noun}", stack.frontend),
+            (role, _) => format!("{} · {count}", role.noun()),
+        };
+        (item.label.clone(), sub)
+    }
+
+    /// The configuration a node shows when everything is open: its first rows, how many
+    /// more there are, and where the values start across the block.
+    fn rows(&self, index: usize) -> (Vec<(String, String)>, usize, f32) {
+        let (Some(model), Some(node), Mode::Everything) =
+            (&self.model, self.tree.items[index].node, self.mode)
+        else {
+            return (Vec::new(), 0, 0.0);
+        };
+        let data = self.tree.node(model, node);
+        let rows: Vec<(String, String)> = data
+            .arguments
+            .iter()
+            .take(MAX_ROWS)
+            .map(|argument| (argument.name.clone(), argument.value.clone()))
+            .collect();
+        let more = data.arguments.len() + data.hidden_arguments - rows.len();
+        let names = rows
+            .iter()
+            .map(|row| self.width(&row.0, true, ROW_SIZE))
+            .fold(0.0_f32, f32::max);
+        (rows, more, 13.0 + names.min(440.0) + 14.0)
+    }
+
+    /// How large every item's text makes it.
+    fn sizes(&self) -> Sizes {
+        let mut sizes = Sizes::default();
+        for (index, item) in self.tree.items.iter().enumerate() {
+            let (label, sub) = self.caption(index);
+            let name = self.width(&label, false, 13.0);
+            if item.is_container() {
+                let detail = self.width(&sub, false, 10.5 * 0.95);
+                sizes
+                    .block
+                    .push(((13.0 + name.max(detail) + 38.0).clamp(132.0, 560.0), 64.0));
+                // A title is the name and the detail on one line, with room for the control.
+                let size = if item.role == Role::Stack { 14.0 } else { 12.5 };
+                let title =
+                    self.width(&label, false, size) + self.width(&sub, false, size * 0.86 * 0.95);
+                sizes.title.push(12.0 + title + 20.0 + 40.0);
+                continue;
+            }
+            let detail = self.width(&sub, true, 10.5);
+            let mut width = 13.0 + name.max(detail) + 20.0;
+            let mut depth = 60.0;
+            let (rows, more, split) = self.rows(index);
+            if !rows.is_empty() {
+                let values = rows
+                    .iter()
+                    .map(|row| self.width(&row.1, true, ROW_SIZE))
+                    .fold(0.0_f32, f32::max);
+                width = width.max(split + values.min(560.0) + 12.0);
+                depth = 50.0 + (rows.len() + usize::from(more > 0)) as f32 * ROW + 8.0;
+            }
+            sizes.block.push((width.clamp(96.0, 1040.0), depth));
+            sizes.title.push(0.0);
+        }
+        sizes
+    }
+
     // ----- derived state -----
 
     fn rebuild(&mut self) {
@@ -443,6 +587,15 @@ impl View {
                 }
             }
         }
+        let needs: Vec<(usize, usize)> = self
+            .edges
+            .iter()
+            .filter(|(_, _, stack, edge)| {
+                model.stacks[*stack].edges[*edge].kind != EdgeKind::Provider
+            })
+            .map(|(from, to, _, _)| (*from, *to))
+            .collect();
+        self.tree.rank(&needs);
         self.marked_stacks = model
             .stacks
             .iter()
@@ -524,7 +677,12 @@ impl View {
         } else {
             before.iter().map(|placed| self.paint(placed)).collect()
         };
-        self.placed = layout(&self.tree, &self.expanded, self.mode, self.map_aspect);
+        let sizes = self.sizes();
+        let everything = self.mode == Mode::Everything;
+        let (tree, expanded) = (&self.tree, &self.expanded);
+        self.placed = layout(tree, &sizes, &|item| {
+            everything || expanded.contains(&tree.items[item].id)
+        });
         self.box_of = self
             .placed
             .iter()
@@ -813,11 +971,7 @@ impl View {
         let resized =
             (width - self.viewport.0).abs() > 0.5 || (height - self.viewport.1).abs() > 0.5;
         self.viewport = (width.max(1.0), height.max(1.0));
-        let aspect = self.viewport.0 / self.viewport.1;
-        if self.mode == Mode::Map && (aspect / self.map_aspect - 1.0).abs() > 0.04 {
-            self.map_aspect = aspect;
-            self.relayout();
-        } else if resized && self.following {
+        if resized && self.following {
             self.follow();
         }
         if !self.fitted && !self.placed.is_empty() {
@@ -1079,30 +1233,8 @@ impl View {
             .iter()
             .map(|placed| {
                 let item = &self.tree.items[placed.item];
-                let (label, sub) = if let Some(node) = item.node {
-                    let data = self.tree.node(model, node);
-                    let sub = match data.kind {
-                        NodeKind::Output => "output".to_owned(),
-                        NodeKind::StackReference => "stack".to_owned(),
-                        NodeKind::Provider => "provider".to_owned(),
-                        NodeKind::Resource | NodeKind::Data => {
-                            let prefix = if data.kind == NodeKind::Data { "data." } else { "" };
-                            strip_provider(&format!("{prefix}{}", data.type_name), data.provider.as_deref().unwrap_or(""))
-                        }
-                    };
-                    (data.name.clone(), sub)
-                } else {
-                    let count = item.leaves.len();
-                    let noun = if count == 1 { "node" } else { "nodes" };
-                    let sub = match (item.role, self.stack(placed.item)) {
-                        (Role::Stack, Some(stack)) if stack.status == BuildStatus::Building => format!("{} · building…", stack.frontend),
-                        (Role::Stack, Some(stack)) if stack.status == BuildStatus::Failed && count == 0 => format!("{} · build failed", stack.frontend),
-                        (Role::Stack, Some(stack)) if stack.status == BuildStatus::Failed => format!("{} · {count} {noun} · last build failed", stack.frontend),
-                        (Role::Stack, Some(stack)) => format!("{} · {count} {noun}", stack.frontend),
-                        (role, _) => format!("{} · {count}", role.noun()),
-                    };
-                    (item.label.clone(), sub)
-                };
+                let (label, sub) = self.caption(placed.item);
+                let (rows, more, split) = self.rows(placed.item);
                 json!({
                     "id": item.id,
                     "label": label,
@@ -1115,6 +1247,10 @@ impl View {
                     // Where the box is heading, which is what its text is fitted to.
                     "w": placed.w,
                     "d": placed.d,
+                    // A node's configuration, written on it when everything is open.
+                    "rows": rows,
+                    "more": more,
+                    "split": split,
                 })
             })
             .collect();
@@ -1141,8 +1277,8 @@ impl View {
             .collect();
         while let Some((index, depth)) = pending.pop() {
             let item = &self.tree.items[index];
-            let open =
-                item.is_container() && (self.mode == Mode::Map || self.expanded.contains(&item.id));
+            let open = item.is_container()
+                && (self.mode == Mode::Everything || self.expanded.contains(&item.id));
             let node = item.node.map(|node| self.tree.node(model, node));
             let small = node.map(|data| match data.kind {
                 NodeKind::Provider => String::new(),
@@ -1402,10 +1538,10 @@ impl View {
             );
             return json!({ "title": data.address, "lines": [origin, Some(counts), state.map(str::to_owned)] });
         }
-        let open = self.expanded.contains(&item.id) || self.mode == Mode::Map;
+        let open = self.expanded.contains(&item.id) || self.mode == Mode::Everything;
         let hint = if item.children.is_empty() {
             None
-        } else if self.mode == Mode::Map {
+        } else if self.mode == Mode::Everything {
             Some("double-click to zoom in")
         } else if open {
             Some("click to select · again to close")
@@ -1621,7 +1757,7 @@ mod tests {
     #[test]
     fn the_map_shows_every_node_at_once() {
         let mut view = ready();
-        view.set_mode(Mode::Map);
+        view.set_mode(Mode::Everything);
         view.frame(16.0, 1200.0, 800.0);
         let shown = labels(&view);
         for name in ["main", "replica", "host"] {
@@ -1687,7 +1823,7 @@ mod tests {
         view.collapse_all();
         check(&view, "everything closed");
         for aspect in [0.7, 1.6, 2.4] {
-            view.set_mode(Mode::Map);
+            view.set_mode(Mode::Everything);
             view.frame(16.0, 1000.0 * aspect, 1000.0);
             check(&view, "map");
         }
@@ -1744,6 +1880,60 @@ mod tests {
         assert!(labels(&view).contains(&"b4".to_owned()));
         assert_eq!(view.inspect()["role"], "family");
         assert_eq!(view.inspect()["nodes"], 9);
+    }
+
+    /// What is needed comes before what needs it, at every level, and a block is as wide as
+    /// its text: nothing is fitted to a frame.
+    #[test]
+    fn dependencies_come_first_and_blocks_fit_their_text() {
+        let mut model = model();
+        model.stacks[0].nodes.push(node(
+            "app",
+            "cloud_load_balancer_listener_rule.a_rule_with_a_very_long_descriptive_name",
+            "Infra.App.Network",
+            "network",
+        ));
+        let mut view = View::new();
+        view.set_model(model);
+        view.set_metrics(Metrics {
+            sans: vec![0.6; 95],
+            mono: vec![0.6; 95],
+        });
+        view.frame(16.0, 1200.0, 800.0);
+        let at = |view: &View, label: &str| {
+            let index = labels(view)
+                .iter()
+                .position(|known| known == label)
+                .unwrap_or_else(|| panic!("{label} is not shown"));
+            view.placed[index]
+        };
+        // Modules: Network is needed by Data, which the stack's output needs. In reading
+        // order (across, and down within a column) each comes after what it needs.
+        let before = |a: Placed, b: Placed| a.x + a.w <= b.x || (a.x == b.x && a.y + a.d <= b.y);
+        assert!(before(at(&view, "Network"), at(&view, "Data")));
+        assert!(before(at(&view, "Data"), at(&view, "stack")));
+        view.set_mode(Mode::Everything);
+        let (long, short) = (
+            at(&view, "a_rule_with_a_very_long_descriptive_name"),
+            at(&view, "replica"),
+        );
+        assert!(long.w > short.w + 150.0, "{} against {}", long.w, short.w);
+        assert!(
+            long.w >= 13.0 + 41.0 * 0.6 * 13.0,
+            "the name fits: {}",
+            long.w
+        );
+        // Every node shows its configuration, and is as deep as its rows.
+        let scene = view.scene();
+        let replica = scene["boxes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["label"] == "replica")
+            .unwrap();
+        assert_eq!(replica["rows"][0][0], "name");
+        assert_eq!(replica["rows"][0][1], "\"replica\"");
+        assert!(short.d > 60.0);
     }
 
     #[test]

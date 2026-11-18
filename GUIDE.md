@@ -326,8 +326,15 @@ There are two views.
   closed. Click a group to open it in place; click its `–`, or the group again
   once it is selected, to close it. A node hidden inside a closed group is drawn
   as that group, so associations stay visible at whatever depth is open.
-- **Map** opens everything at once and fills a rectangle, each node's area
-  following how much configuration it carries.
+- **Everything** opens every group, and writes each node's configuration on the
+  node: a row to an argument, so a block is as large as what it configures. From
+  far off the blocks show their names; zoom in and the rows appear.
+
+The canvas has no edge, so nothing is fitted to a frame and nothing is cut short:
+a block is as wide as its name and type, and a group is as large as what stands
+on it. Inside a group, things stand in the order of what needs what, read like
+text: across, then on to the next row. What a node depends on comes before it,
+so associations point back the way you came.
 
 A group that holds more than sixteen nodes directly (a stack written as one long
 definition, say) is split by resource family, the first word of the type after
