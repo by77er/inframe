@@ -11,8 +11,8 @@ use crate::layout::{Mode, Placed, layout};
 use crate::model::{BuildStatus, Edge, EdgeKind, Model, NodeKind, StackModel};
 use crate::tree::{Grouping, KIND_ORDER, Role, Tree, kind_label, kind_plural, strip_provider};
 
-/// Floats per box handed to the renderer: position, size, tone, flags, grow.
-pub const INSTANCE_FLOATS: usize = 9;
+/// Floats per box handed to the renderer: position, size, tone, flags, grow, lift, dim.
+pub const INSTANCE_FLOATS: usize = 11;
 
 /// The surface a box is painted as; the page maps each to a color of its theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,22 @@ pub mod flag {
 #[derive(Debug, Clone, Copy)]
 struct Anim {
     rect: [f32; 6],
+    /// 0 to 1 as the box rises out of the ground; below 0 while it waits its turn.
     grow: f32,
+    /// How far the box floats above where it stands: hovered and selected boxes lift.
+    lift: f32,
+    /// 0 to 1 as the box recedes because something else is selected or matched.
+    dim: f32,
+}
+
+/// A box that is no longer shown, sinking toward the group that closed over it.
+#[derive(Debug, Clone, Copy)]
+struct Ghost {
+    rect: [f32; 6],
+    toward: (f32, f32),
+    grow: f32,
+    tone: Tone,
+    flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +120,14 @@ pub struct View {
     viewport: (f32, f32),
     map_aspect: f32,
     anims: HashMap<String, Anim>,
+    ghosts: Vec<Ghost>,
+    /// Whether the tree was rebuilt since the last layout, so that item indices of the
+    /// previous layout no longer mean anything.
+    rebuilt: bool,
+    /// The pixel a zoom is anchored on and the ground point that stays under it.
+    zoom_anchor: Option<(f32, f32, f32, f32)>,
+    /// Whether to animate at all; off for readers who ask for reduced motion.
+    still: bool,
     instances: Vec<f32>,
     matrix: [f32; 16],
 }
@@ -303,6 +326,7 @@ impl View {
     }
 
     pub fn fit(&mut self) {
+        self.zoom_anchor = None;
         self.following = true;
         self.follow();
     }
@@ -310,6 +334,7 @@ impl View {
     pub fn focus(&mut self, id: &str) {
         if let Some(bounds) = self.tree.find(id).and_then(|item| self.bounds_of(item)) {
             self.following = false;
+            self.zoom_anchor = None;
             self.goal =
                 self.goal
                     .framing(bounds.0, bounds.1, self.viewport.0, self.viewport.1, 0.8);
@@ -330,33 +355,43 @@ impl View {
         if let (Some(from), Some(to)) = (rig.ground(x0, y0), rig.ground(x1, y1)) {
             self.camera.x -= to.0 - from.0;
             self.camera.y -= to.1 - from.1;
-            self.goal = self.camera;
+            self.goal = Camera {
+                zoom: self.goal.zoom,
+                yaw: self.goal.yaw,
+                pitch: self.goal.pitch,
+                ..self.camera
+            };
+            self.zoom_anchor = None;
             self.following = false;
         }
     }
 
-    /// Zoom by `factor`, keeping the ground point under `(x, y)` where it is.
+    /// Zoom by `factor`, keeping the ground point under `(x, y)` where it is. The zoom eases
+    /// to its new level, and the anchor holds through every frame of the way.
     pub fn zoom(&mut self, x: f32, y: f32, factor: f32) {
-        let before = self
-            .camera
-            .rig(self.viewport.0, self.viewport.1)
-            .ground(x, y);
-        self.camera.zoom = (self.camera.zoom * factor).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
-        let after = self
-            .camera
-            .rig(self.viewport.0, self.viewport.1)
-            .ground(x, y);
-        if let (Some(before), Some(after)) = (before, after) {
-            self.camera.x += before.0 - after.0;
-            self.camera.y += before.1 - after.1;
-        }
-        let (yaw, pitch) = (self.goal.yaw, self.goal.pitch);
+        let anchor = match self.zoom_anchor {
+            Some(anchor) if (anchor.0 - x).abs() < 2.0 && (anchor.1 - y).abs() < 2.0 => {
+                Some(anchor)
+            }
+            _ => self
+                .camera
+                .rig(self.viewport.0, self.viewport.1)
+                .ground(x, y)
+                .map(|ground| (x, y, ground.0, ground.1)),
+        };
+        self.zoom_anchor = anchor;
         self.goal = Camera {
-            yaw,
-            pitch,
-            ..self.camera
+            zoom: (self.goal.zoom * factor).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1),
+            x: self.camera.x,
+            y: self.camera.y,
+            ..self.goal
         };
         self.following = false;
+    }
+
+    /// Whether to animate; without it every change lands at once.
+    pub fn set_motion(&mut self, motion: bool) {
+        self.still = !motion;
     }
 
     /// The box under a pixel, as an index into the scene's boxes.
@@ -386,6 +421,7 @@ impl View {
     fn rebuild(&mut self) {
         let Some(model) = &self.model else { return };
         self.tree = Tree::build(model, self.grouping);
+        self.rebuilt = true;
         let index: HashMap<&str, usize> = self
             .tree
             .nodes
@@ -482,6 +518,12 @@ impl View {
 
     fn relayout(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        let before = std::mem::take(&mut self.placed);
+        let painted: Vec<(Tone, u32)> = if self.rebuilt {
+            Vec::new()
+        } else {
+            before.iter().map(|placed| self.paint(placed)).collect()
+        };
         self.placed = layout(&self.tree, &self.expanded, self.mode, self.map_aspect);
         self.box_of = self
             .placed
@@ -525,11 +567,48 @@ impl View {
                 }
                 Anim {
                     rect: from,
-                    grow: if self.fitted { 0.0 } else { 1.0 },
+                    // The first boxes rise one after another; later arrivals rise at once.
+                    grow: if self.fitted {
+                        0.0
+                    } else {
+                        -(anims.len().min(40) as f32) * 0.03
+                    },
+                    lift: 0.0,
+                    dim: 0.0,
                 }
             });
             anims.insert(id.clone(), anim);
         }
+        // What was shown and no longer is sinks toward the nearest group still standing.
+        for (placed, (tone, flags)) in before.iter().zip(painted) {
+            let item = &self.tree.items[placed.item];
+            if anims.contains_key(&item.id) {
+                continue;
+            }
+            let Some(rect) = self.anims.get(&item.id).map(|anim| anim.rect) else {
+                continue;
+            };
+            let mut toward = (rect[0] + rect[3] / 2.0, rect[1] + rect[4] / 2.0);
+            let mut at = item.parent;
+            while let Some(parent) = at {
+                if let Some(index) = self.box_of.get(&parent) {
+                    let over = &self.placed[*index];
+                    toward = (over.x + over.w / 2.0, over.y + over.d / 2.0);
+                    break;
+                }
+                at = self.tree.items[parent].parent;
+            }
+            if self.ghosts.len() < 400 {
+                self.ghosts.push(Ghost {
+                    rect,
+                    toward,
+                    grow: 1.0,
+                    tone,
+                    flags: flags & !flag::SELECTED,
+                });
+            }
+        }
+        self.rebuilt = false;
         self.anims = anims;
         self.refresh_links();
         if self.following {
@@ -661,6 +740,7 @@ impl View {
     }
 
     fn follow(&mut self) {
+        self.zoom_anchor = None;
         if let Some((min, max)) = self.bounds() {
             self.goal = self
                 .goal
@@ -674,6 +754,7 @@ impl View {
         if self.following {
             return;
         }
+        self.zoom_anchor = None;
         let Some((min, max)) = self.bounds_of(item) else {
             return;
         };
@@ -744,29 +825,33 @@ impl View {
             self.camera = self.goal;
             self.fitted = true;
         }
-        let k = 1.0 - (-dt.clamp(0.0, 100.0) / 85.0).exp();
-        let mut moving = false;
-        let goal = self.goal;
-        for (current, goal) in [
-            (&mut self.camera.x, goal.x),
-            (&mut self.camera.y, goal.y),
-            (&mut self.camera.yaw, goal.yaw),
-            (&mut self.camera.pitch, goal.pitch),
-        ] {
-            let next = ease(*current, goal, k);
-            moving |= next != goal;
-            *current = next;
-        }
-        // Zoom eases in its logarithm, so that zooming in and out feel alike.
-        let zoom = ease(self.camera.zoom.ln(), goal.zoom.ln(), k);
-        moving |= zoom != goal.zoom.ln();
-        self.camera.zoom = zoom.exp();
+        let dt = dt.clamp(0.0, 100.0);
+        let still = self.still;
+        let rate = |time: f32| if still { 1.0 } else { 1.0 - (-dt / time).exp() };
+        let (k, quick) = (rate(85.0), rate(55.0));
+        let mut moving = self.ease_camera(k, rate(70.0));
 
         self.instances.clear();
         let mut marks = Vec::new();
         for placed in &self.placed {
             let item = &self.tree.items[placed.item];
             let target = [placed.x, placed.y, placed.z, placed.w, placed.d, placed.h];
+            let (tone, mut flags) = self.paint(placed);
+            let hovered = self.hovered.as_deref() == Some(item.id.as_str());
+            if hovered {
+                flags |= flag::HOVER;
+            }
+            let lift = if placed.slab {
+                0.0
+            } else if flags & flag::SELECTED != 0 {
+                5.0
+            } else if hovered {
+                3.5
+            } else {
+                0.0
+            };
+            let dim = if flags & flag::DIM == 0 { 0.0 } else { 1.0 };
+            let mark = self.mark(placed);
             let anim = self
                 .anims
                 .get_mut(&item.id)
@@ -776,22 +861,29 @@ impl View {
                 moving |= next != goal;
                 *current = next;
             }
-            let grow = ease(anim.grow, 1.0, k);
-            moving |= grow != 1.0;
-            anim.grow = grow;
-            let rect = anim.rect;
-            let (tone, mut flags) = self.paint(placed);
-            if self.hovered.as_deref() == Some(item.id.as_str()) {
-                flags |= flag::HOVER;
+            for (current, goal, k) in [
+                (&mut anim.grow, 1.0, k),
+                (&mut anim.lift, lift, quick),
+                (&mut anim.dim, dim, quick),
+            ] {
+                let next = ease(*current, goal, k);
+                moving |= next != goal;
+                *current = next;
             }
+            let (rect, grow) = (anim.rect, anim.grow.max(0.0));
             self.instances.extend(rect);
-            self.instances
-                .extend([f32::from(tone as u8), flags as f32, grow]);
-            if let Some(applied) = self.mark(placed) {
-                marks.push((rect, grow, applied, flags & flag::DIM));
+            self.instances.extend([
+                f32::from(tone as u8),
+                flags as f32,
+                grow,
+                anim.lift,
+                anim.dim,
+            ]);
+            if let Some(applied) = mark {
+                marks.push((rect, grow, applied, anim.lift, anim.dim));
             }
         }
-        for (rect, grow, applied, dim) in marks {
+        for (rect, grow, applied, lift, dim) in marks {
             let size = 9.0_f32.min(rect[3] * 0.2).min(rect[4] * 0.3);
             let tone = if applied {
                 Tone::Applied
@@ -806,12 +898,79 @@ impl View {
                 size,
                 if applied { 2.4 } else { 1.0 },
                 f32::from(tone as u8),
-                (flag::MARK | dim) as f32,
+                flag::MARK as f32,
                 grow,
+                lift,
+                dim,
             ]);
         }
+        moving |= self.sink_ghosts(rate(70.0));
         self.matrix = self.rig().matrix();
         moving
+    }
+
+    /// Move the camera toward its goal; returns whether it is still on its way.
+    fn ease_camera(&mut self, k: f32, zoom_rate: f32) -> bool {
+        let mut moving = false;
+        let goal = self.goal;
+        for (current, goal) in [
+            (&mut self.camera.x, goal.x),
+            (&mut self.camera.y, goal.y),
+            (&mut self.camera.yaw, goal.yaw),
+            (&mut self.camera.pitch, goal.pitch),
+        ] {
+            let next = ease(*current, goal, k);
+            moving |= next != goal;
+            *current = next;
+        }
+        // Zoom eases in its logarithm, so that zooming in and out feel alike.
+        let zoom = ease(self.camera.zoom.ln(), goal.zoom.ln(), zoom_rate);
+        let zooming = zoom != goal.zoom.ln();
+        moving |= zooming;
+        self.camera.zoom = zoom.exp();
+        if let Some((x, y, ground_x, ground_y)) = self.zoom_anchor {
+            // Hold the anchored ground point under its pixel while the zoom is on its way.
+            if let Some(now) = self.rig().ground(x, y) {
+                self.camera.x += ground_x - now.0;
+                self.camera.y += ground_y - now.1;
+                self.goal.x = self.camera.x;
+                self.goal.y = self.camera.y;
+            }
+            if !zooming {
+                self.zoom_anchor = None;
+            }
+        }
+        moving
+    }
+
+    /// Shrink what was closed over toward where it went, and write it after the boxes.
+    fn sink_ghosts(&mut self, rate: f32) -> bool {
+        for ghost in &mut self.ghosts {
+            ghost.grow = ease(ghost.grow, 0.0, rate);
+            let shrink = 0.35 + 0.65 * ghost.grow;
+            let (cx, cy) = (
+                ghost.toward.0
+                    + (ghost.rect[0] + ghost.rect[3] / 2.0 - ghost.toward.0) * ghost.grow,
+                ghost.toward.1
+                    + (ghost.rect[1] + ghost.rect[4] / 2.0 - ghost.toward.1) * ghost.grow,
+            );
+            let (w, d) = (ghost.rect[3] * shrink, ghost.rect[4] * shrink);
+            self.instances.extend([
+                cx - w / 2.0,
+                cy - d / 2.0,
+                ghost.rect[2],
+                w,
+                d,
+                ghost.rect[5],
+                f32::from(ghost.tone as u8),
+                ghost.flags as f32,
+                ghost.grow,
+                0.0,
+                1.0 - ghost.grow,
+            ]);
+        }
+        self.ghosts.retain(|ghost| ghost.grow > 0.02);
+        !self.ghosts.is_empty()
     }
 
     fn rig(&self) -> Rig {
@@ -1532,6 +1691,59 @@ mod tests {
             view.frame(16.0, 1000.0 * aspect, 1000.0);
             check(&view, "map");
         }
+    }
+
+    /// A stack written as one long definition opens to its resource families, each holding
+    /// its nodes, and every node is still reachable.
+    #[test]
+    fn a_crowded_definition_is_split_by_resource_family() {
+        let mut model = model();
+        let stack = &mut model.stacks[0];
+        stack.nodes.clear();
+        stack.edges.clear();
+        for index in 0..9 {
+            stack.nodes.push(node(
+                "app",
+                &format!("cloud_iam_role.r{index}"),
+                "Infra.App",
+                "cell",
+            ));
+            stack.nodes.push(node(
+                "app",
+                &format!("cloud_s3_bucket.b{index}"),
+                "Infra.App",
+                "cell",
+            ));
+        }
+        stack
+            .nodes
+            .push(node("app", "cloud_vpc.only", "Infra.App", "cell"));
+        stack
+            .nodes
+            .push(node("app", "output.one", "Infra.App", "cell"));
+        stack
+            .nodes
+            .push(node("app", "output.two", "Infra.App", "cell"));
+        let mut view = View::new();
+        view.set_model(model);
+        view.frame(16.0, 1200.0, 800.0);
+        // Stack, module and definition open in one step; the definition shows families.
+        assert_eq!(
+            labels(&view),
+            ["app", "Infra.App", "cell", "iam", "s3", "outputs", "only"]
+        );
+        let outline = view.outline();
+        let iam = outline
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["label"] == "iam")
+            .unwrap();
+        assert_eq!(iam["count"], 9);
+        view.click("s:app/m:Infra.App/d:cell/f:s3");
+        assert!(labels(&view).contains(&"b4".to_owned()));
+        assert_eq!(view.inspect()["role"], "family");
+        assert_eq!(view.inspect()["nodes"], 9);
     }
 
     #[test]

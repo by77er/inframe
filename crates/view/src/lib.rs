@@ -69,6 +69,9 @@ enum Command {
     Tip {
         id: String,
     },
+    Motion {
+        value: bool,
+    },
     Refresh,
 }
 
@@ -95,6 +98,7 @@ impl View {
             Command::Fit => self.fit(),
             Command::Focus { id } => self.focus(&id),
             Command::Tilt { yaw, pitch } => self.set_tilt(yaw, pitch),
+            Command::Motion { value } => self.set_motion(value),
             Command::Refresh => {}
             Command::Hover { id } => {
                 self.hover(id.as_deref());

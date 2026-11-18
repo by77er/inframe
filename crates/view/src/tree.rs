@@ -32,6 +32,8 @@ pub enum Role {
     Kind,
     /// Nodes of a stack with origins whose own origin is not recorded.
     Loose,
+    /// Nodes of one resource family (`iam`, `s3`) inside a group too large to read at once.
+    Family,
     Leaf,
 }
 
@@ -47,6 +49,7 @@ impl Role {
             Self::Provider => "provider",
             Self::Type => "type",
             Self::Kind | Self::Loose => "group",
+            Self::Family => "family",
             Self::Leaf => "node",
         }
     }
@@ -157,6 +160,7 @@ impl Tree {
                 tree.by_provider(item, stack, &nodes);
             }
         }
+        tree.subdivide(model);
         tree.finish(model);
         tree
     }
@@ -355,13 +359,71 @@ impl Tree {
         }
     }
 
+    /// A group that holds more nodes than can be taken in at a glance is split by resource
+    /// family: the first word of the type after its provider (`aws_iam_role` is `iam`), with
+    /// outputs together. A stack written as one long definition then opens to a dozen
+    /// families rather than to everything it declares. Families of one stay as they are.
+    fn subdivide(&mut self, model: &Model) {
+        const CROWDED: usize = 16;
+        for index in 0..self.items.len() {
+            let direct: Vec<usize> = self.items[index]
+                .children
+                .iter()
+                .copied()
+                .filter(|child| self.items[*child].node.is_some())
+                .collect();
+            if direct.len() <= CROWDED || self.items[index].role == Role::Type {
+                continue;
+            }
+            let mut families: Vec<(String, Vec<usize>)> = Vec::new();
+            for &child in &direct {
+                let data = self.node(model, self.items[child].node.expect("filtered to leaves"));
+                let family = match data.kind {
+                    NodeKind::Output => "outputs".to_owned(),
+                    NodeKind::Provider | NodeKind::StackReference => continue,
+                    NodeKind::Resource | NodeKind::Data => {
+                        let stripped =
+                            strip_provider(&data.type_name, data.provider.as_deref().unwrap_or(""));
+                        stripped.split('_').next().unwrap_or(&stripped).to_owned()
+                    }
+                };
+                match families.iter_mut().find(|(known, _)| *known == family) {
+                    Some((_, members)) => members.push(child),
+                    None => families.push((family, vec![child])),
+                }
+            }
+            families.retain(|(_, members)| members.len() > 1);
+            if families.len() < 2 {
+                continue;
+            }
+            let stack = self.items[index].stack;
+            for (family, members) in families {
+                let id = format!("{}/f:{family}", self.items[index].id);
+                let group = self.push(Some(index), id, family, Role::Family, stack);
+                for member in members {
+                    self.items[index].children.retain(|child| *child != member);
+                    self.items[member].parent = Some(group);
+                    self.items[group].children.push(member);
+                }
+            }
+        }
+    }
+
     /// Fill in weights and leaves bottom-up, and order children: groups first, heaviest
     /// first, then nodes by kind and name. The order depends only on the model, so expanding
     /// a group never reshuffles its siblings.
     fn finish(&mut self, model: &Model) {
-        for index in (0..self.items.len()).rev() {
+        let mut order = Vec::with_capacity(self.items.len());
+        let mut pending = vec![0];
+        while let Some(index) = pending.pop() {
+            order.push(index);
+            pending.extend(&self.items[index].children);
+        }
+        // Every item comes after its parent in `order`, so backwards is children first.
+        for &index in order.iter().rev() {
             if let Some(node) = self.items[index].node {
                 self.items[index].leaves = vec![node];
+                continue;
             }
             let mut children = std::mem::take(&mut self.items[index].children);
             children.sort_by(|&a, &b| {
@@ -384,14 +446,12 @@ impl Tree {
                     .then_with(|| a.label.cmp(&b.label))
                     .then_with(|| a.id.cmp(&b.id))
             });
+            self.items[index].weight = children.iter().map(|&child| self.items[child].weight).sum();
+            self.items[index].leaves = children
+                .iter()
+                .flat_map(|&child| self.items[child].leaves.iter().copied())
+                .collect();
             self.items[index].children = children;
-            if let Some(parent) = self.items[index].parent {
-                let weight = self.items[index].weight;
-                let leaves = self.items[index].leaves.clone();
-                self.items[parent].weight += weight;
-                // Children are visited in descending index, so prepend to keep model order.
-                self.items[parent].leaves.splice(0..0, leaves);
-            }
         }
     }
 

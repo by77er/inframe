@@ -329,6 +329,14 @@ There are two views.
 - **Map** opens everything at once and fills a rectangle, each node's area
   following how much configuration it carries.
 
+A group that holds more than sixteen nodes directly (a stack written as one long
+definition, say) is split by resource family, the first word of the type after
+its provider: `aws_iam_role` and `aws_iam_policy` sit together under `iam`.
+Changes are animated: blocks rise when a group opens and sink into it when it
+closes, the camera eases, a dragged canvas glides to a stop, and an association
+draws itself from the node that needs to the node that is needed. A browser set
+to reduce motion gets none of it.
+
 Select a node to see what it depends on and what uses it, with the argument that
 carries each association, drawn as arcs that point at what is needed. Select a
 module or a definition to see what it holds and which other modules it reaches

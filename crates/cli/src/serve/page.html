@@ -272,7 +272,7 @@ const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", min
 const { instance } = await WebAssembly.instantiateStreaming(fetch("/view.wasm"));
 const core = instance.exports;
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-const INSTANCE_FLOATS = 9;
+const INSTANCE_FLOATS = 11;
 const FLAG = { slab: 1, selected: 2, related: 4, dim: 8, hover: 16, match: 32, failed: 64, building: 128, mark: 256, container: 512 };
 
 function command(op, fields = {}) {
@@ -339,7 +339,7 @@ const gpu = { ready: false };
 const SHADER_COMMON = /* wgsl */`
 struct Scene {
   view_proj: mat4x4f,
-  viewport: vec2f, dpr: f32, zoom: f32,
+  viewport: vec2f, dpr: f32, time: f32,
   plane: vec4f, ink: vec4f, focus: vec4f, critical: vec4f, warning: vec4f,
   top: array<vec4f, 10>, side: array<vec4f, 10>, band: array<vec4f, 10>,
 }
@@ -355,12 +355,14 @@ struct Out {
   @location(2) @interpolate(flat) tone: u32,
   @location(3) @interpolate(flat) flags: u32,
   @location(4) @interpolate(flat) side: u32,   // 0 top, 1 front, 2 flank, 3 back
+  @location(5) @interpolate(flat) dim: f32,
 }
 @vertex fn vertex(@location(0) corner: vec3f, @location(1) uv: vec2f, @location(2) side: f32,
-                  @location(3) origin: vec3f, @location(4) size: vec3f, @location(5) paint: vec3f) -> Out {
+                  @location(3) origin: vec3f, @location(4) size: vec3f, @location(5) paint: vec3f, @location(6) motion: vec2f) -> Out {
   var out: Out;
   let grown = vec3f(size.xy, size.z * paint.z);
-  out.position = scene.view_proj * vec4f(origin + corner * grown, 1.0);
+  out.position = scene.view_proj * vec4f(origin + vec3f(0.0, 0.0, motion.x) + corner * grown, 1.0);
+  out.dim = motion.y;
   out.side = u32(side);
   if (out.side == 0u) { out.extent = grown.xy; }
   else if (out.side == 2u) { out.extent = grown.yz; }
@@ -383,7 +385,7 @@ struct Out {
   // The band along the left edge of the top: a node's kind, or a stack's trouble.
   if (top && in.face.x < 4.5 && !has(in.flags, 256u)) {
     if (has(in.flags, 64u)) { color = scene.critical.rgb; }
-    else if (has(in.flags, 128u)) { color = scene.warning.rgb; }
+    else if (has(in.flags, 128u)) { color = mix(color, scene.warning.rgb, 0.55 + 0.45 * sin(scene.time * 4.0)); }
     else if (in.tone <= 3u) { color = scene.band[in.tone].rgb; }
   }
   if (has(in.flags, 16u)) { color = mix(color, scene.ink.rgb, select(0.05, 0.1, dark)); }
@@ -396,26 +398,27 @@ struct Out {
   else if (has(in.flags, 4u) || has(in.flags, 32u)) { line = scene.focus.rgb; weight = 0.9; width = 1.6; }
   if (has(in.flags, 256u)) { weight = 0.0; }
   color = mix(color, line, weight * (1.0 - smoothstep(width * pixel * 0.6, width * pixel * 1.3, edge)));
-  if (has(in.flags, 8u)) { color = mix(color, scene.plane.rgb, 0.74); }
+  color = mix(color, scene.plane.rgb, 0.74 * in.dim);
   return vec4f(color, 1.0);
 }`;
 
 const SHADER_SHADOW = SHADER_COMMON + /* wgsl */`
 struct Out { @builtin(position) position: vec4f, @location(0) local: vec2f, @location(1) half: vec2f, @location(2) strength: f32 }
 const SPREAD = 22.0;
-@vertex fn vertex(@builtin(vertex_index) index: u32, @location(3) origin: vec3f, @location(4) size: vec3f, @location(5) paint: vec3f) -> Out {
+@vertex fn vertex(@builtin(vertex_index) index: u32, @location(3) origin: vec3f, @location(4) size: vec3f, @location(5) paint: vec3f, @location(6) motion: vec2f) -> Out {
   var corners = array<vec2f, 6>(vec2f(0, 0), vec2f(1, 0), vec2f(0, 1), vec2f(0, 1), vec2f(1, 0), vec2f(1, 1));
   let corner = corners[index];
   var out: Out;
   out.half = size.xy * 0.5;
   out.local = (corner * 2.0 - 1.0) * (out.half + SPREAD);
-  let lift = size.z * paint.z;
+  // A box that floats casts a wider, softer shadow from further off.
+  let lift = size.z * paint.z + motion.x * 2.2;
   let center = origin.xy + out.half + vec2f(lift * 0.22, lift * 0.34);
   out.position = scene.view_proj * vec4f(center + out.local, origin.z + 0.15, 1.0);
   let flags = u32(paint.y);
   out.strength = clamp(lift / 26.0, 0.25, 1.0);
   if (has(flags, 256u)) { out.strength = 0.0; }
-  if (has(flags, 8u)) { out.strength *= 0.35; }
+  out.strength *= (1.0 - 0.65 * motion.y) * min(1.0, paint.z * 2.0);
   return out;
 }
 @fragment fn fragment(in: Out) -> @location(0) vec4f {
@@ -510,7 +513,8 @@ async function startGpu() {
   const uniforms = device.createBuffer({ size: UNIFORM_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const blend = { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
   const boxInstance = { arrayStride: INSTANCE_FLOATS * 4, stepMode: "instance", attributes: [
-    { shaderLocation: 3, offset: 0, format: "float32x3" }, { shaderLocation: 4, offset: 12, format: "float32x3" }, { shaderLocation: 5, offset: 24, format: "float32x3" }] };
+    { shaderLocation: 3, offset: 0, format: "float32x3" }, { shaderLocation: 4, offset: 12, format: "float32x3" }, { shaderLocation: 5, offset: 24, format: "float32x3" },
+    { shaderLocation: 6, offset: 36, format: "float32x2" }] };
   const pipeline = (code, buffers, { layouts = [sceneLayout], depthWrite = false, depthCompare = "less-equal", blended = true } = {}) => {
     const module = device.createShaderModule({ code });
     return device.createRenderPipeline({
@@ -679,6 +683,20 @@ function rasterize(scale, k) {
 /* ---------- the frame ---------- */
 
 let frameRequested = false, lastFrame = 0, settle = 0;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+let still = reduced.matches;
+
+/* After a drag is let go the ground keeps sliding and slows to a stop. */
+const glide = { vx: 0, vy: 0, on: false };
+function coast(dt) {
+  if (!glide.on) return false;
+  const [x, y] = [ui.size[0] / 2, ui.size[1] / 2];
+  core.iv_pan(x, y, x + glide.vx * dt, y + glide.vy * dt);
+  const slow = Math.exp(-dt / 240);
+  glide.vx *= slow; glide.vy *= slow;
+  glide.on = Math.hypot(glide.vx, glide.vy) > 0.015;
+  return glide.on;
+}
 function wake() { settle = 0; if (!frameRequested) { frameRequested = true; requestAnimationFrame(frame); } }
 
 function frame(now) {
@@ -695,9 +713,17 @@ function frame(now) {
   ui.matrix = new Float32Array(core.memory.buffer, core.iv_matrix_ptr(), 16);
   ui.zoom = core.iv_zoom_level(); ui.size = [width, height]; ui.moving = moving;
   $("#zoom-level").textContent = `${Math.round(ui.zoom * 100)}%`;
+  const coasting = coast(dt);
   if (gpu.ready && palette) draw(count, width, height, moving);
-  // Keep drawing while things move, and twice more once they stop so that text sharpens.
-  if (moving || settle < 2) { if (!moving) settle += 1; frameRequested = true; requestAnimationFrame(frame); } else lastFrame = 0;
+  const busy = moving || coasting || ui.drawing;
+  ui.moving = busy;
+  // Keep drawing while things move, and twice more once they stop so that text sharpens. A
+  // stack that is building pulses, so the canvas keeps ticking over at a low rate for it.
+  if (busy || settle < 2) { if (!busy) settle += 1; frameRequested = true; requestAnimationFrame(frame); }
+  else {
+    lastFrame = 0;
+    if ((ui.summary.building || []).length && !still) setTimeout(wake, 50);
+  }
 }
 
 function draw(count, width, height, moving) {
@@ -718,7 +744,7 @@ function draw(count, width, height, moving) {
 
   const uniform = new Float32Array(UNIFORM_FLOATS);
   uniform.set(matrix, 0);
-  uniform.set([pixelWidth, pixelHeight, dpr, zoom], 16);
+  uniform.set([pixelWidth, pixelHeight, dpr, (performance.now() / 1000) % 1000], 16);
   const colors = [palette.plane, palette.ink, palette.focus, palette.critical, palette.warning,
     ...palette.tones.map((tone) => tone.top), ...palette.tones.map((tone) => tone.side), ...palette.tones.map((tone) => tone.band)];
   colors.forEach((color, index) => uniform.set([color[0], color[1], color[2], 1], 20 + index * 4));
@@ -732,17 +758,27 @@ function draw(count, width, height, moving) {
   for (const entry of atlas.entries) {
     const at = entry.index * INSTANCE_FLOATS;
     if (at + INSTANCE_FLOATS > boxes.length) continue;
-    const flags = boxes[at + 7], grow = boxes[at + 8];
+    const grow = boxes[at + 8], lift = boxes[at + 9], dim = boxes[at + 10];
     const color = entry.role === 0 ? palette.ink : entry.role === 1 ? palette.ink2 : palette.ink3;
-    const alpha = (flags & FLAG.dim ? 0.32 : 1) * Math.min(1, grow * grow);
-    text.set([boxes[at] + entry.dx, boxes[at + 1] + entry.dy, boxes[at + 2] + boxes[at + 5] * grow + 0.25, entry.w, entry.h,
+    const alpha = (1 - 0.68 * dim) * Math.min(1, grow * grow);
+    text.set([boxes[at] + entry.dx, boxes[at + 1] + entry.dy, boxes[at + 2] + lift + boxes[at + 5] * grow + 0.25, entry.w, entry.h,
       entry.uv[0], entry.uv[1], entry.uv[2], entry.uv[3], color[0], color[1], color[2], alpha], written * 13);
     written += 1;
   }
   const textBuffer = upload("text", text, written * 13);
 
-  const segments = [];
-  for (const link of ui.scene.links) arc(segments, boxes, link, dpr);
+  // An association draws itself from the node that needs to the node that is needed.
+  const segments = [], now = performance.now(), seen = new Set();
+  ui.drawing = false;
+  for (const link of ui.scene.links) {
+    const key = `${ui.scene.boxes[link.from]?.id}>${ui.scene.boxes[link.to]?.id}>${link.muted}`;
+    seen.add(key);
+    if (!arcs.has(key)) arcs.set(key, now);
+    const t = still ? 1 : Math.min(1, (now - arcs.get(key)) / 360);
+    if (t < 1) ui.drawing = true;
+    arc(segments, boxes, link, dpr, 1 - (1 - t) ** 3);
+  }
+  for (const key of arcs.keys()) if (!seen.has(key)) arcs.delete(key);
   const lineData = new Float32Array(segments);
   const lineBuffer = upload("lines", lineData, lineData.length);
 
@@ -771,10 +807,11 @@ function project(x, y, z) {
 }
 
 /* One association: an arc from the top of one box to the top of another, ending in an arrowhead. */
-function arc(out, boxes, link, dpr) {
+const arcs = new Map();
+function arc(out, boxes, link, dpr, drawn) {
   const a = link.from * INSTANCE_FLOATS, b = link.to * INSTANCE_FLOATS;
   if (b + INSTANCE_FLOATS > boxes.length || a + INSTANCE_FLOATS > boxes.length) return;
-  const top = (at) => [boxes[at] + boxes[at + 3] / 2, boxes[at + 1] + boxes[at + 4] / 2, boxes[at + 2] + boxes[at + 5] * boxes[at + 8]];
+  const top = (at) => [boxes[at] + boxes[at + 3] / 2, boxes[at + 1] + boxes[at + 4] / 2, boxes[at + 2] + boxes[at + 9] + boxes[at + 5] * boxes[at + 8]];
   const from = top(a), to = top(b);
   const span = Math.hypot(to[0] - from[0], to[1] - from[1]);
   const rise = Math.min(150, 26 + span * 0.2);
@@ -784,14 +821,15 @@ function arc(out, boxes, link, dpr) {
   const ink = link.muted || provider ? [...palette.ink3, link.muted ? 0.5 : 0.8] : [...palette.ink, 0.95];
   const halo = [...palette.plane, 0.75];
   const width = (link.muted ? 1.1 : provider ? 1.2 : Math.min(4, 1.7 + Math.log2(link.count) * 0.7)) * dpr;
-  const head = 1 - Math.min(0.3, 15 / Math.max(span, 1));
-  const points = Array.from({ length: steps + 1 }, (_, index) => point(Math.min(index / steps, head)));
+  const reach = 1 - Math.min(0.3, 15 / Math.max(span, 1));
+  const head = reach * drawn;
+  const points = Array.from({ length: steps + 1 }, (_, index) => point(index / steps * head));
   if (!link.muted) for (let index = 0; index < steps; index += 1) out.push(...points[index], ...points[index + 1], width + 3 * dpr, width + 3 * dpr, ...halo);
   for (let index = 0; index < steps; index += 1) {
     if (provider && index % 2) continue;
     out.push(...points[index], ...points[index + 1], width, width, ...ink);
   }
-  out.push(...point(head), ...point(1), (link.muted ? 6 : 10) * dpr, 0, ...ink);
+  out.push(...point(head), ...point(head + (1 - reach)), (link.muted ? 6 : 10) * dpr * Math.min(1, drawn * 3), 0, ...ink);
 }
 
 /* ---------- pointer and keyboard on the canvas ---------- */
@@ -823,7 +861,8 @@ function hover(id, event) {
 canvas.addEventListener("pointerdown", (event) => {
   canvas.setPointerCapture(event.pointerId);
   pointers.set(event.pointerId, local(event));
-  drag = pointers.size === 1 ? { start: local(event), last: local(event), moved: false } : null;
+  drag = pointers.size === 1 ? { start: local(event), last: local(event), moved: false, trail: [] } : null;
+  glide.on = false;
   hover(null);
 });
 canvas.addEventListener("pointermove", (event) => {
@@ -840,7 +879,12 @@ canvas.addEventListener("pointermove", (event) => {
       core.iv_zoom(to[0], to[1], spread(at, other) / Math.max(1, spread(before, other)));
     } else if (drag) {
       if (!drag.moved && Math.hypot(at[0] - drag.start[0], at[1] - drag.start[1]) > 4) { drag.moved = true; canvas.classList.add("grabbing"); }
-      if (drag.moved) { core.iv_pan(drag.last[0], drag.last[1], at[0], at[1]); drag.last = at; }
+      if (drag.moved) {
+        core.iv_pan(drag.last[0], drag.last[1], at[0], at[1]);
+        drag.last = at;
+        drag.trail.push([performance.now(), at[0], at[1]]);
+        if (drag.trail.length > 6) drag.trail.shift();
+      }
     }
     pointers.set(event.pointerId, at);
     wake();
@@ -852,6 +896,16 @@ canvas.addEventListener("pointermove", (event) => {
 const release = (event) => {
   const clicked = drag && !drag.moved && event.type === "pointerup";
   const at = local(event);
+  if (drag && drag.moved && !still && drag.trail.length > 1) {
+    // Carry on at the speed of the last few moves, unless the pointer had come to rest.
+    const [first, last] = [drag.trail[0], drag.trail[drag.trail.length - 1]];
+    const span = last[0] - first[0];
+    if (span > 8 && performance.now() - last[0] < 60) {
+      glide.vx = (last[1] - first[1]) / span; glide.vy = (last[2] - first[2]) / span;
+      glide.on = Math.hypot(glide.vx, glide.vy) > 0.08;
+      if (glide.on) wake();
+    }
+  }
   pointers.delete(event.pointerId);
   canvas.classList.remove("grabbing");
   drag = null;
@@ -880,7 +934,8 @@ canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
   const at = local(event);
   const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-  core.iv_zoom(at[0], at[1], Math.exp(-step * (event.ctrlKey ? 0.01 : 0.0016)));
+  glide.on = false;
+  core.iv_zoom(at[0], at[1], Math.exp(-step * (event.ctrlKey ? 0.01 : 0.0018)));
   hover(null);
   wake();
 }, { passive: false });
@@ -1037,7 +1092,7 @@ function inspectNode(data) {
   ];
 }
 
-const ROLE = { stack: "Stack", module: "Module", definition: "Definition", provider: "Provider", type: "Resource type", kind: "Group", loose: "Group" };
+const ROLE = { stack: "Stack", module: "Module", definition: "Definition", provider: "Provider", type: "Resource type", family: "Resource family", kind: "Group", loose: "Group" };
 function inspectGroup(data) {
   const { stack } = data;
   const parts = [
@@ -1145,6 +1200,8 @@ function connect() {
   events.addEventListener("error", () => { ui.connected = false; renderBar(); });
 }
 
+command("motion", { value: !still });
+reduced.addEventListener("change", () => { still = reduced.matches; command("motion", { value: !still }); });
 command("mode", { value: mode });
 command("grouping", { value: grouping });
 command("tilt", { yaw: TILTS[tilt][0], pitch: TILTS[tilt][1] });
