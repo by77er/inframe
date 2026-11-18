@@ -1907,11 +1907,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("{label} is not shown"));
             view.placed[index]
         };
-        // Modules: Network is needed by Data, which the stack's output needs. In reading
-        // order (across, and down within a column) each comes after what it needs.
-        let before = |a: Placed, b: Placed| a.x + a.w <= b.x || (a.x == b.x && a.y + a.d <= b.y);
+        // Modules: Network is needed by Data, which the stack's output needs. Each is packed
+        // after what it needs, so it never stands nearer the far-left corner on both axes.
+        let before = |a: Placed, b: Placed| !(b.x < a.x && b.y < a.y) && (a.x, a.y) != (b.x, b.y);
         assert!(before(at(&view, "Network"), at(&view, "Data")));
         assert!(before(at(&view, "Data"), at(&view, "stack")));
+        assert_eq!(
+            (at(&view, "Network").x, at(&view, "Network").y),
+            (
+                at(&view, "Infra.App").x + 16.0,
+                at(&view, "Infra.App").y + 16.0
+            )
+        );
         view.set_mode(Mode::Everything);
         let (long, short) = (
             at(&view, "a_rule_with_a_very_long_descriptive_name"),

@@ -12,6 +12,7 @@ test:
 check:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy -p inframe-cli --no-default-features --all-targets -- -D warnings
 	cd purescript && spago build -p integration-digitalocean
 	cd lean/integration-digitalocean && lake build
 
@@ -36,4 +37,4 @@ conformance-tofu:
 # the repository; rebuild it after changing that crate (needs the wasm32-unknown-unknown target).
 view-wasm:
 	cargo build -p inframe-view --target wasm32-unknown-unknown --profile wasm
-	cp target/wasm32-unknown-unknown/wasm/inframe_view.wasm crates/cli/src/serve/view.wasm
+	cp target/wasm32-unknown-unknown/wasm/inframe_view.wasm crates/serve/src/view.wasm

@@ -13,8 +13,8 @@ use inframe_graph_ir::{
 };
 use serde_json::Value;
 
-use crate::inspect::{format_expr, format_json};
-use crate::project::Origins;
+use inframe_graph_ir::display::{format_expr, format_json};
+use inframe_graph_ir::origins::Origins;
 pub use inframe_view::model::{
     Argument, BuildStatus, Edge, EdgeKind, Model, Node, NodeKind, Origin, ProjectInfo, StackModel,
     StateModel,
@@ -233,10 +233,12 @@ impl StackBuilder<'_> {
     }
 
     fn origin(&self, key: &str) -> Option<Origin> {
-        self.origins?
-            .get(key)
-            .filter(|origin| !origin.module.is_empty())
-            .cloned()
+        let origin = self.origins?.get(key)?;
+        (!origin.module.is_empty()).then(|| Origin {
+            module: origin.module.clone(),
+            declaration: origin.declaration.clone(),
+            line: origin.line,
+        })
     }
 
     fn edge(&mut self, from: &str, to: String, kind: EdgeKind, via: Option<String>) {
@@ -745,7 +747,7 @@ mod tests {
     fn snapshot(name: &str, graph: &str, state: StateSnapshot) -> StackSnapshot {
         let origins = Origins::from([(
             "digitalocean_database_cluster.postgres".to_owned(),
-            Origin {
+            inframe_graph_ir::origins::Origin {
                 module: "Infra.Platform".to_owned(),
                 declaration: "createDatabases".to_owned(),
                 line: 40,

@@ -9,6 +9,9 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use inframe_emit_lean::{CoreDependency, LEAN_TOOLCHAIN};
 use inframe_graph_ir::GraphDocument;
+use inframe_graph_ir::origins::ORIGINS_VARIABLE;
+#[cfg(feature = "serve")]
+use inframe_graph_ir::origins::{self, Origins};
 use inframe_opentofu::Workspace;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -191,22 +194,6 @@ impl Default for BackendConfig {
             config: BTreeMap::new(),
         }
     }
-}
-
-/// The environment variable a stack's entry point reads the origins path from.
-pub const ORIGINS_VARIABLE: &str = "INFRAME_ORIGINS";
-
-pub use inframe_view::model::Origin;
-
-/// Origins by node: a graph address, `provider.<address>`, or `output.<name>`.
-pub type Origins = BTreeMap<String, Origin>;
-
-/// The companion document a stack's entry point writes to `INFRAME_ORIGINS`. Unknown fields
-/// are ignored so that a newer core can say more than this build reads.
-#[derive(Debug, Deserialize)]
-struct OriginsDocument {
-    #[serde(default)]
-    origins: Origins,
 }
 
 #[derive(Debug)]
@@ -479,6 +466,7 @@ impl Project {
             .join(self.frontend_directory(self.stack_frontend(stack)?)))
     }
 
+    #[cfg(feature = "serve")]
     /// Every directory whose files `stack`'s graph is built from: its frontend's package and,
     /// for a Lean stack whose core library is a local checkout, that checkout.
     pub fn stack_watch_directories(&self, stack: &str) -> Result<Vec<PathBuf>> {
@@ -571,6 +559,7 @@ impl Project {
         self.render_from(stack, None)
     }
 
+    #[cfg(feature = "serve")]
     /// `render`, and also where the stack's source declared each node, when its frontend
     /// says: the entry point is given `INFRAME_ORIGINS`, the path of a file to write them
     /// to. Only the Lean core does; a frontend that ignores the variable yields `None`.
@@ -590,9 +579,8 @@ impl Project {
         let graph = self.render_from(stack, Some(&path))?;
         let origins = match fs::read(&path) {
             Ok(bytes) => Some(
-                serde_json::from_slice::<OriginsDocument>(&bytes)
-                    .with_context(|| format!("failed to decode {}", path.display()))?
-                    .origins,
+                origins::decode(&bytes)
+                    .with_context(|| format!("failed to decode {}", path.display()))?,
             ),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => {
@@ -617,11 +605,13 @@ impl Project {
         }))
     }
 
+    #[cfg(feature = "serve")]
     /// The backend type of `stack`, as `inframe.toml` spells it.
     pub fn backend_kind(&self, stack: &str) -> Result<&str> {
         Ok(&self.stack(stack)?.backend.kind)
     }
 
+    #[cfg(feature = "serve")]
     /// The directory that holds `inframe.toml`.
     pub fn root(&self) -> &Path {
         &self.root

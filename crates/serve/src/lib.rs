@@ -1,10 +1,15 @@
-//! `inframe serve`: a local web server showing the project's stacks as a live hierarchy.
+//! `inframe serve`: a local web server showing a project's stacks as a live hierarchy.
+//!
+//! This crate is the visualizer's server side and nothing else of Inframe depends on it: the
+//! CLI turns it on with its `serve` feature and hands it a [`Project`], the few things the
+//! server needs to know about one. The page's own logic is the `inframe-view` crate, built
+//! for WebAssembly and served from here.
 //!
 //! One thread watches the project: it rebuilds a stack when its sources change, re-reads its
 //! local state when that changes, and publishes a new model each time. The other threads
 //! answer HTTP: the page, the current model, and an event stream that announces each new
 //! model so the page can follow along. The protocol is small enough to speak with the
-//! standard library, so the CLI gains no dependency for it.
+//! standard library.
 
 mod model;
 
@@ -19,35 +24,57 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
-use crate::project::{self, Project};
+use inframe_graph_ir::GraphDocument;
+use inframe_graph_ir::origins::Origins;
 use model::{AppliedState, BuildStatus, Built, ProjectInfo, StackSnapshot, StateSnapshot};
 
 const PAGE: &str = include_str!("page.html");
 /// The page's logic: `inframe-view` built for WebAssembly by `make view-wasm` and kept in
-/// the repository, so that building the CLI needs no second toolchain.
+/// the repository, so that building this crate needs no second toolchain.
 const VIEW_WASM: &[u8] = include_bytes!("view.wasm");
 
 /// How often the event stream says it is still there, so a closed tab is noticed.
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
-#[derive(Debug, clap::Args)]
-pub struct ServeArgs {
-    /// Show only these stacks; every declared stack by default.
-    #[arg(long = "stack")]
-    stacks: Vec<String>,
-    /// The address to listen on. The default is reachable from this machine only.
-    #[arg(long, default_value = "127.0.0.1")]
-    host: IpAddr,
+/// How to serve.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// Show only these stacks; every declared stack when empty.
+    pub stacks: Vec<String>,
+    pub host: IpAddr,
     /// The port to listen on; `0` picks a free one.
-    #[arg(long, default_value_t = 7878)]
-    port: u16,
-    /// How often sources and state are checked for changes, in milliseconds.
-    #[arg(long, default_value_t = 700, value_parser = clap::value_parser!(u64).range(50..))]
-    poll_ms: u64,
-    /// Serve `page.html` and `view.wasm` from this directory instead of the copies built into
-    /// the binary, for working on the page itself.
-    #[arg(long, hide = true)]
-    assets: Option<PathBuf>,
+    pub port: u16,
+    /// How often sources and state are checked for changes.
+    pub poll: Duration,
+    /// Serve `page.html` and `view.wasm` from this directory instead of the copies built in,
+    /// for working on the page itself.
+    pub assets: Option<PathBuf>,
+}
+
+/// What the server shows about a stack besides its graph.
+#[derive(Debug, Clone)]
+pub struct StackDescription {
+    /// The frontend language, as it is written for people (`Lean`).
+    pub frontend: &'static str,
+    /// The backend type that keeps the stack's state (`local`, `s3`).
+    pub backend: String,
+    /// Whether a deployment gate is configured.
+    pub gated: bool,
+}
+
+/// What the server needs of a project: its stacks, how to build one, and what to watch.
+pub trait Project: Send + 'static {
+    /// The directory the project lives in.
+    fn root(&self) -> PathBuf;
+    /// Every declared stack.
+    fn stacks(&self) -> Vec<String>;
+    fn describe(&self, stack: &str) -> StackDescription;
+    /// Build the stack: its graph, and where its source declared each node if the frontend says.
+    fn build(&self, stack: &str) -> Result<(GraphDocument, Option<Origins>)>;
+    /// When anything the stack is built from last changed.
+    fn last_change(&self, stack: &str) -> Option<SystemTime>;
+    /// The stack's state file, when its backend keeps one on this machine.
+    fn local_state(&self, stack: &str) -> Result<Option<PathBuf>>;
 }
 
 /// The model as last published, shared between the watcher and the request threads.
@@ -85,11 +112,20 @@ impl Published {
     }
 }
 
-pub fn run(arguments: &ServeArgs, project_path: &Path) -> Result<()> {
+/// Serve the project configured at `config` until the process is stopped. `load` reads the
+/// configuration; it is called again whenever the file changes.
+pub fn serve<P: Project>(
+    arguments: &Options,
+    config: &Path,
+    load: impl Fn(&Path) -> Result<P> + Send + 'static,
+) -> Result<()> {
     // Fail on a project that cannot be read at all before taking the port.
-    let project = Project::load(project_path)?;
+    let project = load(config)?;
+    let declared = project.stacks();
     for stack in &arguments.stacks {
-        project.stack(stack)?;
+        if !declared.contains(stack) {
+            anyhow::bail!("stack `{stack}` is not declared in the project config");
+        }
     }
     let listener = TcpListener::bind(SocketAddr::new(arguments.host, arguments.port))
         .with_context(|| {
@@ -104,9 +140,10 @@ pub fn run(arguments: &ServeArgs, project_path: &Path) -> Result<()> {
         changed: Condvar::new(),
     });
     let mut watcher = Watcher::new(
-        project_path.to_path_buf(),
+        config.to_path_buf(),
+        Box::new(load),
         arguments.stacks.clone(),
-        Duration::from_millis(arguments.poll_ms),
+        arguments.poll,
         Arc::clone(&published),
     );
     watcher.adopt(project);
@@ -136,6 +173,9 @@ pub fn run(arguments: &ServeArgs, project_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Reads the project's configuration, the first time and whenever it changes.
+type Load<P> = Box<dyn Fn(&Path) -> Result<P> + Send>;
+
 /// One stack as the watcher tracks it.
 struct Watched {
     snapshot: StackSnapshot,
@@ -147,20 +187,22 @@ struct Watched {
     state_seen: Option<(SystemTime, u64)>,
 }
 
-struct Watcher {
+struct Watcher<P> {
     project_path: PathBuf,
+    load: Load<P>,
     selected: Vec<String>,
     poll: Duration,
     published: Arc<Published>,
-    project: Option<Project>,
+    project: Option<P>,
     project_seen: Option<SystemTime>,
     info: ProjectInfo,
     stacks: BTreeMap<String, Watched>,
 }
 
-impl Watcher {
+impl<P: Project> Watcher<P> {
     fn new(
         project_path: PathBuf,
+        load: Load<P>,
         selected: Vec<String>,
         poll: Duration,
         published: Arc<Published>,
@@ -168,6 +210,7 @@ impl Watcher {
         Self {
             project_seen: modified(&project_path),
             project_path,
+            load,
             selected,
             poll,
             published,
@@ -183,8 +226,8 @@ impl Watcher {
 
     /// Take a freshly loaded project: keep what is known about stacks it still declares,
     /// forget the rest, and schedule everything for a build.
-    fn adopt(&mut self, project: Project) {
-        let root = fs::canonicalize(project.root()).unwrap_or_else(|_| project.root().to_owned());
+    fn adopt(&mut self, project: P) {
+        let root = fs::canonicalize(project.root()).unwrap_or_else(|_| project.root());
         self.info = ProjectInfo {
             name: root.file_name().map_or_else(
                 || "project".to_owned(),
@@ -194,22 +237,20 @@ impl Watcher {
             error: None,
         };
         let mut stacks = BTreeMap::new();
-        for name in project.stack_names() {
-            if !self.selected.is_empty() && !self.selected.iter().any(|stack| stack == name) {
+        for name in project.stacks() {
+            if !self.selected.is_empty() && !self.selected.contains(&name) {
                 continue;
             }
-            let previous = self.stacks.remove(name);
-            let frontend = project
-                .stack_frontend(name)
-                .map_or("unknown", |frontend| frontend.name());
+            let previous = self.stacks.remove(&name);
+            let description = project.describe(&name);
             stacks.insert(
-                name.to_owned(),
+                name.clone(),
                 Watched {
                     snapshot: StackSnapshot {
-                        name: name.to_owned(),
-                        frontend,
-                        backend: project.backend_kind(name).unwrap_or_default().to_owned(),
-                        gated: project.gate(name).ok().flatten().is_some(),
+                        name,
+                        frontend: description.frontend,
+                        backend: description.backend,
+                        gated: description.gated,
                         status: BuildStatus::Building,
                         error: None,
                         built: previous.and_then(|previous| previous.snapshot.built),
@@ -249,7 +290,7 @@ impl Watcher {
             return;
         }
         self.project_seen = seen;
-        match Project::load(&self.project_path) {
+        match (self.load)(&self.project_path) {
             Ok(project) => {
                 eprintln!("reloaded {}", self.project_path.display());
                 self.adopt(project);
@@ -268,12 +309,7 @@ impl Watcher {
         let Some(project) = &self.project else { return };
         let mut pending = Vec::new();
         for (name, watched) in &mut self.stacks {
-            let newest = project
-                .stack_watch_directories(name)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|directory| project::newest_source_mtime(directory))
-                .max();
+            let newest = project.last_change(name);
             if !watched.attempted || watched.built_from != newest {
                 watched.attempted = true;
                 watched.built_from = newest;
@@ -291,7 +327,7 @@ impl Watcher {
                 .project
                 .as_ref()
                 .expect("a project is loaded")
-                .render_with_origins(&name);
+                .build(&name);
             let elapsed = started.elapsed();
             let watched = self.stacks.get_mut(&name).expect("the stack is watched");
             match result {
@@ -327,10 +363,9 @@ impl Watcher {
 
     fn read_states(&mut self) {
         let Some(project) = &self.project else { return };
-        let base = project.workspace_directory();
         let mut changed = false;
         for (name, watched) in &mut self.stacks {
-            let state = match project.local_state_path(name, &base) {
+            let state = match project.local_state(name) {
                 Ok(Some(path)) => {
                     let seen = fs::metadata(&path)
                         .ok()

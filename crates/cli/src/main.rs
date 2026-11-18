@@ -19,6 +19,7 @@ use inframe_provider_schema::{
 
 mod inspect;
 mod project;
+#[cfg(feature = "serve")]
 mod serve;
 
 use project::{
@@ -84,6 +85,7 @@ enum Command {
     /// Serve a live, browsable map of the project's stacks: what each declares, which module
     /// and definition declares it, and how the nodes refer to each other. Rebuilds a stack
     /// when its sources change. Never runs `OpenTofu`.
+    #[cfg(feature = "serve")]
     Serve(serve::ServeArgs),
 }
 
@@ -275,6 +277,7 @@ fn main() -> Result<()> {
         Command::Output(arguments) => {
             run_existing_json("output", &arguments, &cli.project, &cli.tofu_binary)
         }
+        #[cfg(feature = "serve")]
         Command::Serve(arguments) => serve::run(&arguments, &cli.project),
     }
 }

@@ -332,9 +332,9 @@ There are two views.
 
 The canvas has no edge, so nothing is fitted to a frame and nothing is cut short:
 a block is as wide as its name and type, and a group is as large as what stands
-on it. Inside a group, things stand in the order of what needs what, read like
-text: across, then on to the next row. What a node depends on comes before it,
-so associations point back the way you came.
+on it. A group is packed into as square a shape as its contents allow, in the
+order of what needs what: what is needed first stands toward the far-left
+corner, and what needs it fans out from there.
 
 A group that holds more than sixteen nodes directly (a stack written as one long
 definition, say) is split by resource family, the first word of the type after
@@ -384,13 +384,19 @@ it listens on loopback unless `--host` says otherwise.
 
 The canvas is drawn with WebGPU, so it needs a browser that has it (current
 Chrome, Edge and Safari; Firefox on Windows and macOS). Without it the outline
-and the details still work. What is open, where things stand, the camera, and
-what a click lands on are decided by `crates/view`, compiled to WebAssembly and
-served with the page; the same crate defines the model the server sends, and its
-tests run as ordinary Rust. The built module is kept in the repository so that
-building the CLI needs one toolchain: after changing `crates/view`, run `make
-view-wasm` (which needs the `wasm32-unknown-unknown` target) and commit the
-result.
+and the details still work.
+
+`serve` is a feature of the CLI, on by default, and its code is kept apart from
+the rest: `crates/serve` is the server and the page, and `crates/view` is the
+model the server sends together with the page's logic (what is open, where
+things stand, the camera, what a click lands on), compiled to WebAssembly and
+tested as ordinary Rust. Nothing else depends on either. `cargo install --path
+crates/cli --no-default-features` builds a CLI without them. What stays in the
+core is only what records where nodes come from: the `origin` arguments of the
+Lean builders, and the reader of the origins document in `inframe-graph-ir`.
+The built WebAssembly module is kept in the repository so that building the CLI
+needs one toolchain: after changing `crates/view`, run `make view-wasm` (which
+needs the `wasm32-unknown-unknown` target) and commit the result.
 
 ## Plan, apply, and the rest of the lifecycle
 

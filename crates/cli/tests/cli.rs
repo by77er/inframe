@@ -1411,7 +1411,7 @@ fn resolves_stack_references_from_the_project() {
 
 /// `inframe serve` builds each stack, attaches the origins its entry point wrote to
 /// `INFRAME_ORIGINS`, reads the local state for presence only, and answers over HTTP.
-#[cfg(unix)]
+#[cfg(all(unix, feature = "serve"))]
 #[test]
 fn serves_a_live_model_with_origins_and_applied_state() {
     use std::io::{BufRead, BufReader, Read, Write};

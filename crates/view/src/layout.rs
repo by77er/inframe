@@ -3,9 +3,9 @@
 //!
 //! The canvas has no edge, so nothing is fitted to a frame. A node or a closed group is a
 //! block exactly as large as what is written on it. An open group is a slab with its
-//! children standing on it in the order of what needs what, read like text: a child comes
-//! after everything it depends on, so reading a group is reading in the order things can be
-//! created, and associations point back the way you came.
+//! children standing on it, packed into as square a shape as they allow. They are placed in
+//! the order of what needs what, starting from the far-left corner: what is needed first
+//! stands toward that corner, and what needs it fans out from there.
 
 use serde::{Deserialize, Serialize};
 
@@ -116,47 +116,103 @@ fn measure(
         area += (footprint[child].0 + GAP) * (footprint[child].1 + GAP);
         widest = widest.max(footprint[child].0);
     }
-    // Children stand in the order of their ranks, read like text: left to right, then on to
-    // the next row. Within a row a child goes under the previous one while the column stays
-    // within the row's height, so a few small blocks sit beside a large open group rather
-    // than each taking a column of its own. Rows wrap at the width of a rectangle of the
-    // children's area in a comfortable proportion; nothing is scaled to fit it.
-    let limit = widest.max((area * if root { 2.0 } else { 1.7 }).sqrt());
+    // Children are packed in the order of their ranks into as square a footprint as they
+    // allow, using both directions: each goes where it sits nearest the far-left corner
+    // against what is already placed, so what is needed first stands toward that corner and
+    // what needs it fans out from there. Several widths are tried and the squarest kept.
     let (left, top) = if root { (0.0, 0.0) } else { (PAD, PAD) };
     let mut order: Vec<usize> = data.children.clone();
     order.sort_by_key(|&child| tree.items[child].rank);
-    let (mut x, mut y) = (left, top);
-    let (mut row, mut width, mut depth) = (0.0_f32, 0.0_f32, 0.0_f32);
-    let (mut column_w, mut column_d) = (0.0_f32, 0.0_f32);
-    for child in order {
-        let (w, d) = footprint[child];
-        if column_d > 0.0 && column_d + GAP + d <= row + 0.5 {
-            offsets[child] = (x, y + column_d + GAP);
-            column_d += GAP + d;
-            column_w = column_w.max(w);
-            width = width.max(x + w);
-            continue;
+    let boxes: Vec<(f32, f32)> = order.iter().map(|&child| footprint[child]).collect();
+    let mut best: Option<(f32, Packing)> = None;
+    for step in 0..12 {
+        let limit = widest.max(area.sqrt() * (0.7 + 0.1 * step as f32));
+        let packing = pack(&boxes, limit);
+        let (width, depth) = (packing.width, packing.depth);
+        // How far from square, with a slight lean toward wide: the view is wider than tall.
+        let shape = (width / (depth * 1.25)).max(depth * 1.25 / width)
+            * (1.0 + width * depth / area.max(1.0) * 0.15);
+        if best.as_ref().is_none_or(|(score, ..)| shape < *score) {
+            best = Some((shape, packing));
         }
-        if column_d > 0.0 {
-            x += column_w + GAP;
-        }
-        if x > left && x + w - left > limit {
-            x = left;
-            y += row + GAP;
-            row = 0.0;
-        }
-        offsets[child] = (x, y);
-        column_w = w;
-        column_d = d;
-        row = row.max(d);
-        width = width.max(x + w);
-        depth = depth.max(y + row);
     }
+    let (
+        _,
+        Packing {
+            spots,
+            width,
+            depth,
+        },
+    ) = best.expect("at least one width was tried");
+    for (&child, spot) in order.iter().zip(spots) {
+        offsets[child] = (left + spot.0, top + spot.1);
+    }
+    let (width, depth) = (left + width, top + depth);
     footprint[item] = if root {
         (width, depth)
     } else {
         ((width + PAD).max(sizes.title[item]), depth + FOOTER)
     };
+}
+
+/// Where a packing put each box, and the extent it used.
+struct Packing {
+    spots: Vec<(f32, f32)>,
+    width: f32,
+    depth: f32,
+}
+
+/// Skyline packing of `boxes`, in order, into a strip `limit` wide: each box goes where its
+/// far edge is lowest, then furthest left.
+fn pack(boxes: &[(f32, f32)], limit: f32) -> Packing {
+    // The skyline: runs of `(x, y, width)`, left to right, saying how far down each is taken.
+    let mut skyline: Vec<(f32, f32, f32)> = vec![(0.0, 0.0, limit + GAP)];
+    let mut spots = Vec::with_capacity(boxes.len());
+    let (mut width, mut depth) = (0.0_f32, 0.0_f32);
+    for &(w, d) in boxes {
+        let (w, d) = (w + GAP, d + GAP);
+        let mut best: Option<(f32, f32)> = None;
+        for start in 0..skyline.len() {
+            let x = skyline[start].0;
+            if x + w > limit + GAP + 0.5 {
+                break;
+            }
+            let y = skyline[start..]
+                .iter()
+                .take_while(|run| run.0 < x + w - 0.5)
+                .map(|run| run.1)
+                .fold(0.0_f32, f32::max);
+            if best.is_none_or(|(_, lowest)| y < lowest - 0.5) {
+                best = Some((x, y));
+            }
+        }
+        let (x, y) = best.unwrap_or((0.0, depth + GAP));
+        spots.push((x, y));
+        width = width.max(x + w - GAP);
+        depth = depth.max(y + d - GAP);
+        // Raise the skyline under the box, keeping what sticks out on either side.
+        let mut next = Vec::with_capacity(skyline.len() + 2);
+        for &(sx, sy, sw) in &skyline {
+            if sx + sw <= x + 0.5 || sx >= x + w - 0.5 {
+                next.push((sx, sy, sw));
+                continue;
+            }
+            if sx < x {
+                next.push((sx, sy, x - sx));
+            }
+            if sx + sw > x + w {
+                next.push((x + w, sy, sx + sw - x - w));
+            }
+        }
+        next.push((x, y + d, w));
+        next.sort_by(|a, b| a.0.total_cmp(&b.0));
+        skyline = next;
+    }
+    Packing {
+        spots,
+        width,
+        depth,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
