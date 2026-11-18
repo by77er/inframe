@@ -879,7 +879,7 @@ function arc(out, boxes, link, dpr, drawn) {
 /* ---------- pointer and keyboard on the canvas ---------- */
 
 const pointers = new Map();
-let drag = null;
+let drag = null, lastClick = null;
 const local = (event) => { const rect = canvas.getBoundingClientRect(); return [event.clientX - rect.left, event.clientY - rect.top]; };
 const boxAt = (x, y) => { const index = core.iv_pick(x, y); return index >= 0 && index < ui.scene.boxes.length ? index : -1; };
 
@@ -954,6 +954,11 @@ const release = (event) => {
   canvas.classList.remove("grabbing");
   drag = null;
   if (!clicked) return;
+  // The second click of a double-click is the double-click's to handle: acting on it too
+  // would close the group the first click selected, just before zooming to it.
+  const again = lastClick && event.timeStamp - lastClick.time < 350 && Math.hypot(at[0] - lastClick.at[0], at[1] - lastClick.at[1]) < 6;
+  lastClick = { time: event.timeStamp, at };
+  if (again) return;
   const index = boxAt(at[0], at[1]);
   if (index < 0) { if (ui.summary.selected) act("select", { id: null }); return; }
   const box = ui.scene.boxes[index];
